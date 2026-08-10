@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>同频 InTune H5 Prototype</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="status-bar">
+        <span>InTune</span>
+        <span>15:24</span>
+        <span>98%</span>
+      </header>
+
+      <main class="phone-frame">
+        <section class="screen is-active" data-screen="home">
+          <div class="hero">
+            <div class="hero__top">
+              <div>
+                <p class="eyebrow">同频 InTune</p>
+                <h1>让同频的人彼此看见</h1>
+              </div>
+              <button class="icon-button" type="button" aria-label="搜索">⌕</button>
+            </div>
+            <p class="hero__copy">
+              一个强调平等、尊重与真实表达的垂直兴趣直播社区。
+            </p>
+            <div class="hero__chips">
+              <span>今日推荐</span>
+              <span>预约直播</span>
+              <span>社区话题</span>
+            </div>
+          </div>
+
+          <section class="content-section">
+            <div class="section-header">
+              <div>
+                <p class="section-kicker">Today’s Picks</p>
+                <h2>今日推荐</h2>
+              </div>
+              <a href="#" aria-label="查看更多">查看更多</a>
+            </div>
+            <div class="card-scroll">
+              <article class="live-card live-card--feature">
+                <div class="live-card__badge">直播中</div>
+                <div class="live-card__content">
+                  <p class="live-card__tag">高质量对谈</p>
+                  <h3>边界、信任与关系表达</h3>
+                  <p>主播：阿澈 · 2.4k 在线</p>
+                </div>
+              </article>
+              <article class="live-card">
+                <div class="live-card__badge live-card__badge--soft">今晚 21:00</div>
+                <div class="live-card__content">
+                  <p class="live-card__tag">深夜谈心</p>
+                  <h3>城市夜谈：你如何理解真实表达</h3>
+                  <p>主播：Mori · 已有 326 人预约</p>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="content-section">
+            <div class="section-header">
+              <div>
+                <p class="section-kicker">Themes</p>
+                <h2>主题直播</h2>
+              </div>
+            </div>
+            <div class="theme-grid">
+              <button class="theme-pill" type="button">深夜谈心</button>
+              <button class="theme-pill" type="button">兴趣表达</button>
+              <button class="theme-pill" type="button">城市同频</button>
+              <button class="theme-pill" type="button">新人初见</button>
+              <button class="theme-pill" type="button">边界话题</button>
+              <button class="theme-pill" type="button">高质量对谈</button>
+            </div>
+          </section>
+
+          <section class="content-section">
+            <div class="section-header">
+              <div>
+                <p class="section-kicker">Community</p>
+                <h2>社区动态</h2>
+              </div>
+              <a href="#">进入社区</a>
+            </div>
+            <article class="post-card">
+              <div class="post-card__header">
+                <div class="avatar">澈</div>
+                <div>
+                  <h3>阿澈</h3>
+                  <p>上海 · 本周话题参与者</p>
+                </div>
+              </div>
+              <p class="post-card__body">
+                今天想聊聊“被理解”这件事。你认为什么样的互动会让你更愿意留下来？
+              </p>
+              <div class="post-card__actions">
+                <span>❤ 128</span>
+                <span>💬 34</span>
+                <span>☆ 收藏</span>
+              </div>
+            </article>
+          </section>
+
+          <section class="content-section">
+            <div class="section-header">
+              <div>
+                <p class="section-kicker">Creators</p>
+                <h2>创作者推荐</h2>
+              </div>
+            </div>
+            <div class="creator-list">
+              <article class="creator-card">
+                <div class="avatar avatar--large">M</div>
+                <div class="creator-card__content">
+                  <h3>Mori</h3>
+                  <p>新人主播 · 擅长轻访谈和预约直播</p>
+                </div>
+                <button class="ghost-button" type="button">关注</button>
+              </article>
+              <article class="creator-card">
+                <div class="avatar avatar--large">L</div>
+                <div class="creator-card__content">
+                  <h3>Luna</h3>
+                  <p>长期创作者 · 社区互动质量高</p>
+                </div>
+                <button class="ghost-button" type="button">预约</button>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" data-screen="community">
+          <div class="page-head">
+            <div>
+              <p class="eyebrow">Community</p>
+              <h1>社区</h1>
+            </div>
+            <button class="icon-button" type="button">＋</button>
+          </div>
+
+          <div class="tab-row">
+            <button class="tab-chip is-selected" type="button">最新</button>
+            <button class="tab-chip" type="button">热门</button>
+            <button class="tab-chip" type="button">关注</button>
+            <button class="tab-chip" type="button">同城</button>
+            <button class="tab-chip" type="button">话题</button>
+          </div>
+
+          <section class="topic-banner">
+            <p>本周话题</p>
+            <h2>什么样的表达，让你更有安全感？</h2>
+            <button class="primary-button" type="button">参与讨论</button>
+          </section>
+
+          <div class="post-feed">
+            <article class="post-card">
+              <div class="post-card__header">
+                <div class="avatar">Y</div>
+                <div>
+                  <h3>Yuki</h3>
+                  <p>杭州 · 同城连接</p>
+                </div>
+              </div>
+              <p class="post-card__body">
+                今天第一次预约开播，有点紧张，但也很想认真聊聊“边界感”这个话题。
+              </p>
+              <div class="post-card__actions">
+                <span>❤ 86</span>
+                <span>💬 12</span>
+                <span>☆ 预约提醒</span>
+              </div>
+            </article>
+
+            <article class="post-card">
+              <div class="post-card__header">
+                <div class="avatar">R</div>
+                <div>
+                  <h3>Rae</h3>
+                  <p>成都 · 兴趣表达</p>
+                </div>
+              </div>
+              <p class="post-card__body">
+                同频最吸引我的地方是，大家更愿意认真交流，而不是只看热闹。
+              </p>
+              <div class="post-card__actions">
+                <span>❤ 59</span>
+                <span>💬 19</span>
+                <span>☆ 收藏</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="screen" data-screen="messages">
+          <div class="page-head">
+            <div>
+              <p class="eyebrow">Messages</p>
+              <h1>消息</h1>
+            </div>
+          </div>
+
+          <div class="message-grid">
+            <article class="quick-card">
+              <span>👤</span>
+              <h3>新增关注</h3>
+              <p>3 条新动态</p>
+            </article>
+            <article class="quick-card">
+              <span>❤</span>
+              <h3>点赞与收藏</h3>
+              <p>8 条未读</p>
+            </article>
+            <article class="quick-card">
+              <span>💬</span>
+              <h3>评论与提及</h3>
+              <p>2 条待查看</p>
+            </article>
+            <article class="quick-card">
+              <span>⏰</span>
+              <h3>预约提醒</h3>
+              <p>今晚 21:00 开播</p>
+            </article>
+          </div>
+
+          <div class="list-panel">
+            <article class="list-row">
+              <div class="list-row__icon">◎</div>
+              <div class="list-row__content">
+                <h3>系统通知</h3>
+                <p>同频社区规则已更新，点击查看</p>
+              </div>
+            </article>
+            <article class="list-row">
+              <div class="list-row__icon">¥</div>
+              <div class="list-row__content">
+                <h3>钱包服务</h3>
+                <p>你的会员将在 3 天后到期</p>
+              </div>
+            </article>
+            <article class="list-row">
+              <div class="list-row__icon">✦</div>
+              <div class="list-row__content">
+                <h3>官方助手</h3>
+                <p>本周话题已开放，欢迎参与讨论</p>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="screen" data-screen="profile">
+          <div class="page-head">
+            <div>
+              <p class="eyebrow">Profile</p>
+              <h1>我的</h1>
+            </div>
+            <button class="icon-button" type="button">⚙</button>
+          </div>
+
+          <section class="profile-card">
+            <div class="profile-card__top">
+              <div class="avatar avatar--xl">T</div>
+              <div>
+                <h2>同频体验官</h2>
+                <p>ID: InTune 1024</p>
+                <div class="profile-tags">
+                  <span>真实表达</span>
+                  <span>边界感</span>
+                </div>
+              </div>
+            </div>
+            <div class="profile-stats">
+              <div><strong>120</strong><span>粉丝</span></div>
+              <div><strong>56</strong><span>关注</span></div>
+              <div><strong>18</strong><span>收藏</span></div>
+            </div>
+          </section>
+
+          <section class="utility-grid">
+            <article class="utility-card utility-card--link" data-open-panel="wallet">
+              <p>钱包</p>
+              <h3>¥ 260.00</h3>
+              <span>查看余额与流水</span>
+            </article>
+            <article class="utility-card utility-card--link" data-open-panel="membership">
+              <p>会员</p>
+              <h3>V1 在途</h3>
+              <span>尊重真实，自在连接</span>
+            </article>
+            <article class="utility-card">
+              <p>主播认证</p>
+              <h3>申请中</h3>
+              <span>预计 1 个工作日审核</span>
+            </article>
+            <article class="utility-card">
+              <p>我的预约</p>
+              <h3>3 场</h3>
+              <span>今晚 21:00 有开播提醒</span>
+            </article>
+          </section>
+        </section>
+      </main>
+
+      <section class="overlay-panel" data-panel="wallet" aria-hidden="true">
+        <div class="overlay-panel__sheet">
+          <div class="overlay-panel__head">
+            <div>
+              <p class="eyebrow">Wallet</p>
+              <h2>钱包</h2>
+            </div>
+            <button class="icon-button overlay-close" data-close-panel="wallet" type="button">×</button>
+          </div>
+
+          <article class="wallet-hero">
+            <div>
+              <p>当前余额</p>
+              <h3>¥ 260.00</h3>
+              <span>流水清晰，权益透明，可随时查看记录</span>
+            </div>
+            <button class="ghost-button" type="button">流水记录</button>
+          </article>
+
+          <section class="overlay-section">
+            <div class="section-header">
+              <div>
+                <p class="section-kicker">Recharge</p>
+                <h2>充值档位</h2>
+              </div>
+            </div>
+            <div class="package-grid">
+              <button class="package-card" type="button">
+                <strong>¥ 30</strong>
+                <span>基础体验</span>
+              </button>
+              <button class="package-card is-selected" type="button">
+                <strong>¥ 68</strong>
+                <span>推荐选择</span>
+              </button>
+              <button class="package-card" type="button">
+                <strong>¥ 128</strong>
+                <span>长期常用</span>
+              </button>
+              <button class="package-card" type="button">
+                <strong>¥ 298</strong>
+                <span>会员配套</span>
+              </button>
+            </div>
+            <button class="primary-button primary-button--full" type="button">立即充值</button>
+          </section>
+
+          <section class="overlay-section overlay-note">
+            <p>充值说明</p>
+            <ul>
+              <li>充值前展示清晰金额与对应权益，不使用强刺激促销文案。</li>
+              <li>支持查看流水记录、充值说明与客服入口。</li>
+              <li>消费行为以清晰、自愿、可追踪为原则。</li>
+            </ul>
+          </section>
+        </div>
+      </section>
+
+      <section class="overlay-panel" data-panel="membership" aria-hidden="true">
+        <div class="overlay-panel__sheet">
+          <div class="overlay-panel__head">
+            <div>
+              <p class="eyebrow">Membership</p>
+              <h2>会员</h2>
+            </div>
+            <button class="icon-button overlay-close" data-close-panel="membership" type="button">×</button>
+          </div>
+
+          <article class="membership-hero">
+            <p>当前等级</p>
+            <h3>V1 在途</h3>
+            <span>让表达更从容，让连接更稳定</span>
+          </article>
+
+          <section class="overlay-section">
+            <div class="section-header">
+              <div>
+                <p class="section-kicker">Benefits</p>
+                <h2>会员权益</h2>
+              </div>
+            </div>
+            <div class="benefit-list">
+              <article class="benefit-item">
+                <strong>优先预约提醒</strong>
+                <span>重要直播与活动更早收到通知</span>
+              </article>
+              <article class="benefit-item">
+                <strong>精选内容优先推荐</strong>
+                <span>更高质量内容触达效率</span>
+              </article>
+              <article class="benefit-item">
+                <strong>社区活动优先参与</strong>
+                <span>话题、预约、专题活动优先进入</span>
+              </article>
+              <article class="benefit-item">
+                <strong>客服优先响应</strong>
+                <span>更稳定的服务体验</span>
+              </article>
+            </div>
+            <button class="primary-button primary-button--full" type="button">开通会员</button>
+          </section>
+
+          <section class="overlay-section overlay-note">
+            <p>会员说明</p>
+            <ul>
+              <li>会员价值强调体验效率与关系服务，不强调身份压迫感。</li>
+              <li>所有权益均需清晰列明，避免模糊承诺。</li>
+              <li>会员体系与品牌气质保持一致：克制、透明、可信。</li>
+            </ul>
+          </section>
+        </div>
+      </section>
+
+      <nav class="bottom-nav" aria-label="底部导航">
+        <button class="nav-item is-active" data-target="home" type="button">
+          <span>⌂</span>
+          <span>首页</span>
+        </button>
+        <button class="nav-item" data-target="community" type="button">
+          <span>◎</span>
+          <span>社区</span>
+        </button>
+        <button class="nav-item" data-target="messages" type="button">
+          <span>✉</span>
+          <span>消息</span>
+        </button>
+        <button class="nav-item" data-target="profile" type="button">
+          <span>◐</span>
+          <span>我的</span>
+        </button>
+      </nav>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: intune-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-intune}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-intune_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-intune}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - intune-pg-data:/var/lib/postgresql/data
+
+volumes:
+  intune-pg-data:

@@ -1,0 +1,642 @@
+// Prisma schema for InTune Platform
+// 数据库层约束优先原则：所有业务唯一性、引用完整性、枚举值在 DB 层保证
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// === Enums ===
+
+enum UserStatus {
+  active
+  frozen
+  deleted
+}
+
+enum AccessType {
+  public
+  single
+  package
+  membership
+}
+
+enum ContentStatus {
+  draft
+  pending_review
+  scheduled
+  published
+  offline
+  archived
+}
+
+enum ProductType {
+  single
+  package
+  membership
+}
+
+enum ProductStatus {
+  active
+  inactive
+}
+
+enum PackageStatus {
+  draft
+  published
+  offline
+}
+
+enum CategoryStatus {
+  active
+  inactive
+}
+
+enum HomepageVersionStatus {
+  draft
+  published
+  archived
+}
+
+enum BannerStatus {
+  draft
+  scheduled
+  active
+  inactive
+}
+
+enum BannerTargetType {
+  content
+  package
+  category
+  external
+}
+
+enum OrderStatus {
+  pending
+  processing
+  paid
+  failed
+  refunded
+  cancelled
+  expired
+}
+
+enum ResourceType {
+  content
+  package
+  membership_channel
+}
+
+enum EntitlementStatus {
+  active
+  revoked
+  expired
+}
+
+enum TicketStatus {
+  open
+  in_progress
+  resolved
+  closed
+}
+
+enum TicketPriority {
+  low
+  normal
+  high
+  urgent
+}
+
+enum TicketCategory {
+  payment
+  entitlement
+  access
+  refund
+  other
+}
+
+enum TicketEventType {
+  created
+  assigned
+  note_internal
+  note_public
+  status_changed
+  resolved
+  closed
+  action_taken
+}
+
+enum AdminRole {
+  super_admin
+  operator
+  customer_service
+  finance
+  auditor
+  editor
+}
+
+enum PaymentMethod {
+  telegram_stars
+  usdt_trc20_external
+  manual
+}
+
+enum PaymentTransactionStatus {
+  detected
+  confirming
+  confirmed
+  rejected
+  refunded
+}
+
+enum PaymentAddressStatus {
+  available
+  assigned
+  retired
+}
+
+// === Core Tables ===
+
+model User {
+  id              String    @id @default(uuid())
+  telegramUserId  BigInt    @unique @map("telegram_user_id")
+  username        String?
+  displayName     String    @map("display_name")
+  photoUrl        String?   @map("photo_url")
+  status          UserStatus @default(active)
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  orders          Order[]
+  entitlements    Entitlement[]
+  telegramInvites TelegramInvite[]
+  supportTickets  SupportTicket[]
+  authoredTicketEvents TicketEvent[]
+
+  @@index([status])
+  @@map("users")
+}
+
+model Category {
+  id         String         @id @default(uuid())
+  name       String
+  slug       String         @unique
+  iconUrl    String?        @map("icon_url")
+  sortOrder  Int            @default(0) @map("sort_order")
+  status     CategoryStatus @default(active)
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  contents   ContentCategory[]
+  banners    Banner[]
+
+  @@index([status, sortOrder])
+  @@map("categories")
+}
+
+model Banner {
+  id           String           @id @default(uuid())
+  title        String
+  description  String?
+  imageUrl     String?          @map("image_url")
+  actionLabel  String           @default("查看") @map("action_label")
+  slot         String           @default("home_top") @map("slot") @db.VarChar(32)
+  targetType   BannerTargetType @map("target_type")
+  targetId     String?          @map("target_id")
+  externalUrl  String?          @map("external_url")
+  sortOrder    Int              @default(0) @map("sort_order")
+  startsAt     DateTime?        @map("starts_at")
+  endsAt       DateTime?        @map("ends_at")
+  status       BannerStatus     @default(draft)
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  categoryId   String?          @map("category_id")
+  category     Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([status, slot, sortOrder])
+  @@index([startsAt, endsAt])
+  @@map("banners")
+}
+
+model ContentPackage {
+  id         String        @id @default(uuid())
+  title      String
+  coverUrl   String?       @map("cover_url")
+  channelId  BigInt?       @map("channel_id")
+  productId  String?       @unique @map("product_id")
+  status     PackageStatus @default(draft)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  product    Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
+  contents   Content[]
+
+  @@index([status])
+  @@map("content_packages")
+}
+
+model Product {
+  id            String        @id @default(uuid())
+  type          ProductType
+  title         String
+  priceMinor    BigInt        @map("price_minor")
+  currency      String        @default("XTR")
+  durationDays  Int?          @map("duration_days")
+  status        ProductStatus @default(active)
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  contents      Content[]
+  contentPackage ContentPackage?
+  orders        Order[]
+
+  @@index([status, type])
+  @@map("products")
+}
+
+model Content {
+  id                 String         @id @default(uuid())
+  title              String
+  coverUrl           String?        @map("cover_url")
+  thumbnailUrl       String?        @map("thumbnail_url")
+  description        String?
+  tags               String[]       @default([])
+  previewUrl         String?        @map("preview_url")
+  durationSeconds    Int?           @map("duration_seconds")
+  accessType         AccessType     @default(single) @map("access_type")
+  status             ContentStatus  @default(draft)
+  isRecommended      Boolean        @default(false) @map("is_recommended")
+  isFeatured         Boolean        @default(false) @map("is_featured")
+  isNewArrival       Boolean        @default(false) @map("is_new_arrival")
+  featuredSort       Int?           @map("featured_sort")
+  sortOrder          Int            @default(0) @map("sort_order")
+  recommendStartsAt  DateTime?      @map("recommend_starts_at")
+  recommendEndsAt    DateTime?      @map("recommend_ends_at")
+  scheduledAt        DateTime?      @map("scheduled_at")
+  channelId          BigInt?        @map("channel_id")
+  packageId          String?        @map("package_id")
+  productId          String?        @map("product_id")
+  publishedAt        DateTime?      @map("published_at")
+  lastEditorId       String?        @map("last_editor_id")
+  version            Int            @default(0)
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @updatedAt @map("updated_at")
+
+  package            ContentPackage? @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  product            Product?       @relation(fields: [productId], references: [id], onDelete: SetNull)
+  lastEditor         AdminUser?     @relation("ContentEditor", fields: [lastEditorId], references: [id], onDelete: SetNull)
+  categories         ContentCategory[]
+
+  @@index([status, accessType])
+  @@index([isFeatured, featuredSort])
+  @@index([isRecommended, recommendStartsAt, recommendEndsAt])
+  @@index([sortOrder])
+  @@index([packageId])
+  @@map("contents")
+}
+
+model ContentCategory {
+  contentId    String   @map("content_id")
+  categoryId   String   @map("category_id")
+  displayOrder Int      @default(0) @map("display_order")
+  assignedAt   DateTime @default(now()) @map("assigned_at")
+  assignedBy   String?  @map("assigned_by")
+
+  content      Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  category     Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  assigner     AdminUser? @relation(fields: [assignedBy], references: [id], onDelete: SetNull)
+
+  @@id([contentId, categoryId])
+  @@index([categoryId])
+  @@index([displayOrder])
+  @@map("content_categories")
+}
+
+model Order {
+  id                    String          @id @default(uuid())
+  orderNo               String          @unique @map("order_no")
+  userId                String          @map("user_id")
+  productId             String          @map("product_id")
+  amountMinor           BigInt          @map("amount_minor")
+  currency              String          @default("XTR")
+  paymentMethod         PaymentMethod   @default(telegram_stars) @map("payment_method")
+  paymentProvider       String          @default("telegram_stars") @map("payment_provider")
+  providerOrderId       String?         @unique @map("provider_order_id")
+  paymentPayloadHmac    String?         @unique @map("payment_payload_hmac") @db.VarChar(64)
+  telegramUserIdHmac    String?         @map("telegram_user_id_hmac") @db.VarChar(64)
+  expiresAt             DateTime?       @map("expires_at")
+  status                OrderStatus     @default(pending)
+  paidAt                DateTime?       @map("paid_at")
+  rejectedAt            DateTime?       @map("rejected_at")
+  rejectReason          String?         @map("reject_reason") @db.VarChar(128)
+  refundedAt            DateTime?       @map("refunded_at")
+  refundReason          String?         @map("refund_reason") @db.VarChar(1000)
+  refundAdminId         String?         @map("refund_admin_id") @db.VarChar(64)
+  createdAt             DateTime        @default(now()) @map("created_at")
+  updatedAt             DateTime        @updatedAt @map("updated_at")
+
+  user                  User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  product               Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  entitlements          Entitlement[]
+  supportTickets        SupportTicket[]
+  paymentTransactions   PaymentTransaction[]
+  usdtPaymentAddress    PaymentAddress? @relation(fields: [usdtPaymentAddressId], references: [id])
+  usdtPaymentAddressId  String?         @map("usdt_payment_address_id")
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([paymentMethod, status, createdAt])
+  @@index([expiresAt, status])
+  @@index([usdtPaymentAddressId, status])
+  @@map("orders")
+}
+
+model PaymentTransaction {
+  id                  String                    @id @default(uuid())
+  orderId             String                    @map("order_id")
+  provider            String                    @map("provider")
+  status              PaymentTransactionStatus  @default(detected)
+  providerChargeId    String?                   @unique @map("provider_charge_id") @db.VarChar(256)
+  network             String?                   @map("network") @db.VarChar(32)
+  tokenContract       String?                   @map("token_contract") @db.VarChar(64)
+  toAddress           String?                   @map("to_address") @db.VarChar(64)
+  fromAddress         String?                   @map("from_address") @db.VarChar(64)
+  amountMinor         BigInt                    @map("amount_minor")
+  currency            String                    @default("XTR") @db.VarChar(16)
+  confirmations       Int?                      @map("confirmations")
+  confirmationsTarget Int?                      @map("confirmations_target")
+  rawEventHash        String                    @unique @map("raw_event_hash") @db.VarChar(64)
+  telegramPayloadHmac String?                   @map("telegram_payload_hmac") @db.VarChar(64)
+  blockNumber         BigInt?                   @map("block_number")
+  receivedAt          DateTime                  @default(now()) @map("received_at")
+  confirmedAt         DateTime?                 @map("confirmed_at")
+  rejectedAt          DateTime?                 @map("rejected_at")
+  rejectReason        String?                   @map("reject_reason") @db.VarChar(128)
+  refundedAt          DateTime?                 @map("refunded_at")
+  refundReason        String?                   @map("refund_reason") @db.VarChar(1000)
+  refundAdminId       String?                   @map("refund_admin_id") @db.VarChar(64)
+  createdAt           DateTime                  @default(now()) @map("created_at")
+  updatedAt           DateTime                  @updatedAt @map("updated_at")
+
+  order               Order                     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, createdAt])
+  @@index([status, createdAt])
+  @@index([provider, status, createdAt])
+  @@index([toAddress, status])
+  @@index([blockNumber])
+  @@map("payment_transactions")
+}
+
+model PaymentAddress {
+  id               String               @id @default(uuid())
+  network          String               @default("tron_trc20") @map("network") @db.VarChar(32)
+  address          String               @unique @map("address") @db.VarChar(64)
+  addressMasked    String               @map("address_masked") @db.VarChar(16)
+  status           PaymentAddressStatus @default(available) @map("status")
+  assignedOrderId  String?              @unique @map("assigned_order_id")
+  assignedAt       DateTime?            @map("assigned_at")
+  releaseAt        DateTime?            @map("release_at")
+  retiredAt        DateTime?            @map("retired_at")
+  retireReason     String?              @map("retire_reason") @db.VarChar(128)
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+
+  assignedOrders   Order[]
+
+  @@index([network, status])
+  @@index([status, releaseAt])
+  @@map("payment_addresses")
+}
+
+model Entitlement {
+  id             String            @id @default(uuid())
+  userId         String            @map("user_id")
+  resourceType   ResourceType      @map("resource_type")
+  resourceId     String            @map("resource_id")
+  sourceOrderId  String?           @map("source_order_id")
+  startsAt       DateTime          @default(now()) @map("starts_at")
+  expiresAt      DateTime?         @map("expires_at")
+  status         EntitlementStatus @default(active)
+  notify3dAt     DateTime?         @map("notify_3d_at")
+  notifyExpiredAt DateTime?        @map("notify_expired_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceOrder    Order?            @relation(fields: [sourceOrderId], references: [id], onDelete: SetNull)
+  telegramInvites TelegramInvite[]
+  supportTickets SupportTicket[]
+
+  @@index([userId, status])
+  @@index([resourceType, resourceId])
+  @@index([expiresAt, status])
+  @@index([notify3dAt, expiresAt, status])
+  @@index([notifyExpiredAt, expiresAt, status])
+  @@map("entitlements")
+}
+
+model TelegramInvite {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  entitlementId  String?   @map("entitlement_id")
+  channelId      BigInt    @map("channel_id")
+  inviteLink     String    @map("invite_link")
+  expiresAt      DateTime  @map("expires_at")
+  usedAt         DateTime? @map("used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entitlement    Entitlement? @relation(fields: [entitlementId], references: [id], onDelete: SetNull)
+
+  @@index([entitlementId])
+  @@index([expiresAt])
+  @@map("telegram_invites")
+}
+
+model AdminUser {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  passwordHash String  @map("password_hash")
+  displayName String   @map("display_name")
+  role      AdminRole @default(operator)
+  status    String    @default("active")
+  lastLoginAt DateTime? @map("last_login_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  auditLogs AdminAuditLog[]
+  editedContents Content[] @relation("ContentEditor")
+  publishedHomepages HomepageVersion[]
+  assignedContentCategories ContentCategory[]
+  assignedSupportTickets SupportTicket[]
+  authoredTicketEvents TicketEvent[]
+
+  @@map("admin_users")
+}
+
+model AdminAuditLog {
+  id          String   @id @default(uuid())
+  adminId     String   @map("admin_id")
+  action      String
+  objectType  String   @map("object_type")
+  objectId    String?  @map("object_id")
+  beforeValue Json?    @map("before_value")
+  afterValue  Json?    @map("after_value")
+  reason      String?
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  admin       AdminUser @relation(fields: [adminId], references: [id], onDelete: Restrict)
+
+  @@index([adminId, createdAt])
+  @@index([action, objectType, createdAt])
+  @@map("admin_audit_logs")
+}
+
+model HomepageVersion {
+  id              String                  @id @default(uuid())
+  versionLabel    String?                 @map("version_label")
+  status          HomepageVersionStatus   @default(draft)
+  config          Json
+  publishedAt     DateTime?               @map("published_at")
+  publishedBy     String?                 @map("published_by")
+  note            String?
+  publishedNote   String?                 @map("published_note")
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+
+  publisher       AdminUser?              @relation(fields: [publishedBy], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  // DB 层部分唯一索引（迁移 SQL 中执行）：
+  // CREATE UNIQUE INDEX homepage_versions_one_published
+  //   ON "homepage_versions" ("status")
+  //   WHERE "status" = 'published';
+  // 允许多个 draft + archived，但只允许一个 published
+  @@map("homepage_versions")
+}
+
+model SupportTicket {
+  id             String         @id @default(uuid())
+  ticketNo       String         @unique @map("ticket_no")
+  userId         String         @map("user_id")
+  title          String         @db.VarChar(200)
+  category       TicketCategory
+  priority       TicketPriority @default(normal)
+  status         TicketStatus   @default(open)
+  description    String?        @db.Text
+  telegramUserId BigInt?        @map("telegram_user_id")
+  orderId        String?        @map("order_id")
+  entitlementId  String?        @map("entitlement_id")
+  assignedToId   String?        @map("assigned_to_id")
+  resolvedAt     DateTime?      @map("resolved_at")
+  closedAt       DateTime?      @map("closed_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceOrder    Order?         @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  entitlement    Entitlement?   @relation(fields: [entitlementId], references: [id], onDelete: SetNull)
+  assignedTo     AdminUser?     @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  events         TicketEvent[]
+
+  @@index([userId, status])
+  @@index([status, priority, createdAt])
+  @@index([assignedToId, status])
+  @@index([orderId])
+  @@index([entitlementId])
+  @@index([telegramUserId])
+  @@map("support_tickets")
+}
+
+model TicketEvent {
+  id         String          @id @default(uuid())
+  ticketId   String          @map("ticket_id")
+  type       TicketEventType
+  authorType String          @map("author_type") // "user" | "admin" | "system"
+  authorUserId  String?      @map("author_user_id")
+  authorAdminId String?      @map("author_admin_id")
+  note       String?         @db.Text
+  actionRef  String?         @map("action_ref")  // 关联 action id，如 entitlement:grant 生成的 entitlementId
+  oldStatus  TicketStatus?   @map("old_status")
+  newStatus  TicketStatus?   @map("new_status")
+  createdAt  DateTime        @default(now()) @map("created_at")
+
+  ticket     SupportTicket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorUser  User?          @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  authorAdmin AdminUser?     @relation(fields: [authorAdminId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@index([authorAdminId])
+  @@index([authorUserId])
+  @@map("ticket_events")
+}
+
+enum AdminManagedChatSource {
+  auto_scan
+  manual_add
+}
+
+model AdminManagedChannel {
+  // 【Phase 0-1 已锁定】频道 ID 加密存储
+  //   id                   = UUID 主键（不可反推 chatId；同时禁止把 UUID 写进审计日志当作可解密引用）
+  //   deprecatedChatIdBig  = 过渡明文列（下一迁移 000X 必 DROP；仅用于迁移期数据回滚对照）
+  //   chatIdCiphertextB64  = AES-256-GCM 密文列（base64: nonce12 || tag16 || ciphertext）
+  //   chatIdHmac           = HMAC-SHA-256 索引键（UNIQUE，用于 where 精准查找 / 去重）
+  id                  String                  @id @default(uuid())
+  deprecatedChatIdBig BigInt?                 @map("deprecated_chat_id_big") @db.BigInt
+  chatIdCiphertextB64 String                  @map("chat_id_ciphertext_b64") @db.Text
+  chatIdHmac          String                  @map("chat_id_hmac") @db.VarChar(64)
+  chatType            String                  @map("chat_type") // channel | supergroup | group | private
+  title               String?
+  username            String?
+  memberCount         Int?                    @map("member_count")
+  avatarFileId        String?                 @map("avatar_file_id")
+  isPrivate           Boolean                 @default(true) @map("is_private")
+  lastEventAt         DateTime?               @map("last_event_at")
+  refreshedAt         DateTime?               @map("refreshed_at")
+  source              AdminManagedChatSource  @default(auto_scan)
+  createdAt           DateTime                @default(now()) @map("created_at")
+  updatedAt           DateTime                @updatedAt @map("updated_at")
+
+  @@unique([chatIdHmac], map: "admin_managed_channels_chat_id_hmac_key")
+  @@index([source])
+  @@index([chatType])
+  @@index([refreshedAt])
+  @@map("admin_managed_channels")
+}
+
+enum TelegramUpdateProcessStatus {
+  pending
+  processing
+  processed
+  failed
+}
+
+model TelegramUpdateLog {
+  id          String                       @id @default(uuid())
+  updateId    BigInt                       @map("update_id")
+  botKey      String                       @default("default") @map("bot_key") @db.VarChar(64)
+  status      TelegramUpdateProcessStatus  @default(pending)
+  eventType   String?                      @map("event_type") @db.VarChar(32)
+  chatIdHmac  String?                      @map("chat_id_hmac") @db.VarChar(64)
+  chatIdMasked String?                     @map("chat_id_masked") @db.VarChar(32)
+  errorClass  String?                      @map("error_class") @db.VarChar(64)
+  startedAt   DateTime?                    @map("started_at")
+  endedAt     DateTime?                    @map("ended_at")
+  createdAt   DateTime                     @default(now()) @map("created_at")
+  updatedAt   DateTime                     @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@index([botKey, createdAt])
+  @@unique([updateId, botKey])
+  @@map("telegram_update_logs")
+}

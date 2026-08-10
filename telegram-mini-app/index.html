@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#13111c" />
+    <title>同频 · 精选点播</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="backButton" class="icon-button back-button" type="button" aria-label="返回" style="display:none">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          </button>
+          <div>
+            <p class="eyebrow">INTUNE · MEMBER LIBRARY</p>
+            <h1 id="pageTitle">同频点播</h1>
+          </div>
+        </div>
+        <button id="profileButton" class="profile" type="button" aria-label="我的">
+          <span id="profileInitial">访</span>
+        </button>
+      </header>
+
+      <section id="homeView" class="view">
+        <section class="notice" aria-label="访问说明">
+          <span class="notice-dot"></span>
+          <p>仅限已完成年龄声明的成员访问</p>
+        </section>
+
+        <section class="member-card" id="memberCard">
+          <div>
+            <p class="member-label">当前会员状态</p>
+            <strong id="membershipStatus">正在核验…</strong>
+            <p id="membershipHint">正在向同频服务器确认你的访问权限</p>
+          </div>
+          <div class="member-actions">
+            <button id="openOrdersButton" class="subtle-button" type="button">我的订单</button>
+            <button id="openEntitlementsButton" class="subtle-button" type="button">我的权益</button>
+            <button id="refreshButton" class="subtle-button" type="button">刷新</button>
+          </div>
+        </section>
+
+        <section id="bannerList" class="banner-list" aria-label="运营推荐位"></section>
+
+        <nav id="categoryList" class="category-list" aria-label="内容分类"></nav>
+
+        <section class="section-heading">
+          <div>
+            <p class="eyebrow">CURATED</p>
+            <h2 id="sectionTitle">推荐内容</h2>
+          </div>
+          <span id="contentCount">0 项</span>
+        </section>
+
+        <section id="videoList" class="video-list" aria-live="polite"></section>
+
+        <section class="community-rule">
+          <strong>同频社区公约</strong>
+          <p>尊重、边界、自愿与隐私，是进入每一次连接的前提。</p>
+        </section>
+      </section>
+
+      <section id="contentDetailView" class="view" style="display:none" data-view="content">
+        <article id="contentDetail" class="detail-article"></article>
+      </section>
+
+      <section id="ordersView" class="view" style="display:none" data-view="orders">
+        <div class="orders-toolbar">
+          <div class="segment" id="ordersStatusSegment" role="tablist">
+            <button type="button" class="seg-item active" data-status="">全部</button>
+            <button type="button" class="seg-item" data-status="pending">待支付</button>
+            <button type="button" class="seg-item" data-status="paid">已支付</button>
+            <button type="button" class="seg-item" data-status="refunded">已退款</button>
+          </div>
+        </div>
+        <section id="ordersList" class="orders-list"></section>
+        <div style="text-align:center; margin-top: 16px">
+          <button id="loadMoreOrdersButton" class="subtle-button" type="button" style="display:none">加载更多</button>
+        </div>
+      </section>
+
+      <section id="entitlementsView" class="view" style="display:none" data-view="entitlements">
+        <div id="entitlementsSummary" class="entitlements-summary"></div>
+        <div id="entitlementsMemberships" class="entitlements-block"></div>
+        <div id="entitlementsPackages" class="entitlements-block"></div>
+        <div id="entitlementsContents" class="entitlements-block"></div>
+      </section>
+    </main>
+
+    <dialog id="accountDialog" class="dialog">
+      <button id="closeDialog" class="close" type="button" aria-label="关闭">×</button>
+      <p class="eyebrow">YOUR ACCOUNT</p>
+      <h2 id="accountName">访客</h2>
+      <dl>
+        <div><dt>Telegram ID</dt><dd id="accountId">未获取</dd></div>
+        <div><dt>权限状态</dt><dd id="accountAccess">核验中</dd></div>
+      </dl>
+      <div class="dialog-actions">
+        <button id="navOrdersButton" type="button" class="primary-ghost">查看我的订单</button>
+        <button id="navEntitlementsButton" type="button" class="primary-ghost">查看我的权益</button>
+      </div>
+      <p class="dialog-tip">同频仅保存提供服务所需的最少账户信息。不会从 Mini App 自动获取手机号。</p>
+    </dialog>
+
+    <dialog id="createOrderDialog" class="dialog">
+      <button id="closeOrderDialog" class="close" type="button" aria-label="关闭">×</button>
+      <p class="eyebrow">CREATE ORDER</p>
+      <h3 id="coTitle">确认创建订单</h3>
+      <div class="order-preview" id="coPreview"></div>
+      <div class="warning-box">
+        <p>当前为人工收款阶段，创建订单后订单号将保存为<strong>待支付</strong>。</p>
+        <p>请联系同频客服或运营完成转账，提供以下订单号，运营确认到账后将自动为你解锁对应权益：</p>
+        <div id="coOrderNo" class="order-no-box" style="display:none"></div>
+      </div>
+      <div class="dialog-actions">
+        <button id="coCancel" type="button" class="primary-ghost">取消</button>
+        <button id="coConfirm" type="button" class="primary-solid">创建订单并生成订单号</button>
+      </div>
+    </dialog>
+
+    <template id="videoTemplate">
+      <article class="video-card">
+        <div class="cover"><span class="play-mark">▶</span><span class="duration"></span></div>
+        <div class="video-copy">
+          <p class="tag"></p>
+          <h3></h3>
+          <p class="description"></p>
+          <button class="open-button" type="button"></button>
+        </div>
+      </article>
+    </template>
+
+    <template id="orderTemplate">
+      <article class="order-card">
+        <header class="order-header">
+          <div>
+            <p class="order-no-label">订单号</p>
+            <h4 class="order-no" style="margin:0"></h4>
+          </div>
+          <div class="order-status"></div>
+        </header>
+        <div class="order-body">
+          <div class="order-cover" aria-hidden="true"></div>
+          <div class="order-copy">
+            <h5 class="product-title" style="margin:0"></h5>
+            <p class="product-meta" style="margin:4px 0 0"></p>
+          </div>
+          <div class="order-amount">
+            <div class="amount"></div>
+            <p class="amount-sub"></p>
+          </div>
+        </div>
+        <footer class="order-footer">
+          <div class="order-time"></div>
+          <div class="order-cta"></div>
+        </footer>
+      </article>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

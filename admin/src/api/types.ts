@@ -1,0 +1,732 @@
+export type AdminRole = "super_admin" | "operator" | "customer_service" | "finance" | "auditor" | "editor";
+
+export type AdminMe = {
+  id: string;
+  email: string;
+  displayName?: string;
+  role: AdminRole;
+};
+
+export type OrderStatus = "pending" | "processing" | "paid" | "failed" | "refunded" | "cancelled" | "expired";
+
+export type TicketStatus = "open" | "in_progress" | "resolved" | "closed";
+export type TicketPriority = "low" | "normal" | "high" | "urgent";
+export type TicketCategory = "payment" | "entitlement" | "access" | "refund" | "other";
+export type TicketEventType =
+  | "created"
+  | "assigned"
+  | "note_internal"
+  | "note_public"
+  | "status_changed"
+  | "resolved"
+  | "closed"
+  | "action_taken";
+
+export type ProductType = "single" | "package" | "membership";
+
+export type ResourceType = "content" | "package" | "membership_channel";
+
+export type EntitlementStatus = "active" | "revoked" | "expired";
+
+export type ProductBrief = {
+  id: string;
+  type: ProductType;
+  title: string;
+  priceMinor: string | null;
+  currency: string;
+  durationDays: number | null;
+};
+
+export type UserStatus = "active" | "suspended" | "deleted";
+
+export type UserBrief = {
+  id: string;
+  telegramUserId: string | null;
+  username: string | null;
+  displayName: string;
+  photoUrl: string | null;
+  status: UserStatus;
+  avatarUrl?: string | null;
+};
+
+export type Entitlement = {
+  id: string;
+  resourceType: ResourceType;
+  resourceId: string;
+  status: EntitlementStatus;
+  startsAt: string;
+  expiresAt: string | null;
+};
+
+export type OrderItem = {
+  id: string;
+  orderNo: string;
+  status: OrderStatus;
+  product: ProductBrief;
+  amountMinor: string;
+  currency: string;
+  paymentProvider: string;
+  providerOrderId: string | null;
+  paidAt: string | null;
+  createdAt: string;
+  user: UserBrief;
+  entitlements: Entitlement[];
+};
+
+export type Pagination<T> = {
+  items: T[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+};
+
+export type AdminOrdersFilter = {
+  page?: number;
+  pageSize?: number;
+  status?: OrderStatus;
+  orderNo?: string;
+  telegramUserId?: string;
+};
+
+export type MarkPaidResp = {
+  orderNo: string;
+  status: OrderStatus;
+  paidAt: string | null;
+  idempotent: boolean;
+  entitlements: Array<{
+    id: string;
+    resourceType: ResourceType;
+    resourceId: string;
+    status: EntitlementStatus;
+    expiresAt: string | null;
+  }>;
+};
+
+export type AdminAuditLog = {
+  id: string;
+  action: string;
+  reason: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  admin: {
+    id: string;
+    email: string;
+    displayName: string;
+    role: AdminRole;
+  } | null;
+};
+
+export type ContentStatus = "draft" | "in_review" | "scheduled" | "published" | "archived";
+export type BannerStatus = "draft" | "active" | "inactive" | "scheduled" | "archived";
+export type BannerTargetType = "none" | "content" | "category" | "product" | "package" | "external";
+export type HomepageVersionStatus = "draft" | "published" | "archived";
+
+export type CategoryBrief = {
+  id: string;
+  name: string;
+  slug: string;
+  displayOrder?: number;
+};
+
+export type ProductInContent = {
+  id: string;
+  title: string;
+  priceMinor?: string;
+  currency?: string;
+};
+
+export type PackageInContent = {
+  id: string;
+  title: string;
+};
+
+export type EditorBrief = {
+  id: string;
+  email: string;
+  displayName?: string;
+};
+
+export type ContentItem = {
+  id: string;
+  title: string;
+  coverUrl: string | null;
+  thumbnailUrl: string | null;
+  description: string | null;
+  tags: string[];
+  previewUrl: string | null;
+  durationSeconds: number | null;
+  accessType: "public" | "single" | "membership" | "package";
+  status: ContentStatus;
+  isRecommended: boolean;
+  isFeatured: boolean;
+  isNewArrival: boolean;
+  featuredSort: number | null;
+  sortOrder: number;
+  recommendStartsAt: string | null;
+  recommendEndsAt: string | null;
+  scheduledAt: string | null;
+  channelId: string | null;
+  packageId: string | null;
+  productId: string | null;
+  publishedAt: string | null;
+  lastEditorId: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  categories: CategoryBrief[];
+  product?: ProductInContent | null;
+  package?: PackageInContent | null;
+  lastEditor?: EditorBrief | null;
+};
+
+export type ContentListResp = {
+  total: number;
+  page: number;
+  limit: number;
+  data: ContentItem[];
+};
+
+export type ContentListFilter = {
+  page?: number;
+  limit?: number;
+  status?: ContentStatus;
+  categoryId?: string;
+  q?: string;
+  accessType?: string;
+};
+
+export type CreateContentInput = {
+  title: string;
+  coverUrl?: string | null;
+  thumbnailUrl?: string | null;
+  description?: string | null;
+  tags?: string[];
+  previewUrl?: string | null;
+  durationSeconds?: number | null;
+  accessType?: "public" | "single" | "membership" | "package";
+  isRecommended?: boolean;
+  isFeatured?: boolean;
+  isNewArrival?: boolean;
+  featuredSort?: number | null;
+  sortOrder?: number;
+  recommendStartsAt?: string | null;
+  recommendEndsAt?: string | null;
+  scheduledAt?: string | null;
+  packageId?: string | null;
+  productId?: string | null;
+  categoryIds?: string[];
+  reason?: string;
+};
+
+export type UpdateContentInput = Partial<CreateContentInput> & {
+  reason?: string;
+};
+
+export type CategoryItem = {
+  id: string;
+  name: string;
+  slug: string;
+  iconUrl: string | null;
+  sortOrder: number;
+  status: "active" | "inactive" | "archived";
+  createdAt: string;
+  updatedAt: string;
+  contentCount: number;
+};
+
+export type CreateCategoryInput = {
+  name: string;
+  slug: string;
+  iconUrl?: string | null;
+  sortOrder?: number;
+  status?: "active" | "inactive" | "archived";
+  reason?: string;
+};
+
+export type UpdateCategoryInput = Partial<CreateCategoryInput> & { reason?: string };
+
+export type BannerItem = {
+  id: string;
+  title: string;
+  description: string | null;
+  imageUrl: string | null;
+  actionLabel: string;
+  slot: string;
+  targetType: BannerTargetType;
+  targetId: string | null;
+  externalUrl: string | null;
+  status: BannerStatus;
+  sortOrder: number;
+  startsAt: string | null;
+  endsAt: string | null;
+  categoryId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateBannerInput = {
+  title: string;
+  description?: string | null;
+  imageUrl?: string | null;
+  actionLabel?: string;
+  slot?: string;
+  targetType?: BannerTargetType;
+  targetId?: string | null;
+  externalUrl?: string | null;
+  status?: BannerStatus;
+  sortOrder?: number;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  categoryId?: string | null;
+  reason?: string;
+};
+
+export type UpdateBannerInput = Partial<CreateBannerInput> & { reason?: string };
+
+export type HomepageConfig = {
+  bannerIds: string[];
+  recommendContentIds: string[];
+  featuredContentIds: string[];
+  categoryOrderIds: string[];
+};
+
+export type HomepageVersionItem = {
+  id: string;
+  versionLabel: string | null;
+  status: HomepageVersionStatus;
+  config: HomepageConfig;
+  publishedAt: string | null;
+  publishedBy: string | null;
+  note: string | null;
+  publishedNote: string | null;
+  createdAt: string;
+  updatedAt: string;
+  publisher?: { id: string; displayName: string; email: string } | null;
+};
+
+export type PutHomepageDraftInput = {
+  versionLabel?: string | null;
+  note?: string | null;
+  config: HomepageConfig;
+  reason?: string;
+};
+
+export type PublishHomepageInput = {
+  id: string;
+  versionLabel?: string | null;
+  publishedNote?: string | null;
+  reason?: string;
+};
+
+export type PublishedHomepageResp = {
+  published: HomepageVersionItem | null;
+  recent: HomepageVersionItem[];
+};
+
+export type ApiHomeBanner = {
+  id: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+  actionLabel: string;
+  targetType: "content" | "category" | "product" | "package" | "external" | null;
+  targetId: string | null;
+  externalUrl?: string;
+  imageUrl: string | null;
+};
+
+export type ApiHomeContent = {
+  id: string;
+  title: string;
+  coverUrl: string | null;
+  description: string;
+  duration: string | null;
+  durationSeconds: number | null;
+  accessType: string;
+  access: "public" | "member";
+  isFeatured: boolean;
+  isRecommended: boolean;
+  tag: string;
+  tags: string[];
+  categoryId: string;
+  categoryName?: string;
+  priceMinor?: string;
+  priceCurrency?: string;
+  publishedAt?: string;
+  unlocked?: boolean;
+};
+
+export type ApiHomeCategory = {
+  id: string;
+  name: string;
+  slug: string;
+  iconUrl: string | null;
+  _system?: boolean;
+  sortOrder: number;
+  publishedContentCount?: number;
+};
+
+export type ApiHomeResp = {
+  unlocked: boolean;
+  versionId: string | null;
+  versionLabel: string | null;
+  publishedAt: string | null;
+  banners: ApiHomeBanner[];
+  categories: ApiHomeCategory[];
+  contents: ApiHomeContent[];
+  meta: {
+    generatedAt: string;
+    entitlementCount: number;
+    hasMembership: boolean;
+  };
+};
+
+// ==========================================================================
+// Sprint 2: Entitlements + Users + Support Tickets
+// ==========================================================================
+
+export type EntitlementSourceOrder = {
+  id: string;
+  orderNo: string;
+  status: OrderStatus;
+  amountMinor: string | null;
+  currency?: string;
+  product?: any;
+  paidAt?: string | null;
+};
+
+export type EntitlementInvite = {
+  id: string;
+  inviteLink?: string;
+  expiresAt: string | null;
+  usedAt?: string | null;
+};
+
+export type EntitlementItem = {
+  id: string;
+  userId: string;
+  resourceType: ResourceType;
+  resourceId: string;
+  status: EntitlementStatus;
+  startsAt: string;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  sourceOrder: EntitlementSourceOrder | null;
+  user: UserBrief | null;
+  channelInvite: EntitlementInvite | null;
+};
+
+export type AdminEntitlementsFilter = {
+  page?: number;
+  pageSize?: number;
+  status?: EntitlementStatus;
+  resourceType?: ResourceType;
+  userId?: string;
+  telegramUserId?: string;
+  orderNo?: string;
+  resourceId?: string;
+};
+
+export type CancelOrderResp = {
+  orderNo: string;
+  status: OrderStatus;
+  idempotent: boolean;
+};
+
+export type RefundOrderResp = {
+  orderNo: string;
+  status: OrderStatus;
+  idempotent: boolean;
+  revokedEntitlements: EntitlementItem[];
+  channelKicks: { entitlementId: string; success: boolean; error?: string }[];
+  userNotified: boolean;
+  notifyError?: string;
+};
+
+export type ResendInviteResp = {
+  ok: true;
+  entitlementId: string;
+  invite: EntitlementInvite;
+};
+
+export type GrantEntitlementInput = {
+  userId: string;
+  resourceType: ResourceType;
+  resourceId: string;
+  reason: string;
+  durationDays?: number;
+  sourceOrderId?: string;
+  ticketId?: string;
+};
+
+export type GrantEntitlementResp = {
+  ok: true;
+  entitlement: EntitlementItem;
+  ticketEvent: string | null;
+  telegramInvite: EntitlementInvite | { error: string } | null;
+};
+
+export type AdminUserItem = {
+  id: string;
+  displayName: string;
+  username: string | null;
+  telegramUserId: string | null;
+  photoUrl: string | null;
+  avatarUrl?: string | null;
+  status: UserStatus;
+  createdAt: string;
+  ordersCount: number;
+  lastOrderAt: string | null;
+  entitlementsCount: number;
+  activeEntitlementsCount: number;
+  hasActiveEntitlement: boolean;
+  ticketsCount: number;
+  supportTicketsCount: number;
+  openTicketsCount: number;
+  lastActiveAt: string | null;
+  email: string | null;
+  languageCode: string | null;
+  timezone: number | null;
+  recentEntitlements: Array<{
+    id: string;
+    resourceType: ResourceType;
+    resourceId: string;
+    status: EntitlementStatus;
+    expiresAt: string | null;
+    revokedAt?: string | null;
+  }>;
+};
+
+export type AdminUserDetail = AdminUserItem & {
+  counts: { orders: number; entitlements: number; tickets: number; telegramInvites: number };
+  recentOrders: Array<{
+    id: string;
+    orderNo: string;
+    status: OrderStatus;
+    amountMinor: string | null;
+    currency: string;
+    product: { id: string; type: ProductType; title: string } | null;
+    paidAt: string | null;
+    createdAt: string;
+    entitlementsCount: number;
+    paymentMethod?: string | null;
+  }>;
+  entitlements: EntitlementItem[];
+  tickets: Array<{
+    id: string;
+    ticketNo: string;
+    title: string;
+    status: TicketStatus;
+    priority: TicketPriority;
+    category: TicketCategory;
+    createdAt: string;
+    assignedToId?: string | null;
+    assignedToName?: string | null;
+  }>;
+  recentEntitlements: Array<{
+    id: string;
+    resourceType: ResourceType;
+    resourceId: string;
+    status: EntitlementStatus;
+    expiresAt: string | null;
+    revokedAt?: string | null;
+    sourceOrderNo?: string | null;
+    startsAt: string;
+  }>;
+  recentSupportTickets: Array<{
+    id: string;
+    ticketNo: string;
+    title: string | null;
+    category: TicketCategory;
+    priority: TicketPriority;
+    status: TicketStatus;
+    assignedToId?: string | null;
+    assignedToName?: string | null;
+    createdAt: string;
+  }>;
+};
+
+export type AdminUsersFilter = {
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  telegramUserId?: string;
+  status?: UserStatus;
+  hasActiveEntitlement?: boolean;
+};
+
+export type SupportTicketItem = {
+  id: string;
+  ticketNo: string;
+  userId: string;
+  title: string;
+  category: TicketCategory;
+  priority: TicketPriority;
+  status: TicketStatus;
+  description: string | null;
+  telegramUserId: string | null;
+  orderId: string | null;
+  entitlementId: string | null;
+  assignedToId: string | null;
+  resolvedAt: string | null;
+  closedAt: string | null;
+  dueAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  user: UserBrief | null;
+  sourceOrder: { id: string; orderNo: string; status: OrderStatus } | null;
+  sourceOrderNo?: string | null;
+  relatedEntitlementId?: string | null;
+  entitlement: { id: string; resourceType: ResourceType; resourceId: string; status: EntitlementStatus } | null;
+  assignedTo: { id: string; email: string; displayName: string; role: AdminRole } | null;
+  assignedToName?: string | null;
+  assignedAt?: string | null;
+  eventsCount?: number;
+  lastEventAt?: string | null;
+};
+
+export type TicketEventItem = {
+  id: string;
+  ticketId: string;
+  type: TicketEventType;
+  authorType: "user" | "admin" | "system";
+  authorUserId: string | null;
+  authorAdminId: string | null;
+  authorId?: string | null;
+  note: string | null;
+  content?: string | null;
+  actionRef: string | null;
+  oldStatus: TicketStatus | null;
+  newStatus: TicketStatus | null;
+  createdAt: string;
+  metadata?: Record<string, any> | null;
+  authorUser?: UserBrief | null;
+  authorAdmin?: { id: string; email: string; displayName: string; role: AdminRole } | null;
+  authorAdminName?: string | null;
+  authorUserName?: string | null;
+  authorUserAvatar?: string | null;
+};
+
+export type SupportTicketDetail = SupportTicketItem & {
+  events: TicketEventItem[];
+  sourceOrderStatus?: OrderStatus | null;
+  relatedEntitlementStatus?: EntitlementStatus | null;
+};
+
+export type SupportTicketsFilter = {
+  page?: number;
+  pageSize?: number;
+  status?: TicketStatus;
+  priority?: TicketPriority;
+  category?: TicketCategory;
+  assignedToId?: string;
+  unassignedOnly?: boolean;
+  mine?: boolean;
+  userId?: string;
+  telegramUserId?: string;
+  orderNo?: string;
+  entitlementId?: string;
+  q?: string;
+};
+
+export type CreateTicketInput = {
+  userId: string;
+  title: string;
+  category: TicketCategory;
+  priority?: TicketPriority;
+  description?: string;
+  orderId?: string;
+  entitlementId?: string;
+  telegramUserId?: string;
+  initialNotePublic?: string;
+  initialPublicNote?: string;
+};
+
+export type ChannelSource = "auto_scan" | "manual_add";
+
+export type ChannelItem = {
+  chatId: string;
+  chatIdMasked: string;
+  type: string;
+  title: string | null;
+  username: string | null;
+  memberCount: number | null;
+  avatarFileId: string | null;
+  isPrivate: boolean;
+  source: ChannelSource;
+  lastEventAt: string | null;
+  refreshedAt: string | null;
+  createdAt: string;
+};
+
+export type ChannelReveal = {
+  chatIdPlain: string;
+  expiresAt: string;
+  ttlMs: number;
+};
+
+export type ChannelListFilter = {
+  page?: number;
+  pageSize?: number;
+  source?: ChannelSource;
+  chatType?: string;
+  search?: string;
+};
+
+export type ChannelListResp = {
+  items: ChannelItem[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+  };
+};
+
+export type ChannelRefreshSummary = {
+  scannedFromUpdates: number;
+  processed: number;
+  refreshed: number;
+  failed: number;
+  fromCache: number;
+};
+
+export type ChannelRefreshRow = {
+  chatId: string;
+  chatIdMasked: string;
+  title: string | null;
+  memberCount: number | null;
+  status: "refreshed";
+};
+
+export type ChannelRefreshError = {
+  chatId: string;
+  chatIdMasked: string;
+  tgCode: number | null;
+  errorClass: string;
+};
+
+export type ChannelRefreshResp = {
+  ok: true;
+  summary: ChannelRefreshSummary;
+  refreshed: ChannelRefreshRow[];
+  errors: ChannelRefreshError[];
+};
+
+export type ChannelAddResp = {
+  ok: true;
+  chatId: string;
+  chatIdMasked: string;
+  source: ChannelSource;
+};
+
+export type ChannelRevealResp = {
+  ok: true;
+  chatIdMasked: string;
+  reveal: ChannelReveal;
+};
+
