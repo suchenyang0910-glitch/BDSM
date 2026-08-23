@@ -253,7 +253,15 @@ const ContentsPage: React.FC = () => {
         accessType: accessTypeFilter,
         q: q || undefined,
       });
-      setRows(resp.data);
+      // 兼容历史内容：早期记录可能没有 categories/tags 字段，不能让一条旧数据导致整个列表页白屏。
+      const normalizedRows = Array.isArray(resp.data)
+        ? resp.data.map((row: ContentItem) => ({
+            ...row,
+            categories: Array.isArray(row.categories) ? row.categories : [],
+            tags: Array.isArray(row.tags) ? row.tags : [],
+          }))
+        : [];
+      setRows(normalizedRows);
       setTotal(resp.total);
     } catch (e) {
       message.error(errMsg(e, "加载内容列表失败"));
@@ -465,7 +473,7 @@ const ContentsPage: React.FC = () => {
       isNewArrival: row.isNewArrival,
       featuredSort: row.featuredSort,
       tags: row.tags,
-      categoryIds: row.categories.map((c) => c.id),
+      categoryIds: (Array.isArray(row.categories) ? row.categories : []).map((c) => c.id),
       recommendStartsAt: row.recommendStartsAt ? dayjs(row.recommendStartsAt) : null,
       recommendEndsAt: row.recommendEndsAt ? dayjs(row.recommendEndsAt) : null,
       scheduledAt: row.scheduledAt ? dayjs(row.scheduledAt) : null,
@@ -776,15 +784,18 @@ const ContentsPage: React.FC = () => {
       dataIndex: "categories",
       key: "categories",
       width: 160,
-      render: (cats: CategoryItem[]) => (
+      render: (cats: CategoryItem[] | undefined) => {
+        const safeCategories = Array.isArray(cats) ? cats : [];
+        return (
         <Space size={4} wrap>
-          {cats.length === 0 ? (
+          {safeCategories.length === 0 ? (
             <Tag color="default">未分类</Tag>
           ) : (
-            cats.map((c) => <Tag key={c.id} color="blue">{c.name}</Tag>)
+            safeCategories.map((c) => <Tag key={c.id} color="blue">{c.name}</Tag>)
           )}
         </Space>
-      ),
+        );
+      },
     },
     {
       title: "访问类型",
