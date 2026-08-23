@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getTelegramBotCredentials, validateTelegramInitData } from "../utils/telegram.js";
-import { isLegacyPlatformDisplayName, randomPlatformPseudonym } from "../utils/pseudonym.js";
+import { isPlatformPseudonym, randomPlatformPseudonym } from "../utils/pseudonym.js";
 
 const sessionSchema = z.object({
   initData: z.string().min(1),
@@ -59,7 +59,7 @@ export default async function telegramRoutes(fastify: FastifyInstance) {
         where: { id: dbUser.id },
         data: {
           username: user.username || dbUser.username,
-          displayName: isLegacyPlatformDisplayName(dbUser.displayName) ? randomPlatformPseudonym() : dbUser.displayName,
+          displayName: !isPlatformPseudonym(dbUser.displayName) ? randomPlatformPseudonym() : dbUser.displayName,
           photoUrl: user.photo_url || dbUser.photoUrl,
         },
         include: {

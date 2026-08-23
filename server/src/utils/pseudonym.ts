@@ -33,7 +33,11 @@ export function randomPlatformPseudonym(): string {
   return platformPseudonymAt(randomInt(PLATFORM_PSEUDONYM_COUNT));
 }
 
-/** 只迁移旧的技术型占位名，不覆盖用户已经存在的正常昵称。 */
+export function isPlatformPseudonym(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.length > 0 && PSEUDONYM_SET.has(value);
+}
+
+/** 保留给历史数据识别；当前登录迁移以 isPlatformPseudonym 为唯一判定。 */
 export function isLegacyPlatformDisplayName(value: string | null | undefined): boolean {
   if (!value) return true;
   return value === "同频账户" ||
@@ -42,3 +46,7 @@ export function isLegacyPlatformDisplayName(value: string | null | undefined): b
     /^同频用户\s+[A-F0-9]{6}$/i.test(value) ||
     /^Telegram 用户\s+\d+$/.test(value);
 }
+
+const PSEUDONYM_SET = new Set(
+  Array.from({ length: PLATFORM_PSEUDONYM_COUNT }, (_, index) => platformPseudonymAt(index)),
+);

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { createHash, createHmac, timingSafeEqual, randomBytes } from "node:crypto";
-import { isLegacyPlatformDisplayName, randomPlatformPseudonym } from "../utils/pseudonym.js";
+import { isPlatformPseudonym, randomPlatformPseudonym } from "../utils/pseudonym.js";
 
 const H5_LOGIN_AUTH_MAX_AGE_SEC = 10 * 60;
 const H5_LOGIN_MIN_AUTH_TS_SEC = Math.floor(Date.now() / 1000) - 60 * 60;
@@ -61,7 +61,7 @@ function randomH5DisplayName(): string {
 }
 
 function isLegacyH5DisplayName(value: string | null | undefined): boolean {
-  return isLegacyPlatformDisplayName(value);
+  return !isPlatformPseudonym(value);
 }
 
 function setDeviceCookie(reply: any, token: string, maxAgeMs: number, secure: boolean) {
@@ -389,7 +389,7 @@ export default async function authH5Routes(fastify: FastifyInstance) {
           },
         });
       } else {
-        const needsPseudonym = isLegacyPlatformDisplayName(targetUser.displayName);
+        const needsPseudonym = !isPlatformPseudonym(targetUser.displayName);
         const changed =
           (username ?? null) !== (targetUser.username ?? null) ||
           (photoUrl ?? null) !== (targetUser.photoUrl ?? null) ||
