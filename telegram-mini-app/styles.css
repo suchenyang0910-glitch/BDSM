@@ -485,13 +485,15 @@ h3 {
 }
 
 #homeView .card-body {
-  min-height: 92px;
+  min-height: 58px;
   gap: 5px;
   padding: 9px 10px 10px;
 }
 
 #homeView .card-desc,
-#homeView .card-price {
+#homeView .card-price,
+#homeView .card-tag,
+#homeView .card-meta {
   display: none;
 }
 
@@ -509,6 +511,55 @@ h3 {
 
 #homeView .card-action {
   display: none;
+}
+
+#homeRecentList {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.recent-visual-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  aspect-ratio: 3 / 4;
+  background:
+    radial-gradient(circle at 82% 12%, rgba(166, 107, 255, 0.62), transparent 34%),
+    linear-gradient(145deg, #3a285d, #171422);
+  background-size: cover;
+  background-position: center;
+}
+
+.recent-visual-action {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 0;
+  color: #fff;
+  text-align: left;
+  background: transparent;
+}
+
+.recent-visual-action strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.recent-visual-action .cover-duration {
+  position: static;
+  align-self: flex-start;
 }
 
 .search-box {

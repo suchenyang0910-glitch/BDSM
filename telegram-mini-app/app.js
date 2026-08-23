@@ -366,13 +366,16 @@
     host.innerHTML = "";
     recent.forEach(function (item) {
       const card = document.createElement("article");
-      card.className = "stack-card";
+      card.className = "recent-visual-card";
+      const safeCover = item.coverUrl ? String(item.coverUrl).replace(/'/g, "%27") : "";
+      if (safeCover) {
+        card.style.backgroundImage = "linear-gradient(180deg, transparent 25%, rgba(10, 8, 18, 0.82)), url('" + safeCover + "')";
+      }
       card.innerHTML =
-        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.title) + '</div>' +
-        '<div class="stack-subtitle">' + escapeHtml(item.accessType === "membership" ? "会员内容" : item.accessType === "package" ? "内容包内容" : "公开预览") + "</div></div>" +
-        '<div class="status-badge status-warning">' + escapeHtml(item.duration || "—") + "</div></div>" +
-        '<div class="stack-meta"><span>最近打开</span><span>' + escapeHtml(formatDate(item.viewedAt)) + "</span></div>" +
-        '<div class="channel-actions" style="margin-top:12px;"><button class="ghost-button" type="button">继续查看</button></div>';
+        '<button class="recent-visual-action" type="button" aria-label="继续查看 ' + escapeHtml(item.title) + '">' +
+        '<span class="cover-duration">' + escapeHtml(item.duration || "—") + "</span>" +
+        '<strong>' + escapeHtml(item.title) + "</strong>" +
+        "</button>";
       card.querySelector("button").addEventListener("click", function () {
         setHashForDetail(item.id, "home");
       });
