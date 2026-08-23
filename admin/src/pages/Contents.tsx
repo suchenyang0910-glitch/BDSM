@@ -1006,8 +1006,8 @@ const ContentsPage: React.FC = () => {
         message="内容交付说明（阶段一）"
         description={
           <Space direction="vertical" size={4}>
-            <span>· 完整视频由运营手工发布到 Telegram 私密频道，后台只维护内容卡、分类和权益。</span>
-            <span>· 会员内容 → 统一交付至服务端配置的 VIP 会员频道；内容包内容 → 交付到对应包的受控频道；公开内容 → 预览 URL 展示。</span>
+            <span>· 点击“发布”后，系统会自动创建 Bot 发送任务；会员内容发往会员私密频道，内容包内容发往对应内容包私密频道。</span>
+            <span>· 若上传了 30–60 秒试看并选择免费试看频道，系统会同时投放预览并附带 Mini App 跳转入口。</span>
             <span>· 单条售卖（single）首期关闭，避免共享频道造成权益越界。</span>
           </Space>
         }
