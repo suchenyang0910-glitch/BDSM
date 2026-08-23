@@ -279,9 +279,9 @@ async function main() {
   });
 
   console.log("[seed] 完成！demo Telegram User ID:", demoUser.telegramUserId.toString());
-  console.log("[seed] 超管账号：", superAdminEmail, " / 密码：", superAdminPassword);
-  console.log("[seed] 运营账号：", operatorEmail, " / 密码：", operatorPassword);
-  console.log("[seed] 建议在 .env 中覆盖 SEED_SUPERADMIN_EMAIL / SEED_SUPERADMIN_PASSWORD / SEED_OPERATOR_EMAIL / SEED_OPERATOR_PASSWORD 使用自定义密码");
+  // 密码及邮箱都属于认证凭证，严禁进入 stdout/stderr、CI、日志或部署输出。
+  console.log("[seed] 管理员账号初始化完成；凭证仅保存在受控部署密钥存储中。");
+  console.log("[seed] 请在首次登录后立即轮换管理员密码，并删除临时引导凭证。");
 }
 
 main()
