@@ -16,8 +16,9 @@ import {
   message,
   Modal,
   Image,
+  Upload,
 } from "antd";
-import { PlusOutlined, EditOutlined, DeleteOutlined } from "@ant-design/icons";
+import { PlusOutlined, EditOutlined, DeleteOutlined, UploadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import type { Dayjs } from "dayjs";
 import dayjs from "dayjs";
@@ -30,8 +31,11 @@ import {
   listAdminCategories,
   listAdminContents,
   errMsg,
+  listAdminBannerImageAssets,
+  initAdminBannerImageUpload,
+  completeAdminBannerImageUpload,
 } from "../api/client";
-import type { BannerItem, BannerStatus, BannerTargetType, AdminMe, CategoryItem, ContentItem } from "../api/types";
+import type { BannerItem, BannerStatus, BannerTargetType, AdminMe, CategoryItem, ContentItem, BannerImageAsset } from "../api/types";
 
 const { Title } = Typography;
 const { Option } = Select;
@@ -78,8 +82,11 @@ const BannersPage: React.FC = () => {
   const [categories, setCategories] = React.useState<CategoryItem[]>([]);
   const [contents, setContents] = React.useState<ContentItem[]>([]);
   const [pickLoading, setPickLoading] = React.useState(false);
+  const [imageAssets, setImageAssets] = React.useState<BannerImageAsset[]>([]);
+  const [imageUploading, setImageUploading] = React.useState(false);
 
   const targetType = Form.useWatch("targetType", form);
+  const selectedImageAssetId = Form.useWatch("imageAssetId", form);
 
   const fetchList = React.useCallback(async () => {
     setLoading(true);
@@ -110,14 +117,27 @@ const BannersPage: React.FC = () => {
     }
   }, []);
 
+  const fetchImageAssets = React.useCallback(async () => {
+    try {
+      const resp = await listAdminBannerImageAssets();
+      setImageAssets(resp.data);
+      return resp.data;
+    } catch (e) {
+      message.error(errMsg(e, "加载 Banner 图片库失败"));
+      return [] as BannerImageAsset[];
+    }
+  }, []);
+
   React.useEffect(() => {
     fetchList();
     adminMe().then(setMe).catch(() => {});
   }, [fetchList]);
 
   React.useEffect(() => {
-    if (drawerOpen) fetchPickers();
-  }, [drawerOpen, fetchPickers]);
+    if (!drawerOpen) return;
+    void fetchPickers();
+    void fetchImageAssets();
+  }, [drawerOpen, fetchPickers, fetchImageAssets]);
 
   const canEdit = React.useMemo(() => {
     if (!me) return false;
@@ -145,7 +165,7 @@ const BannersPage: React.FC = () => {
     form.setFieldsValue({
       title: row.title,
       description: row.description,
-      imageUrl: row.imageUrl,
+      imageAssetId: undefined,
       actionLabel: row.actionLabel,
       slot: row.slot,
       targetType: row.targetType,
@@ -158,6 +178,58 @@ const BannersPage: React.FC = () => {
     setDrawerOpen(true);
   };
 
+  const selectedImage = imageAssets.find((asset) => asset.id === selectedImageAssetId) || null;
+  const imagePreviewUrl = selectedImage?.imageUrl || editing?.imageUrl || null;
+
+  const uploadBannerImage = async (file: File) => {
+    if (!canEdit) {
+      message.error("当前角色无 homepage:edit 权限，不能上传 Banner 图片");
+      return Upload.LIST_IGNORE;
+    }
+    if (!/^image\/(jpeg|png|webp|jpg)$/i.test(file.type || "")) {
+      message.error("仅支持 JPG、PNG 或 WebP 图片");
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      message.error("Banner 图片不能超过 20MB");
+      return Upload.LIST_IGNORE;
+    }
+    setImageUploading(true);
+    let assetId: string | null = null;
+    try {
+      const init = await initAdminBannerImageUpload({
+        originalFilename: file.name,
+        mimeType: file.type,
+        contentLength: file.size,
+      });
+      assetId = init.mediaAssetId;
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", init.uploadUrl, true);
+        Object.entries(init.expectedHttpHeaders || {}).forEach(([key, value]) => {
+          try { xhr.setRequestHeader(key, value); } catch { /* browser restricted header */ }
+        });
+        xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`HTTP ${xhr.status}`));
+        xhr.onerror = () => reject(new Error("网络错误：上传到对象存储失败"));
+        xhr.send(file);
+      });
+      const completed = await completeAdminBannerImageUpload(assetId, { ok: true, reportedContentLength: file.size });
+      if (!completed.ok || completed.status !== "ready") throw new Error("banner_image_verify_failed");
+      const latest = await fetchImageAssets();
+      if (!latest.some((asset) => asset.id === assetId)) throw new Error("banner_image_not_ready");
+      form.setFieldValue("imageAssetId", assetId);
+      message.success("Banner 图片上传并校验完成，已自动选中");
+    } catch (e) {
+      if (assetId) {
+        try { await completeAdminBannerImageUpload(assetId, { ok: false, error: "banner_image_upload_failed" }); } catch { /* best effort */ }
+      }
+      message.error(errMsg(e, "Banner 图片上传失败"));
+    } finally {
+      setImageUploading(false);
+    }
+    return Upload.LIST_IGNORE;
+  };
+
   const onDrawerSubmit = async () => {
     try {
       const values = await form.validateFields();
@@ -166,7 +238,7 @@ const BannersPage: React.FC = () => {
       const payload: any = {
         title: values.title,
         description: values.description || null,
-        imageUrl: values.imageUrl || null,
+        imageAssetId: values.imageAssetId || undefined,
         actionLabel: values.actionLabel,
         slot: values.slot,
         targetType: values.targetType,
@@ -316,7 +388,7 @@ const BannersPage: React.FC = () => {
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card>
-        首页 Banner 严格按 PRD 执行：仅支持 `0-3` 个运营位；每条都必须有明确跳转目标。外链仅允许合规 `HTTPS` 页面或公开 Telegram 链接，禁止私密邀请链接与支付链接。
+        首页 Banner 严格按 PRD 执行：仅支持 `0-3` 个运营位；每条都必须有明确跳转目标。图片只能上传或从已验证的素材库中选择，外链仅允许合规 `HTTPS` 页面或公开 Telegram 链接，禁止私密邀请链接与支付链接。
       </Card>
       <Card
         title={<Title level={5} style={{ margin: 0 }}>Banner 运营位</Title>}
@@ -359,14 +431,44 @@ const BannersPage: React.FC = () => {
           <Form.Item name="description" label="副标题 / 描述">
             <TextArea rows={2} placeholder="在 Banner 上展示的副标题" maxLength={500} />
           </Form.Item>
-          <Space size={16} style={{ width: "100%" }}>
-            <Form.Item name="imageUrl" label="Banner 图片 URL（推荐 16:9，≥ 1280×720）" rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Input placeholder="https://..." />
-            </Form.Item>
-            <Form.Item name="actionLabel" label="按钮文案" style={{ width: 220 }}>
-              <Input placeholder="例如：查看详情" maxLength={50} />
-            </Form.Item>
-          </Space>
+          <Form.Item
+            name="imageAssetId"
+            label="Banner 图片（推荐 16:9，≥ 1280×720）"
+            rules={editing ? [] : [{ required: true, message: "请上传或从素材库选择 Banner 图片" }]}
+            extra={editing && !selectedImageAssetId && editing.imageUrl ? "这是历史 Banner 图片；如需更换，请重新上传或从素材库选择。" : "图片上传后会自动进入素材库；不需要、也不能手填图片 URL。"}
+          >
+            <Select
+              showSearch
+              allowClear={!!editing}
+              loading={imageUploading}
+              placeholder="从已上传封面图片中选择"
+              optionFilterProp="label"
+              dropdownRender={(menu) => (
+                <>
+                  <div style={{ padding: 8 }}>
+                    <Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadBannerImage(file as File)}>
+                      <Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传新 Banner 图片</Button>
+                    </Upload>
+                  </div>
+                  {menu}
+                </>
+              )}
+            >
+              {imageAssets.map((asset) => (
+                <Option key={asset.id} value={asset.id} label={asset.originalFilename}>
+                  <Space>
+                    <Image src={asset.imageUrl} width={72} height={40} preview={false} style={{ borderRadius: 4, objectFit: "cover" }} />
+                    <span>{asset.originalFilename}</span>
+                    {asset.widthPixels && asset.heightPixels ? <Tag>{asset.widthPixels}×{asset.heightPixels}</Tag> : null}
+                  </Space>
+                </Option>
+              ))}
+            </Select>
+          </Form.Item>
+          {imagePreviewUrl ? <Image src={imagePreviewUrl} width={240} height={135} preview style={{ objectFit: "cover", borderRadius: 8, marginBottom: 16 }} /> : null}
+          <Form.Item name="actionLabel" label="按钮文案">
+            <Input placeholder="例如：查看详情" maxLength={50} />
+          </Form.Item>
           <Space size={16} style={{ width: "100%" }}>
             <Form.Item name="slot" label="投放位置" rules={[{ required: true }]} style={{ flex: 1 }}>
               <Select options={SLOT_OPTIONS} />

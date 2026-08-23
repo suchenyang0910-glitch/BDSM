@@ -1531,7 +1531,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
   const ZBAN_CREATE = z.object({
     title: z.string().trim().min(1).max(200),
     description: z.string().max(500).optional().nullable(),
-    imageUrl: z.string().trim().url().max(500).optional().nullable(),
+    /** 新 Banner 只能引用已校验完成的封面素材，禁止运营手填图片 URL。 */
+    imageAssetId: z.string().uuid(),
     actionLabel: z.string().max(40).optional().default("查看"),
     slot: z.string().max(32).optional().default("home_primary"),
     targetType: BannerTargetTypeZ,
@@ -1580,6 +1581,63 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     return output;
   }
 
+  async function resolveBannerImageUrl(imageAssetId: string): Promise<string> {
+    const asset = await prisma.mediaAsset.findUnique({
+      where: { id: imageAssetId },
+      select: { id: true, kind: true, status: true, storagePublicUrl: true },
+    });
+    if (!asset || asset.kind !== "cover_image" || asset.status !== "ready" || !asset.storagePublicUrl) {
+      throw new Error("banner_image_asset_invalid");
+    }
+    return asset.storagePublicUrl;
+  }
+
+  const ZBANNER_IMAGE_ASSETS_QP = z.object({
+    q: z.string().trim().max(100).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional().default(60),
+  });
+
+  /** Banner 专用图库：只返回已验证、可公开展示的封面素材。 */
+  fastify.get(
+    "/admin/banner-image-assets",
+    { preHandler: [requireAdmin("homepage:view")] },
+    async (req: any, reply) => {
+      const query = ZBANNER_IMAGE_ASSETS_QP.parse(req.query || {});
+      const rows = await prisma.mediaAsset.findMany({
+        where: {
+          kind: "cover_image",
+          status: "ready",
+          storagePublicUrl: { not: null },
+          ...(query.q ? { originalFilename: { contains: query.q, mode: "insensitive" } } : {}),
+        },
+        orderBy: [{ updatedAt: "desc" }],
+        take: query.limit,
+        select: {
+          id: true,
+          originalFilename: true,
+          storagePublicUrl: true,
+          contentLength: true,
+          widthPixels: true,
+          heightPixels: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+      return reply.send({
+        data: rows.map((row: any) => ({
+          id: row.id,
+          originalFilename: row.originalFilename || "未命名图片",
+          imageUrl: row.storagePublicUrl,
+          contentLength: row.contentLength != null ? String(row.contentLength) : null,
+          widthPixels: row.widthPixels,
+          heightPixels: row.heightPixels,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        })),
+      });
+    },
+  );
+
   fastify.get(
     "/admin/banners",
     { preHandler: [requireAdmin("homepage:view")] },
@@ -1597,14 +1655,19 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     async (req: any, reply) => {
       const body = ZBAN_CREATE.parse(req.body);
       const meta = adminMeta(req);
-      const { reason, startsAt, endsAt, ...rawPayload } = body;
+      const { reason, startsAt, endsAt, imageAssetId, ...rawPayload } = body;
       let payload: any;
       try {
-        payload = normalizeBannerPayload(rawPayload);
+        payload = {
+          ...normalizeBannerPayload(rawPayload),
+          imageUrl: await resolveBannerImageUrl(imageAssetId),
+        };
       } catch (error: any) {
         return reply.status(400).send({
-          error: error?.message || "invalid_banner_target",
-          message: "Banner 跳转目标不合法：仅允许内容/分类/内容包/会员页，或受控 HTTPS / 公开 Telegram 链接。",
+          error: error?.message || "invalid_banner_payload",
+          message: error?.message === "banner_image_asset_invalid"
+            ? "Banner 图片必须从已上传且校验完成的封面素材中选择。"
+            : "Banner 跳转目标不合法：仅允许内容/分类/内容包/会员页，或受控 HTTPS / 公开 Telegram 链接。",
         });
       }
       const res = await prisma.$transaction(async (tx: any) => {
@@ -1629,7 +1692,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const id = z.string().uuid().parse(req.params.id);
       const body = ZBAN_EDIT.omit({ id: true }).parse(req.body);
       const meta = adminMeta(req);
-      const { reason, startsAt, endsAt, ...payloadInput } = body;
+      const { reason, startsAt, endsAt, imageAssetId, ...payloadInput } = body;
       const before = await prisma.banner.findUnique({ where: { id } });
       if (!before) return reply.status(404).send({ error: "not_found" });
       let payload: any;
@@ -1640,7 +1703,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           externalUrl: payloadInput.externalUrl ?? before.externalUrl,
           title: payloadInput.title ?? before.title,
           description: payloadInput.description ?? before.description,
-          imageUrl: payloadInput.imageUrl ?? before.imageUrl,
+          imageUrl: imageAssetId !== undefined ? await resolveBannerImageUrl(imageAssetId) : before.imageUrl,
           actionLabel: payloadInput.actionLabel ?? before.actionLabel,
           slot: payloadInput.slot ?? before.slot,
           status: payloadInput.status ?? before.status,

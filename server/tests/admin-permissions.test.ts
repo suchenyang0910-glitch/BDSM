@@ -613,6 +613,20 @@ test("首页 Banner：五类受控跳转均可保存，私密邀请与支付外�
   const app = await createApp(prisma);
   try {
     const superCookie = await loginAdmin(app, "superAdmin");
+    const bannerImage = await seedReadyMediaAsset(prisma, {
+      id: crypto.randomUUID(),
+      kind: "cover_image",
+      filename: "banner-approved.jpg",
+    });
+    const imageLibrary = await app.inject({
+      method: "GET",
+      url: "/api/admin/banner-image-assets",
+      headers: { cookie: superCookie },
+    });
+    assert.equal(imageLibrary.statusCode, 200, imageLibrary.body);
+    const listedImage = ((imageLibrary.json() as any).data || []).find((item: any) => item.id === bannerImage.id);
+    assert.equal(listedImage?.imageUrl, `https://example.com/${bannerImage.id}.bin`);
+    assert.equal(Object.hasOwn(listedImage || {}, "storageKey"), false, "banner image library must not expose storage keys");
     const cases = [
       { targetType: "content", targetId: TEST_KNOWN_IDS.contentPublic },
       { targetType: "category", targetId: TEST_KNOWN_IDS.categoryFeatured },
@@ -630,6 +644,7 @@ test("首页 Banner：五类受控跳转均可保存，私密邀请与支付外�
           slot: "home_primary",
           status: "draft",
           actionLabel: "查看详情",
+          imageAssetId: bannerImage.id,
           ...item,
         },
       });
@@ -644,12 +659,16 @@ test("首页 Banner：五类受控跳转均可保存，私密邀请与支付外�
         title: "unsafe private invite",
         slot: "home_primary",
         status: "draft",
+        imageAssetId: bannerImage.id,
         targetType: "external",
         externalUrl: "https://t.me/+privateInviteMustNeverPass",
       },
     });
     assert.equal(unsafe.statusCode, 400, unsafe.body);
     assert.equal((unsafe.json() as any).error, "external_url_invalid");
+
+    const selected = await prisma.banner.findFirst({ where: { title: "Banner target 0" }, select: { imageUrl: true } });
+    assert.equal(selected?.imageUrl, `https://example.com/${bannerImage.id}.bin`, "Banner must persist the server-resolved image URL, never a client-supplied URL");
   } finally {
     await app.close();
   }

@@ -514,7 +514,8 @@ export type BannerItem = {
 export type CreateBannerInput = {
   title: string;
   description?: string | null;
-  imageUrl?: string | null;
+  /** 只能选择后台素材库里已校验完成的封面图片。 */
+  imageAssetId: string;
   actionLabel?: string;
   slot?: string;
   targetType?: BannerTargetType;
@@ -529,6 +530,17 @@ export type CreateBannerInput = {
 };
 
 export type UpdateBannerInput = Partial<CreateBannerInput> & { reason?: string };
+
+export type BannerImageAsset = {
+  id: string;
+  originalFilename: string;
+  imageUrl: string;
+  contentLength: string | null;
+  widthPixels: number | null;
+  heightPixels: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type HomepageConfig = {
   bannerIds: string[];

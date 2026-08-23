@@ -24,6 +24,7 @@ import type {
   PaymentAddressReleaseExpiredResp,
   UsdtMonitorStatusResp,
   BannerItem,
+  BannerImageAsset,
   CreateBannerInput,
   UpdateBannerInput,
   HomepageVersionItem,
@@ -363,6 +364,28 @@ export async function updateAdminBanner(id: string, input: UpdateBannerInput): P
 
 export async function deleteAdminBanner(id: string, reason?: string): Promise<{ ok: true }> {
   const res = await http.delete(`/admin/banners/${encodeURIComponent(id)}`, { params: reason ? { reason } : {} });
+  return res.data;
+}
+
+export async function listAdminBannerImageAssets(q?: string): Promise<{ data: BannerImageAsset[] }> {
+  const res = await http.get("/admin/banner-image-assets", { params: q ? { q } : {} });
+  return res.data;
+}
+
+export async function initAdminBannerImageUpload(input: {
+  originalFilename: string;
+  mimeType: string;
+  contentLength: number;
+}): Promise<{ mediaAssetId: string; uploadUrl: string; expectedHttpHeaders: Record<string, string> }> {
+  const res = await http.post("/admin/media/init-upload", { kind: "cover_image", ...input }, { timeout: 20_000 });
+  return res.data;
+}
+
+export async function completeAdminBannerImageUpload(
+  id: string,
+  input: { ok: boolean; reportedContentLength?: number; error?: string },
+): Promise<{ ok: boolean; id: string; status: string }> {
+  const res = await http.post(`/admin/media/${encodeURIComponent(id)}/complete`, input, { timeout: 30_000 });
   return res.data;
 }
 
