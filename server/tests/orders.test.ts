@@ -25,6 +25,7 @@ import { releaseExpiredUsdtAddresses, assignUsdtTrc20Address, generateUsdtUnique
 import { emitSafetyEvent, emitStructuredLog } from "../src/utils/structuredError.js";
 import {
   buildPaymentSuccessNotificationText,
+  buildPaymentSuccessNotificationReplyMarkup,
   loadPaymentSuccessNotifyRecipients,
   notifyPaymentSuccess,
 } from "../src/services/paymentSuccessNotifier.js";
@@ -93,17 +94,36 @@ test("支付成功运营通知：收件人去重、内容脱敏、通知失败�
     currency: "USDT",
     productTitle: "测试内容\n不应拆成多行",
     userDisplayName: "月光\n边界",
+    receivingUsdtAddress: "TXEFmbFxDYBCrYoAfvfjsiE8uK2C2YmQ9J",
   });
   assert.match(message, /用户：月光 边界/);
   assert.match(message, /USDT-TRC20/);
   assert.match(message, /12\.34 USDT/);
-  assert.doesNotMatch(message, /INT20260823001234/);
+  assert.match(message, /订单：<code>INT20260823001234<\/code>/);
+  assert.match(message, /收款地址（TRC-20）：<code>TXEFmbFxDYBCrYoAfvfjsiE8uK2C2YmQ9J<\/code>/);
   assert.doesNotMatch(message, /\n不应拆成多行/);
   assert.match(message, /权益：已完成发放。/);
 
+  const replyMarkup = buildPaymentSuccessNotificationReplyMarkup({
+    orderNo: "INT20260823001234",
+    paymentMethod: "usdt_trc20",
+    amountMinor: 12_340_000n,
+    currency: "USDT",
+    receivingUsdtAddress: "TXEFmbFxDYBCrYoAfvfjsiE8uK2C2YmQ9J",
+  });
+  assert.deepEqual(replyMarkup.inline_keyboard[0]?.[0], {
+    text: "复制订单号",
+    copy_text: { text: "INT20260823001234" },
+  });
+  assert.deepEqual(replyMarkup.inline_keyboard[1]?.[0], {
+    text: "复制收款地址",
+    copy_text: { text: "TXEFmbFxDYBCrYoAfvfjsiE8uK2C2YmQ9J" },
+  });
+  assert.match(String(replyMarkup.inline_keyboard[2]?.[0]?.url), /\/admin\/orders\?orderNo=INT20260823001234$/);
+
   const previous = process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS;
   process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS = "123456,987654,123456";
-  const received: string[] = [];
+  const received: Array<{ telegramUserId: string; parseMode?: string; hasReplyMarkup: boolean }> = [];
   try {
     const result = await notifyPaymentSuccess({
       orderNo: "INT20260823001234",
@@ -111,15 +131,18 @@ test("支付成功运营通知：收件人去重、内容脱敏、通知失败�
       amountMinor: 150n,
       currency: "XTR",
       productTitle: "会员",
-    }, async ({ telegramUserId }) => {
-      received.push(String(telegramUserId));
+    }, async ({ telegramUserId, parseMode, replyMarkup }) => {
+      received.push({ telegramUserId: String(telegramUserId), parseMode, hasReplyMarkup: !!replyMarkup });
       if (String(telegramUserId) === "987654") throw new Error("telegram unavailable");
       return { stub: false, success: true, userId: String(telegramUserId), messageId: 1 };
     });
     assert.equal(result.configured, true);
     assert.equal(result.attempted, 2);
     assert.equal(result.delivered, 1);
-    assert.deepEqual(received, ["123456", "987654"]);
+    assert.deepEqual(received, [
+      { telegramUserId: "123456", parseMode: "HTML", hasReplyMarkup: true },
+      { telegramUserId: "987654", parseMode: "HTML", hasReplyMarkup: true },
+    ]);
   } finally {
     if (previous === undefined) delete process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS;
     else process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS = previous;

@@ -291,6 +291,14 @@ export type SendDirectMessageOptions = {
   text: string;
   parseMode?: "MarkdownV2" | "HTML" | "Markdown";
   disableWebPagePreview?: boolean;
+  /** Telegram Bot API InlineKeyboardMarkup；仅用于受控 Bot 私信操作。 */
+  replyMarkup?: {
+    inline_keyboard: Array<Array<{
+      text: string;
+      url?: string;
+      copy_text?: { text: string };
+    }>>;
+  };
 };
 
 export type SendDirectMessageResult = {
@@ -309,6 +317,7 @@ export async function sendDirectMessage(opts: SendDirectMessageOptions): Promise
     text: opts.text,
     ...(opts.parseMode ? { parse_mode: opts.parseMode } : {}),
     ...(opts.disableWebPagePreview !== undefined ? { disable_web_page_preview: opts.disableWebPagePreview } : {}),
+    ...(opts.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
   });
   if (!result.ok || !result.result) {
     return { stub: false, success: false, errorMessage: `sendMessage: [${result.error_code}] ${result.description || "unknown"}`, userId };

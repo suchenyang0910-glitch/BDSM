@@ -931,6 +931,7 @@ export async function confirmUsdtChainEvent(
       currency: "USDT",
       productTitle: (result as any).order.product?.title,
       userDisplayName: (result as any).order.user?.displayName || candidateOrder.user?.displayName,
+      receivingUsdtAddress: candidateOrder.usdtPaymentAddress?.address || null,
     });
     return {
       status: "confirmed",
