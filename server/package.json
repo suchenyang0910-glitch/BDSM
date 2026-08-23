@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "usdt:monitor": "tsx src/workers/usdtTrc20Monitor.ts",
+    "payment-address:baseline": "tsx src/scripts/establishPaymentAddressIntegrityBaseline.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",

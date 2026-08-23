@@ -65,7 +65,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       coverUrl: row.coverUrl,
       description: row.description || row.summary || "",
       previewUrl: row.previewUrl || null,
-      duration: formatDuration(row.durationSeconds),
+      duration: formatDuration(row.durationSeconds ?? undefined),
       durationSeconds: row.durationSeconds,
       accessType: row.accessType,
       access: row.accessType === "public" ? "public" : "member",
