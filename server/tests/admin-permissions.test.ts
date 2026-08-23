@@ -417,6 +417,41 @@ test("越权P3-1：customer_service / auditor / operator / finance 调用 channe
   } finally { await app.close(); }
 });
 
+test("频道管理列表只显示频道/群组，不把 Bot 私聊误报为未设管理员", async () => {
+  const app = await createApp(prisma);
+  const previousAesKey = process.env.CRYPTO_CHAT_ID_AES_KEY;
+  try {
+    // 本测试只创建一条临时的加密频道记录；测试环境旧值可能不是 32 字节，
+    // 因此固定为符合 AES-256 要求的专用测试值，并在 finally 还原。
+    process.env.CRYPTO_CHAT_ID_AES_KEY = "0123456789abcdef0123456789abcdef";
+    const chatId = BigInt(7000000000 + (Date.now() % 100_000_000));
+    const hmac = chatIdIndexKey(chatId);
+    await prisma.adminManagedChannel.create({
+      data: {
+        deprecatedChatIdBig: chatId,
+        chatIdCiphertextB64: encryptChatIdAesGcm(chatId),
+        chatIdHmac: hmac,
+        chatType: "private",
+        isPrivate: false,
+        purpose: "none",
+        source: "auto_scan",
+        botIsAdmin: false,
+      },
+    });
+
+    const superCookie = await loginAdmin(app, "superAdmin");
+    const r = await app.inject({ method: "GET", url: "/api/admin/channels?pageSize=100", headers: { cookie: superCookie } });
+    assert.equal(r.statusCode, 200, r.body);
+    const payload = r.json() as any;
+    assert.ok(!(payload.items || []).some((item: any) => item.chatIdHmac === hmac || item.type === "private"),
+      "Bot 私聊不能出现在频道管理列表中");
+  } finally {
+    if (previousAesKey === undefined) delete process.env.CRYPTO_CHAT_ID_AES_KEY;
+    else process.env.CRYPTO_CHAT_ID_AES_KEY = previousAesKey;
+    await app.close();
+  }
+});
+
 test("越权P3-2：非 super_admin 调 refresh（POST /admin/channels/refresh）必须 403", async () => {
   const app = await createApp(prisma);
   try {

@@ -275,7 +275,10 @@ export default async function adminChannelsRoutes(fastify: FastifyInstance) {
     { preHandler: [requireAdmin("channel:view")] },
     async (req, reply) => {
       const q = listQuerySchema.parse(req.query ?? {});
-      const where: any = {};
+      // Webhook 还会收到 Bot 与用户的私聊事件；它们不是可发布/交付的
+      // Telegram 频道，不能混入后台的“频道管理”列表，否则会把私聊 Bot
+      // 的管理员状态显示为“未设管理员”，误导运营人员。
+      const where: any = { chatType: { in: ["channel", "supergroup"] } };
       if (q.purpose) where.purpose = q.purpose;
       if (q.search) {
         where.OR = [
@@ -538,8 +541,11 @@ export default async function adminChannelsRoutes(fastify: FastifyInstance) {
       if (!body.success) return reply.status(400).send({ error: "bad_request", details: body.error.issues });
 
       const staleWhere = body.data.force
-        ? {}
-        : { OR: [{ refreshedAt: null }, { refreshedAt: { lt: new Date(Date.now() - FRESH_CACHE_MS) } }] };
+        ? { chatType: { in: ["channel", "supergroup"] } }
+        : {
+            chatType: { in: ["channel", "supergroup"] },
+            OR: [{ refreshedAt: null }, { refreshedAt: { lt: new Date(Date.now() - FRESH_CACHE_MS) } }],
+          };
       const rows = await prisma.adminManagedChannel.findMany({
         where: staleWhere,
         orderBy: [{ refreshedAt: "asc" }, { createdAt: "asc" }],
@@ -608,7 +614,7 @@ export default async function adminChannelsRoutes(fastify: FastifyInstance) {
           processed: rows.length,
           refreshed: refreshed.length,
           failed: errors.length,
-          fromCache: body.data.force ? 0 : Math.max(0, (await prisma.adminManagedChannel.count()) - rows.length),
+          fromCache: body.data.force ? 0 : Math.max(0, (await prisma.adminManagedChannel.count({ where: { chatType: { in: ["channel", "supergroup"] } } })) - rows.length),
         },
         refreshed,
         errors,
