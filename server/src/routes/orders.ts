@@ -186,7 +186,8 @@ function adminOrderResponse(o: any) {
         fromAddress: t.fromAddress ?? null,
         toAddress: t.toAddress ?? null,
         confirmations: typeof t.confirmations === "number" ? t.confirmations : null,
-        blockNumber: t.blockNumber ?? null,
+        // Prisma BigInt 不能直接交给 Fastify/JSON；后台明细与列表都统一为字符串。
+        blockNumber: t.blockNumber != null ? t.blockNumber.toString() : null,
         rejectReason: t.rejectReason ?? null,
         receivedAt: t.receivedAt ? t.receivedAt.toISOString() : null,
         confirmedAt: t.confirmedAt ? t.confirmedAt.toISOString() : null,

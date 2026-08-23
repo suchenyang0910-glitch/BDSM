@@ -147,6 +147,51 @@ test.after(async () => {
   await teardownTestHarness(prisma);
 });
 
+test("后台订单列表：链上交易 blockNumber(BigInt) 必须安全序列化为字符串", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const seed = Date.now() % 100_000_000;
+    const user = await prisma.user.create({
+      data: { telegramUserId: BigInt(6_500_000_000 + seed), displayName: "订单列表序列化测试" },
+    });
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: TEST_KNOWN_IDS.membershipProductKey } });
+    const order = await prisma.order.create({
+      data: {
+        orderNo: `INT-BIGINT-${seed}`,
+        userId: user.id,
+        productId: product.id,
+        amountMinor: product.usdtPriceMinor || product.priceMinor,
+        currency: "USDT",
+        status: "paid",
+        paidAt: new Date(),
+        paymentMethod: "usdt_trc20_external",
+      },
+    });
+    await prisma.paymentTransaction.create({
+      data: {
+        orderId: order.id,
+        provider: "tron",
+        status: "confirmed",
+        providerChargeId: `tx-${seed}`,
+        amountMinor: order.amountMinor,
+        currency: "USDT",
+        rawEventHash: `test-bigint-admin-list-${seed}`,
+        blockNumber: 61_234_567_890n,
+        receivedAt: new Date(),
+        confirmedAt: new Date(),
+      },
+    });
+    const financeCookie = await adminLoginAs(app, TEST_CREDENTIALS.finance.email, TEST_CREDENTIALS.finance.password);
+    const response = await app.inject({ method: "GET", url: `/api/admin/orders?orderNo=${encodeURIComponent(order.orderNo)}`, headers: { cookie: financeCookie } });
+    assert.equal(response.statusCode, 200, response.body);
+    const body = response.json() as any;
+    assert.equal(body.items.length, 1);
+    assert.equal(body.items[0].paymentTransactions[0].blockNumber, "61234567890");
+  } finally {
+    await app.close();
+  }
+});
+
 test("越权1：operator 标记支付必须返回 403（运营无 order:mark_paid 权限）", async () => {
   const app = await createTestApp(prisma);
   try {
