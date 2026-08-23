@@ -301,11 +301,14 @@
       o.usdtPayment?.displayAmountDecimal ??
       (isUsdt ? minorToDecimalUsdt(o.amountMinor) :
         o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : null);
-    const listPrice = isUsdt ? minorToDecimalUsdt(o.amountMinor) :
-      o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : null;
+    // USDT 订单 amountMinor 是包含唯一尾数的实际应付金额；优先展示商品基价，避免把尾数误称为标价。
+    const baseAmountMinor = o.usdtPayment?.baseAmountMinor ?? o.product?.usdtPriceMinor ?? null;
+    const listPrice = isUsdt
+      ? (baseAmountMinor != null ? minorToDecimalUsdt(baseAmountMinor) : minorToDecimalUsdt(o.amountMinor))
+      : o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : null;
 
     const listPriceEl = $("listPrice");
-    if (listPriceEl) listPriceEl.textContent = listPrice ? `${listPrice} ${o.currency || ""} (标价)` : "—";
+    if (listPriceEl) listPriceEl.textContent = listPrice ? `${listPrice} ${o.currency || ""}` : "—";
     const payEl = $("payAmount");
     if (payEl) {
       if (displayAmount) {
