@@ -227,6 +227,7 @@
   }
 
   let pollTimer = null;
+  let paidRedirectTimer = null;
   function stopPolling() {
     if (pollTimer) {
       clearInterval(pollTimer);
@@ -303,11 +304,16 @@
     const button = $("btnBackMiniApp");
     if (message) {
       message.innerHTML = bound
-        ? "订单已确认支付成功，频道邀请已通过 Telegram Bot 私信发送给你。<br/>请在 Telegram 中打开 Bot 邀请进入频道，或返回 Mini App 点击已解锁内容进入。"
+        ? "订单已确认支付成功，频道邀请已通过 Telegram Bot 私信发送给你。<br/>将在 3 秒后进入「我的权益」，你也可以立即查看。"
         : "订单已确认支付成功。请先绑定 Telegram，以便合并权益并领取私密频道邀请。";
     }
-    if (button) button.textContent = bound ? "返回 Telegram Mini App" : "绑定 Telegram 后领取频道";
+    if (button) button.textContent = bound ? "立即查看我的权益" : "绑定 Telegram 后领取频道";
     card.style.display = "block";
+    if (bound && !paidRedirectTimer) {
+      paidRedirectTimer = window.setTimeout(() => {
+        window.location.assign("./index.html#view=entitlements");
+      }, 3000);
+    }
   }
 
   function applyOrderData(o) {
