@@ -93,7 +93,6 @@ const LoginPage: React.FC = () => {
               { required: true, message: "请输入邮箱" },
               { type: "email", message: "邮箱格式不正确" },
             ]}
-            initialValue={import.meta.env.DEV ? "operator@intune.local" : undefined}
           >
             <Input size="large" prefix={<MailOutlined />} placeholder="admin@intune.local" />
           </Form.Item>
@@ -102,7 +101,6 @@ const LoginPage: React.FC = () => {
             label="管理员密码"
             name="password"
             rules={[{ required: true, message: "请输入密码" }]}
-            initialValue={import.meta.env.DEV ? "ChangeMeOperator!456" : undefined}
           >
             <Input.Password size="large" prefix={<LockOutlined />} placeholder="登录密码" />
           </Form.Item>
@@ -114,10 +112,7 @@ const LoginPage: React.FC = () => {
 
         <div style={{ marginTop: 20, padding: 12, background: "#f8fafc", borderRadius: 6 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            本地开发默认账号（seed 已创建）：
-            <br />· 运营（可补单）：operator@intune.local / ChangeMeOperator!456
-            <br />· 超管：superadmin@intune.local / ChangeMeSuperAdmin!123
-            <br />上线前请在 <code>server/.env</code> 覆盖 <code>SEED_*_PASSWORD</code> 并重新 seed。
+            请使用由系统管理员创建的后台账号登录。登录后请及时修改初始密码，并妥善保管账号信息。
           </Text>
         </div>
       </Card>
