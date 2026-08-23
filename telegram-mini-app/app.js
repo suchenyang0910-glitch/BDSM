@@ -177,13 +177,41 @@
     $("globalError").classList.add("is-hidden");
   }
 
+  function requestWithCompatibility(url, opts) {
+    if (typeof window.fetch === "function") {
+      return window.fetch(url, opts);
+    }
+    return new Promise(function (resolve, reject) {
+      if (typeof window.XMLHttpRequest !== "function") {
+        reject(new Error("network_api_unavailable"));
+        return;
+      }
+      const xhr = new window.XMLHttpRequest();
+      xhr.open(opts.method || "GET", url, true);
+      xhr.withCredentials = opts.credentials === "include";
+      Object.keys(opts.headers || {}).forEach(function (key) {
+        xhr.setRequestHeader(key, opts.headers[key]);
+      });
+      xhr.onload = function () {
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status,
+          text: function () { return Promise.resolve(xhr.responseText || ""); },
+        });
+      };
+      xhr.onerror = function () { reject(new Error("network_request_failed")); };
+      xhr.ontimeout = function () { reject(new Error("network_request_timeout")); };
+      xhr.send(opts.body || null);
+    });
+  }
+
   async function apiCall(url, options) {
     const opts = options || {};
     const headers = Object.assign({}, opts.headers || {});
     if (!headers.Accept) headers.Accept = "application/json";
     if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
 
-    const res = await fetch(url, {
+    const res = await requestWithCompatibility(url, {
       credentials: "include",
       method: opts.method || "GET",
       body: opts.body,

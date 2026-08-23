@@ -66,8 +66,33 @@
     return normalizeXtrMinor(minorStr).toString();
   }
 
+  function requestWithCompatibility(url, options) {
+    if (typeof window.fetch === "function") return window.fetch(url, options);
+    return new Promise((resolve, reject) => {
+      if (typeof window.XMLHttpRequest !== "function") {
+        reject(new Error("network_api_unavailable"));
+        return;
+      }
+      const xhr = new window.XMLHttpRequest();
+      xhr.open(options?.method || "GET", url, true);
+      xhr.withCredentials = options?.credentials === "include";
+      Object.entries(options?.headers || {}).forEach(([key, value]) => xhr.setRequestHeader(key, value));
+      xhr.onload = () => resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        json: async () => {
+          const text = xhr.responseText || "";
+          return text ? JSON.parse(text) : null;
+        },
+      });
+      xhr.onerror = () => reject(new Error("network_request_failed"));
+      xhr.ontimeout = () => reject(new Error("network_request_timeout"));
+      xhr.send(options?.body || null);
+    });
+  }
+
   function api(url, options) {
-    return fetch(url, {
+    return requestWithCompatibility(url, {
       credentials: "include",
       ...options,
       headers: {
