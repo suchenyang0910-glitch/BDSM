@@ -2278,8 +2278,15 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         orderBy: [{ postedAt: "desc" }],
         take: qp.limit,
       });
-      const currentLink = await (prisma as any).telegramChannelMessage.findUnique({
-        where: { contentId },
+      const currentLink = await (prisma as any).telegramChannelMessage.findFirst({
+        where: {
+          contentId,
+          associationStatus: "linked",
+          managedChannel: {
+            purpose: filter.purpose,
+            ...(filter.packageId ? { packageId: filter.packageId } : {}),
+          },
+        },
         include: {
           managedChannel: { select: { id: true, title: true, username: true, purpose: true, packageId: true } },
         },
@@ -2330,7 +2337,16 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const chatFingerprint = chatId ? chatIdFingerprint(chatId) : null;
       const linkedAt = new Date();
       const after = await prisma.$transaction(async (tx: any) => {
-        const existingForContent = await tx.telegramChannelMessage.findUnique({ where: { contentId } });
+        const existingForContent = await tx.telegramChannelMessage.findFirst({
+          where: {
+            contentId,
+            associationStatus: "linked",
+            managedChannel: {
+              purpose: filter.purpose,
+              ...(filter.packageId ? { packageId: filter.packageId } : {}),
+            },
+          },
+        });
         if (existingForContent) {
           throw Object.assign(new Error("content_already_has_linked_message"), { statusCode: 409, code: "CONTENT_ALREADY_LINKED" });
         }
@@ -2415,8 +2431,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       if (meta.adminRole !== "super_admin") {
         return reply.status(403).send({ error: "forbidden", message: "权限不足，需要 super_admin" });
       }
-      const linked = await (prisma as any).telegramChannelMessage.findUnique({
-        where: { contentId },
+      const linked = await (prisma as any).telegramChannelMessage.findFirst({
+        where: { contentId, associationStatus: "linked" },
+        orderBy: { linkedAt: "desc" },
         include: { managedChannel: { select: { id: true, title: true, username: true } } },
       });
       if (!linked) {

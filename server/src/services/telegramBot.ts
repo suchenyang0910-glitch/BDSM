@@ -11,6 +11,8 @@
  *  - 生产代码严禁调用 getUpdates；NODE_ENV=production 且 TELEGRAM_DEV_USE_GETUPDATES=true → 启动崩溃。
  *  - 仅 NODE_ENV!==production + TELEGRAM_DEV_USE_GETUPDATES=true 时允许 getUpdates（开发用）。
  */
+import crypto from "node:crypto";
+import { Readable } from "node:stream";
 import { getTelegramBotByKey, type TelegramBotCredential } from "../utils/telegram.js";
 import { chatIdIndexKey, constantTimeEqual } from "../utils/crypto.js";
 
@@ -183,7 +185,72 @@ async function callBotApi<T = unknown>(bot: TelegramBotCredential, method: strin
   }
 }
 
-type MultipartField = { name: string; type: "text"; value: string | number | boolean } | { name: string; type: "file"; filename: string; contentType: string; body: unknown };
+export type MultipartField = { name: string; type: "text"; value: string | number | boolean } | { name: string; type: "file"; filename: string; contentType: string; body: unknown };
+
+function safeMultipartHeaderValue(value: string): string {
+  return String(value).replace(/[\r\n"]/g, "_");
+}
+
+function toMultipartChunk(value: unknown): Buffer {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  return Buffer.from(String(value), "utf8");
+}
+
+async function* streamMultipartFileBody(value: unknown): AsyncGenerator<Buffer> {
+  if (value instanceof Uint8Array || Buffer.isBuffer(value)) {
+    yield toMultipartChunk(value);
+    return;
+  }
+  if (value && typeof (value as any)[Symbol.asyncIterator] === "function") {
+    for await (const chunk of value as AsyncIterable<unknown>) yield toMultipartChunk(chunk);
+    return;
+  }
+  if (value && typeof (value as any).getReader === "function") {
+    const reader = (value as ReadableStream<Uint8Array>).getReader();
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        if (next.value) yield toMultipartChunk(next.value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return;
+  }
+  throw new Error("telegram_multipart_file_body_not_streamable");
+}
+
+/**
+ * Blob([Readable]) 不会消费对象存储的 Node stream，而会上传流对象自身，Telegram 侧便会形成损坏视频。
+ * 使用 HTTP chunked multipart 直接转发 S3 数据：不落盘，也不在内存缓冲整条视频。
+ */
+export function createStreamingMultipartPayload(fields: MultipartField[]): {
+  contentType: string;
+  body: Readable;
+} {
+  const boundary = `----intune-${crypto.randomBytes(18).toString("hex")}`;
+  const body = Readable.from((async function* (): AsyncGenerator<Buffer> {
+    for (const field of fields) {
+      yield Buffer.from(`--${boundary}\r\n`, "utf8");
+      if (field.type === "text") {
+        yield Buffer.from(`Content-Disposition: form-data; name=\"${safeMultipartHeaderValue(field.name)}\"\r\n\r\n`, "utf8");
+        yield Buffer.from(typeof field.value === "string" ? field.value : String(field.value), "utf8");
+      } else {
+        yield Buffer.from(
+          `Content-Disposition: form-data; name=\"${safeMultipartHeaderValue(field.name)}\"; filename=\"${safeMultipartHeaderValue(field.filename)}\"\r\n` +
+          `Content-Type: ${safeMultipartHeaderValue(field.contentType || "application/octet-stream")}\r\n\r\n`,
+          "utf8",
+        );
+        yield* streamMultipartFileBody(field.body);
+      }
+      yield Buffer.from("\r\n", "utf8");
+    }
+    yield Buffer.from(`--${boundary}--\r\n`, "utf8");
+  })());
+  return { contentType: `multipart/form-data; boundary=${boundary}`, body };
+}
 
 async function callBotApiMultipart<T = unknown>(
   bot: TelegramBotCredential,
@@ -191,24 +258,14 @@ async function callBotApiMultipart<T = unknown>(
   fields: MultipartField[],
 ): Promise<{ ok: boolean; result?: T; error_code?: number; description?: string }> {
   try {
-    const FormDataCtor: any = (globalThis as any).FormData;
-    if (!FormDataCtor) {
-      return { ok: false, error_code: 500, description: "node_fetch_multipart_formdata_unavailable" };
-    }
-    const BlobCtor: any = (globalThis as any).Blob;
-    const fd = new FormDataCtor();
-    for (const f of fields) {
-      if (f.type === "text") {
-        fd.append(f.name, typeof f.value === "string" ? f.value : JSON.stringify(f.value));
-      } else {
-        let blobLike: any = f.body;
-        if (BlobCtor && blobLike && !(blobLike instanceof BlobCtor)) {
-          try { blobLike = new BlobCtor([blobLike], { type: f.contentType }); } catch { /* noop */ }
-        }
-        fd.append(f.name, blobLike, f.filename);
-      }
-    }
-    const response = await fetch(`${API_BASE}/bot${bot.token}/${method}`, { method: "POST", body: fd as any });
+    const multipart = createStreamingMultipartPayload(fields);
+    const response = await fetch(`${API_BASE}/bot${bot.token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": multipart.contentType },
+      body: multipart.body as any,
+      // Node fetch 对 Readable request body 的必需扩展参数。
+      duplex: "half",
+    } as any);
     return await response.json() as { ok: boolean; result?: T; error_code?: number; description?: string };
   } catch (error) {
     return { ok: false, error_code: 500, description: error instanceof Error ? error.message : "network error" };

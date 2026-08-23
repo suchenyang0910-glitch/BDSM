@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
 import test from "node:test";
 import { getTelegramBotCredentials, validateTelegramInitData } from "../src/utils/telegram.js";
-import { resolveMiniAppUrl, withMiniAppLaunchButton } from "../src/services/telegramBot.js";
+import { createStreamingMultipartPayload, resolveMiniAppUrl, withMiniAppLaunchButton } from "../src/services/telegramBot.js";
 
 function makeInitData(token: string, authDate: number): string {
   const params = new URLSearchParams({
@@ -62,4 +63,19 @@ test("Bot 私信统一追加受控 Mini App 入口，且不重复覆盖业务按
   assert.equal(stable.inline_keyboard.length, 2, "已有 Mini App 按钮时不得重复追加");
   assert.equal(stable.inline_keyboard[1]?.[0]?.web_app?.url, "https://mini.example.com/");
   assert.equal(resolveMiniAppUrl("javascript:alert(1)"), "https://bdsm.linkx.club/");
+});
+
+test("对象存储视频以真实流式 multipart 字节上传，绝不把 Readable 序列化成对象", async () => {
+  const videoBytes = Buffer.from([0, 1, 2, 3, 0xff, 0x00, 0x7f]);
+  const multipart = createStreamingMultipartPayload([
+    { name: "chat_id", type: "text", value: "-1000000000001" },
+    { name: "video", type: "file", filename: "source.mp4", contentType: "video/mp4", body: Readable.from([videoBytes]) },
+  ]);
+  const pieces: Buffer[] = [];
+  for await (const piece of multipart.body) pieces.push(Buffer.from(piece));
+  const wire = Buffer.concat(pieces);
+  assert.match(multipart.contentType, /^multipart\/form-data; boundary=----intune-/);
+  assert.ok(wire.includes(videoBytes), "multipart 必须包含原始视频二进制字节");
+  assert.equal(wire.toString("utf8").includes("[object Object]"), false, "不得将 Node Readable 包装为 Blob 后序列化");
+  assert.match(wire.toString("latin1"), /Content-Type: video\/mp4/);
 });

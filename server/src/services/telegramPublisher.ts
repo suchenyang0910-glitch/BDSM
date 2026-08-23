@@ -25,7 +25,7 @@ import crypto from "crypto";
 import type { PrismaClient, TelegramPublishJob, MediaAsset, Content, ContentPackage, TelegramPublishChannelKind } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 
-import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
+import { emitSafetyEvent, emitStructuredLog, extractPrismaCodeOnly } from "../utils/structuredError.js";
 import { decryptChatIdAesGcm, chatIdIndexKey, hmacSha256Hex } from "../utils/crypto.js";
 
 import {
@@ -480,10 +480,16 @@ export async function processPublishJob(
     });
     return { ok: true };
   } catch (err) {
-    emitSafetyEvent({ event: "tg_publish_process_unhandled_error", errorClass: "internal", note: truncateNote(err instanceof Error ? err.message : String(err), 80) || undefined }, err);
+    const prismaCode = extractPrismaCodeOnly(err);
+    emitSafetyEvent({
+      event: "tg_publish_process_unhandled_error",
+      errorClass: prismaCode === "P2002" ? "conflict" : "internal",
+      prismaCode,
+      note: "publish_transaction_or_stream_failed",
+    });
     await markJobFailed(prisma, job.id, {
-      lastErrorClass: "publish_process_internal",
-      lastErrorNote: truncateNote(err instanceof Error ? err.message : String(err), 180),
+      lastErrorClass: prismaCode === "P2002" ? "publish_record_conflict" : "publish_process_internal",
+      lastErrorNote: prismaCode === "P2002" ? "publish_record_conflict" : "publish_transaction_or_stream_failed",
       bumpRetry: true,
     });
     return { ok: false, reason: "process_internal_error" };

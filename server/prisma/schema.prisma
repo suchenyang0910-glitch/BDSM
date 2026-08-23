@@ -378,7 +378,7 @@ model Content {
   previewAsset       MediaAsset?    @relation("ContentPreviewAsset", fields: [previewAssetId], references: [id], onDelete: SetNull)
   fullVideoAsset     MediaAsset?    @relation("ContentFullVideoAsset", fields: [fullVideoAssetId], references: [id], onDelete: SetNull)
   publishJobs        TelegramPublishJob[]
-  linkedChannelMessage TelegramChannelMessage?
+  linkedChannelMessages TelegramChannelMessage[]
 
   @@index([status, accessType])
   @@index([isFeatured, featuredSort])
@@ -945,7 +945,7 @@ model TelegramChannelMessage {
   captionFingerprint   String?  @map("caption_fingerprint") @db.VarChar(64)
   postedAt             DateTime @map("posted_at")
   associationStatus    String   @default("unlinked") @map("association_status") @db.VarChar(32)
-  contentId            String?  @unique @map("content_id")
+  contentId            String?  @map("content_id")
   linkedAt             DateTime? @map("linked_at")
   linkedBy             String?  @map("linked_by")
   createdAt            DateTime @default(now()) @map("created_at")
@@ -955,6 +955,7 @@ model TelegramChannelMessage {
   linkedByAdmin        AdminUser?          @relation("ChannelMessageLinkAdmin", fields: [linkedBy], references: [id], onDelete: SetNull)
 
   @@unique([managedChannelId, messageId])
+  @@index([contentId])
   @@index([managedChannelId, associationStatus, postedAt])
   @@index([associationStatus, postedAt])
   @@map("telegram_channel_messages")
