@@ -24,7 +24,7 @@
     h5_login_auth_expired: "登录授权已超过 10 分钟有效窗口。请返回登录页重新发起授权。",
     h5_login_internal_error: "服务端用户登记失败。请稍后重试，或使用 Telegram Mini App 打开本页。",
     h5_login_merge_failed: "匿名订单合并失败。请稍后重试，或使用 Telegram Mini App 打开本页。",
-    h5_login_required_for_payment: "当前页面已支持访客会话下创建 USDT 订单；若需跨设备恢复订单与权益，请先绑定 Telegram。",
+    h5_login_required_for_payment: "当前页面已支持本机账户创建 USDT 订单；若需跨设备恢复订单与权益，请绑定 Telegram。",
     h5_login_required_for_channel_access: "获取 VIP 频道邀请链接前需要先绑定 Telegram 身份，否则无法将你加入目标频道。",
   };
 
@@ -417,7 +417,7 @@
     if (qsOrder) $("orderNo").value = qsOrder;
     if (qsProd) $("productId").value = qsProd;
 
-    // ============== P0-7-A: 首屏 GET /session，失败则 POST /guest-session 创匿名访客 ==============
+    // 首屏读取本机账户；首次访问时由服务端创建设备绑定会话。
     let established = false;
     try {
       const sess = await api("/api/auth/h5/session", {});
@@ -435,7 +435,7 @@
           established = true;
         }
       } catch (e) {
-        showError("访客会话创建失败：" + zhMsg(e));
+        showError("本机账户会话创建失败：" + zhMsg(e));
         return;
       }
     }
@@ -455,8 +455,8 @@
       const text = $("userChipText");
       if (chip && text) {
         chip.classList.remove("off");
-        text.textContent = "访客模式 · 点击登录绑定 Telegram";
-        chip.title = "当前为访客模式（可浏览、创建 USDT 待支付订单）；绑定 Telegram 后可跨设备恢复订单与权益。";
+        text.textContent = "本机账户 · 绑定 Telegram 可跨设备恢复";
+        chip.title = "当前本机账户可浏览、创建 USDT 待支付订单；绑定 Telegram 后可跨设备恢复订单与权益。";
         let bound = false;
         chip.onclick = () => {
           if (bound) return;
@@ -820,7 +820,7 @@
   }
 
   async function handleCreateOrder(productId) {
-    if (!ensureTelegramBound("h5_login_required_for_payment")) return;
+    // H5 的本机账户即可创建 USDT 订单；Telegram 绑定仅在用户领取私密频道时需要。
     showView("payDetail");
     const card = $("activatedCard");
     if (card) card.style.display = "none";
