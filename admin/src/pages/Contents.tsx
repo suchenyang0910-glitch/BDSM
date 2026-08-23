@@ -484,7 +484,9 @@ const ContentsPage: React.FC = () => {
     setCurrentChannelLink(null);
     setChannelMessages([]);
     form.setFieldsValue({
-      accessType: "public" as AccessTypeForSelect,
+      // 首发的主路径是「付费完整视频 + 可选试看」；公开类型仅用于引流，
+      // 不应作为新建内容的默认项，否则完整视频上传会被禁用而让运营无所适从。
+      accessType: "membership" as AccessTypeForSelect,
       status: "draft",
       sortOrder: 0,
       isRecommended: false,
@@ -1042,7 +1044,7 @@ const ContentsPage: React.FC = () => {
               onChange={(v) => setOpsTagFilter(v)}
             />
             <Button icon={<PlusOutlined />} type="primary" onClick={openCreate} disabled={!canEdit}>
-              新建内容
+              发布视频
             </Button>
           </Space>
         }
@@ -1065,7 +1067,7 @@ const ContentsPage: React.FC = () => {
       </Card>
 
       <Drawer
-        title={editing ? `编辑内容：${editing.title}` : "新建内容"}
+        title={editing ? `编辑视频：${editing.title}` : "发布视频"}
         open={drawerOpen}
         onClose={() => !submitting && setDrawerOpen(false)}
         width={760}
@@ -1074,7 +1076,7 @@ const ContentsPage: React.FC = () => {
           <Space>
             <Button onClick={() => setDrawerOpen(false)} disabled={submitting}>取消</Button>
             <Button type="primary" loading={submitting} onClick={onDrawerSubmit} disabled={!canEdit}>
-              {editing ? "保存" : "创建"}
+              {editing ? "保存视频信息" : "保存并进入发布"}
             </Button>
           </Space>
         }
@@ -1085,9 +1087,16 @@ const ContentsPage: React.FC = () => {
             // ==================== Tab 1：基本信息（原 Form + 发布前检查） ====================
             {
               key: "basic",
-              label: <Space><span>基本信息</span>{accessTypeValue === "single" && <Tag color="red">single·硬禁</Tag>}</Space>,
+              label: <Space><span>① 视频信息</span>{accessTypeValue === "single" && <Tag color="red">single·硬禁</Tag>}</Space>,
               children: (
                 <Form form={form} layout="vertical" preserve={false}>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="只需三步：填写标题与类型 → 上传素材 → 发布到频道"
+                    description="首期默认发布到会员频道。SEO、排序、运营标签等不影响首次上传，可在保存后再补充。"
+                    style={{ marginBottom: 16 }}
+                  />
                   <Form.Item name="title" label="标题" rules={[{ required: true, message: "请输入标题" }]}>
                     <Input placeholder="例如：呼吸与身体扫描入门" maxLength={200} />
                   </Form.Item>
@@ -1382,14 +1391,15 @@ const ContentsPage: React.FC = () => {
             // ==================== Tab 2：素材上传（三 Upload + 尺寸限制 + 水印 + public 禁完整视频） ====================
             {
               key: "media",
-              label: <Space><span>素材上传</span>{coverAssetId && previewAssetId ? <Badge count={2} /> : null}</Space>,
+              label: <Space><span>② 上传素材</span>{coverAssetId && previewAssetId ? <Badge count={2} /> : null}</Space>,
               children: (
                 <Space direction="vertical" size={20} style={{ width: "100%" }}>
                   <Alert
                     type="info"
                     showIcon
                     icon={<InfoCircleOutlined />}
-                    message="所有素材浏览器直传对象存储（DigitalOcean Spaces 等 S3 兼容服务），不经过普通 Web 服务器；因此封面 20MB / 试看 800MB / 完整视频 8GB 可稳定上传，仅需按下方按钮即可。"
+                    message="按顺序上传：封面 → 30–60 秒试看（可选）→ 完整视频。"
+                    description="完整视频仅会发送到会员或内容包私密频道；不会出现在免费频道。上传完成后，回到第①步保存，再进入第③步发布。"
                   />
                   {/* 封面 */}
                   <Card
@@ -1535,7 +1545,7 @@ const ContentsPage: React.FC = () => {
             // ==================== Tab 3：发布进度（Bot 异步任务队列 + 进度表） ====================
             {
               key: "publish",
-              label: <Space><span>频道发布与关联</span>{publishJobs.filter(j => j.status === "processing" || j.status === "queued").length > 0 && <Badge color="processing" count={publishJobs.filter(j => j.status === "processing" || j.status === "queued").length} />}</Space>,
+              label: <Space><span>③ 发布到频道</span>{publishJobs.filter(j => j.status === "processing" || j.status === "queued").length > 0 && <Badge color="processing" count={publishJobs.filter(j => j.status === "processing" || j.status === "queued").length} />}</Space>,
               children: (
                 <Space direction="vertical" size={20} style={{ width: "100%" }}>
                   {!editing?.id ? (
