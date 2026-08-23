@@ -62,6 +62,11 @@ test("catalog APIs return seeded home, category and content data", async () => {
     assert.equal(detailBody.id, TEST_KNOWN_IDS.contentMembership, "content detail id match");
     assert.equal(detailBody.robots, "noindex,nofollow", "content detail should stay noindex by default");
     assert.equal(detailBody.effectiveSeo?.description, "会员内容 SEO 描述", "detail should prefer content SEO override");
+    assert.equal(
+      detailBody.product?.id,
+      TEST_KNOWN_IDS.membershipProductKey,
+      "membership content without an explicit product should inherit the sole active 30-day membership product",
+    );
     assert.equal(detailBody.videoObjectJsonLd?.["@type"], "VideoObject", "detail should expose VideoObject JSON-LD");
   } finally {
     await app.close();

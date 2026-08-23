@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { formatDuration } from "../utils/telegram.js";
 import { buildEffectiveSeo, buildVideoObjectJsonLd } from "../services/seoMetadata.js";
+import { resolveDefaultMonthlyMembershipProduct } from "../services/membershipProduct.js";
 
 const contentsQuerySchema = z.object({
   categoryId: z.string().optional(),
@@ -47,7 +48,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     const skip = (query.page - 1) * query.pageSize;
     const take = query.pageSize;
 
-    const [total, rows, platformMetadata] = await Promise.all([
+    const [total, rows, platformMetadata, defaultMembershipProduct] = await Promise.all([
       prisma.content.count({ where }),
       prisma.content.findMany({
         where,
@@ -61,6 +62,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         },
       }),
       tryGetPlatformMetadata(),
+      resolveDefaultMonthlyMembershipProduct(prisma),
     ]);
 
     let userEntitlements: Set<string> = new Set();
@@ -87,6 +89,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     }
 
     const data = rows.map((c: any) => {
+      const product = c.product || (c.accessType === "membership" ? defaultMembershipProduct : null);
       const cat = c.categories?.[0]?.category;
       const tags: string[] = [];
       if (c.isFeatured) tags.push("精选");
@@ -115,10 +118,10 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         categoryName: cat?.name,
         packageId: c.package?.id || c.packageId || null,
         packageTitle: c.package?.title || null,
-        productId: c.product?.id || c.productId || null,
-        priceMinor: c.product?.priceMinor?.toString(),
-        priceCurrency: c.product?.currency,
-        usdtPriceMinor: c.product?.usdtPriceMinor?.toString() ?? null,
+        productId: product?.id || c.productId || null,
+        priceMinor: product?.priceMinor?.toString(),
+        priceCurrency: product?.currency,
+        usdtPriceMinor: product?.usdtPriceMinor?.toString() ?? null,
         publishedAt: c.publishedAt?.toISOString(),
         effectiveSeo: buildEffectiveSeo({
           contentSeoTitle: c.seoTitle,
@@ -151,7 +154,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     const uid = (req as any).userId as string | undefined;
     const now = new Date();
 
-    const [content, platformMetadata] = await Promise.all([
+    const [content, platformMetadata, defaultMembershipProduct] = await Promise.all([
       prisma.content.findUnique({
         where: { id },
         include: {
@@ -161,6 +164,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         },
       }),
       tryGetPlatformMetadata(),
+      resolveDefaultMonthlyMembershipProduct(prisma),
     ]);
 
     if (!content) return reply.status(404).send({ error: "not_found" });
@@ -206,6 +210,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       platformGeoKeywords: platformMetadata?.geoKeywords,
     });
     const pageUrl = `${resolveBaseUrl(req)}/#view=content&id=${encodeURIComponent(content.id)}`;
+    const product = content.product || (content.accessType === "membership" ? defaultMembershipProduct : null);
     return {
       id: content.id,
       title: content.title,
@@ -218,14 +223,14 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       tags,
       categories: content.categories.map((c: any) => c.category),
       package: content.package,
-      product: content.product
+      product: product
         ? {
-            id: content.product.id,
-            priceMinor: content.product.priceMinor.toString(),
-            currency: content.product.currency,
-            usdtPriceMinor: content.product.usdtPriceMinor?.toString() ?? null,
-            type: content.product.type,
-            durationDays: content.product.durationDays,
+            id: product.id,
+            priceMinor: product.priceMinor.toString(),
+            currency: product.currency,
+            usdtPriceMinor: product.usdtPriceMinor?.toString() ?? null,
+            type: product.type,
+            durationDays: product.durationDays,
           }
         : null,
       unlocked,

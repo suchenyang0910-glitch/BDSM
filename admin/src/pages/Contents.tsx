@@ -887,7 +887,8 @@ const ContentsPage: React.FC = () => {
         <Space size={4} wrap>
           {r.package?.title && <Tag color="geekblue">包：{r.package.title}</Tag>}
           {r.product?.title && <Tag color="purple">商品：{r.product.title}</Tag>}
-          {!r.package?.title && !r.product?.title && r.accessType !== "public" && <Tag color="default">未绑定</Tag>}
+          {!r.package?.title && !r.product?.title && r.accessType === "membership" && <Tag color="green">继承月度会员</Tag>}
+          {!r.package?.title && !r.product?.title && r.accessType !== "public" && r.accessType !== "membership" && <Tag color="default">未绑定</Tag>}
         </Space>
       ),
     },
@@ -1331,9 +1332,17 @@ const ContentsPage: React.FC = () => {
                       </Form.Item>
                     ) : null}
 
-                    {(accessTypeValue === "membership" || accessTypeValue === "public") ? (
+                    {accessTypeValue === "membership" ? (
+                      <Alert
+                        type="success"
+                        showIcon
+                        message="自动使用平台默认月度会员"
+                        description="无需填写商品 ID。用户购买月度会员后即可观看全部会员专享内容。"
+                        style={{ flex: 1 }}
+                      />
+                    ) : accessTypeValue === "public" ? (
                       <Form.Item name="productId" label="关联商品 ID（可选，分析用）" style={{ flex: 1 }}>
-                        <Input placeholder={accessTypeValue === "membership" ? "对应会员商品 UUID" : "public 通常留空"} />
+                        <Input placeholder="公开内容通常留空" />
                       </Form.Item>
                     ) : null}
 

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { formatDuration } from "../utils/telegram.js";
 import { buildEffectiveSeo } from "../services/seoMetadata.js";
+import { resolveDefaultMonthlyMembershipProduct } from "../services/membershipProduct.js";
 
 type RawContentRow = {
   id: string;
@@ -48,6 +49,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       platformMetadata: any;
       unlocked: boolean;
       tagPrefix?: string[];
+      defaultMembershipProduct?: RawContentRow["product"];
     },
   ) {
     const category = row.categories?.[0]?.category;
@@ -59,6 +61,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
     if (row.accessType === "membership") tags.push("会员内容");
     if (row.accessType === "package") tags.push("内容包内容");
 
+    const product = row.product || (row.accessType === "membership" ? opts.defaultMembershipProduct || null : null);
     return {
       id: row.id,
       title: row.title,
@@ -78,10 +81,10 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       categoryName: category?.name || "",
       packageId: row.package?.id || row.packageId || null,
       packageTitle: row.package?.title || null,
-      productId: row.product?.id || row.productId || null,
-      priceMinor: row.product?.priceMinor?.toString(),
-      priceCurrency: row.product?.currency,
-      usdtPriceMinor: row.product?.usdtPriceMinor?.toString() ?? null,
+      productId: product?.id || row.productId || null,
+      priceMinor: product?.priceMinor?.toString(),
+      priceCurrency: product?.currency,
+      usdtPriceMinor: product?.usdtPriceMinor?.toString() ?? null,
       publishedAt: row.publishedAt?.toISOString(),
       unlocked: opts.unlocked,
       effectiveSeo: buildEffectiveSeo({
@@ -122,6 +125,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       latestRows,
       fallbackFeaturedRows,
       platformMetadata,
+      defaultMembershipProduct,
     ] = await Promise.all([
       config.bannerIds?.length
         ? prisma.banner.findMany({ where: { id: { in: config.bannerIds } } })
@@ -178,6 +182,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
         },
       }),
       tryGetPlatformMetadata(),
+      resolveDefaultMonthlyMembershipProduct(prisma),
     ]);
 
     const configuredBanners = config.bannerIds?.length
@@ -252,12 +257,14 @@ export default async function homeRoutes(fastify: FastifyInstance) {
           platformMetadata,
           unlocked: isUnlocked(featuredRow),
           tagPrefix: ["今日精选"],
+          defaultMembershipProduct,
         })
       : null;
 
     const latestContents = latestRows.slice(0, 6).map((row: RawContentRow) => buildContentPayload(row, {
       platformMetadata,
       unlocked: isUnlocked(row),
+      defaultMembershipProduct,
     }));
 
     const themeCategories = await Promise.all(themeCategoriesRaw.map(async (category: any) => {
