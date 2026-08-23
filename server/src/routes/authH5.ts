@@ -226,14 +226,14 @@ export default async function authH5Routes(fastify: FastifyInstance) {
           data: {
             telegramUserId: null,
             username: null,
-            displayName: "访客用户",
+            displayName: "同频账户",
             photoUrl: null,
             status: "active",
           },
         });
       } catch (e: any) {
         emitSafety({ event: "auth_h5_guest_create_user_failed", errorClass: "db_error", note: `len=${e?.message?.length || 0}` }, e);
-        return reply.status(500).send({ error: "auth_h5_guest_unavailable", userError: "访客会话创建失败，请稍后重试。" });
+        return reply.status(500).send({ error: "auth_h5_guest_unavailable", userError: "本机账户会话创建失败，请稍后重试。" });
       }
 
       try {
@@ -250,7 +250,7 @@ export default async function authH5Routes(fastify: FastifyInstance) {
         });
       } catch (e: any) {
         emitSafety({ event: "auth_h5_guest_session_conflict", errorClass: "db_error", note: `len=${e?.message?.length || 0}` }, e);
-        return reply.status(500).send({ error: "auth_h5_guest_session_conflict", userError: "访客会话创建冲突，请刷新重试。" });
+        return reply.status(500).send({ error: "auth_h5_guest_session_conflict", userError: "本机账户会话创建冲突，请刷新重试。" });
       }
 
       setDeviceCookie(reply, newToken, H5_DEVICE_SESSION_MAX_AGE_MS, SECURE_COOKIE);
@@ -264,7 +264,7 @@ export default async function authH5Routes(fastify: FastifyInstance) {
         identity: "guest",
         userId: anon.id,
         telegramBound: false,
-        displayName: "访客用户",
+        displayName: "同频账户",
         expiresAt: expiresAt.toISOString(),
       });
     } catch (e: any) {

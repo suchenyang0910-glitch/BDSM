@@ -653,7 +653,7 @@
     const isTelegram = session && session.identity === "telegram";
     $("profileTitle").textContent = isTelegram
       ? "当前账户 · " + (session.displayName || "已连接 Telegram")
-      : "本机账户 · " + (session.displayName || "同频账户");
+      : "本机账户 · " + (session.displayName === "访客用户" ? "同频账户" : (session.displayName || "同频账户"));
     $("profileSubtitle").textContent = isTelegram
       ? "已连接 Telegram，可跨设备恢复订单与权益。"
       : "首次打开已自动创建本机账户；绑定 Telegram 后可跨设备恢复权益。";
