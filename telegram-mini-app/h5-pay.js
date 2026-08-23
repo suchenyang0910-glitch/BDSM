@@ -260,16 +260,19 @@
     pollTimer = setInterval(tick, attempt < 5 ? 2500 : 5000);
   }
 
-  function drawQr(uri) {
+  function drawQr(address) {
     const box = $("qrBox");
     if (!box) return;
     box.innerHTML = "";
     try {
       if (typeof QRCode !== "undefined") {
         new QRCode(box, {
-          text: uri,
-          width: 104,
-          height: 104,
+          // Raw TRON address is the cross-wallet QR format. Some wallets can
+          // display a tron: URI but fail to start a TRC-20 transfer from it.
+          // The exact unique USDT amount remains a separate one-tap copy.
+          text: address,
+          width: 220,
+          height: 220,
           colorDark: "#0f0c18",
           colorLight: "#ffffff",
           correctLevel: 2,
@@ -277,7 +280,7 @@
       } else {
         const img = document.createElement("img");
         img.alt = "二维码";
-        img.src = `https://api.qrserver.com/v1/create-qr-code/?size=104x104&margin=0&data=${encodeURIComponent(uri)}`;
+        img.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=4&data=${encodeURIComponent(address)}`;
         box.appendChild(img);
       }
     } catch (_) {
@@ -351,8 +354,7 @@
       lastAddress = addr;
       const addrEl = $("addrText");
       if (addrEl) addrEl.textContent = addr;
-      const uri = `tron:${addr}?amount=${displayAmount || 0}&token=USDT`;
-      drawQr(uri);
+      drawQr(addr);
     }
 
     const confirmations = o.usdtPayment?.confirmationsTarget || 3;
