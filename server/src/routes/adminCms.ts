@@ -43,7 +43,7 @@ import { decryptChatIdAesGcm } from "../utils/crypto.js";
 
 const ContentStatusZ = z.enum(["draft", "pending_review", "published", "archived", "scheduled"]);
 const BannerStatusZ = z.enum(["draft", "active", "inactive", "scheduled", "archived"]);
-const BannerTargetTypeZ = z.enum(["none", "content", "category", "product", "external", "package"]);
+const BannerTargetTypeZ = z.enum(["content", "category", "package", "membership", "external"]);
 const MAX_FULL_VIDEO_BYTES = 8n * 1024n * 1024n * 1024n;
 
 function adminMeta(req: FastifyRequest) {
@@ -1349,8 +1349,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     description: z.string().max(500).optional().nullable(),
     imageUrl: z.string().trim().url().max(500).optional().nullable(),
     actionLabel: z.string().max(40).optional().default("查看"),
-    slot: z.string().max(32).optional().default("home_top"),
-    targetType: BannerTargetTypeZ.optional().default("none"),
+    slot: z.string().max(32).optional().default("home_primary"),
+    targetType: BannerTargetTypeZ,
     targetId: z.string().max(128).optional().nullable(),
     externalUrl: z.string().max(1000).optional().nullable(),
     status: BannerStatusZ.optional().default("draft"),
@@ -1364,6 +1364,36 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
 
   function stripBanner(row: any) {
     return { ...row };
+  }
+
+  function isAllowedBannerExternalUrl(url: string): boolean {
+    const trimmed = String(url || "").trim();
+    if (!trimmed) return false;
+    if (/^https:\/\/t\.me\/joinchat\//i.test(trimmed)) return false;
+    if (/^https:\/\/t\.me\/\+/i.test(trimmed)) return false;
+    if (/\/invoice|\/checkout|\/pay|\/payment/i.test(trimmed)) return false;
+    return /^https:\/\/(?:[^/\s]+\.)?[^/\s]+/i.test(trimmed) || /^https:\/\/t\.me\/[A-Za-z0-9_]{3,64}$/i.test(trimmed);
+  }
+
+  function normalizeBannerPayload(input: any) {
+    const output = { ...input } as any;
+    if (output.targetType === "external") {
+      output.targetId = null;
+      output.externalUrl = output.externalUrl ? String(output.externalUrl).trim() : null;
+      if (!output.externalUrl || !isAllowedBannerExternalUrl(output.externalUrl)) {
+        throw new Error("external_url_invalid");
+      }
+      return output;
+    }
+    output.externalUrl = null;
+    if (output.targetType === "membership") {
+      output.targetId = "membership";
+      return output;
+    }
+    if (!output.targetId) {
+      throw new Error("banner_target_required");
+    }
+    return output;
   }
 
   fastify.get(
@@ -1383,7 +1413,16 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     async (req: any, reply) => {
       const body = ZBAN_CREATE.parse(req.body);
       const meta = adminMeta(req);
-      const { reason, startsAt, endsAt, ...payload } = body;
+      const { reason, startsAt, endsAt, ...rawPayload } = body;
+      let payload: any;
+      try {
+        payload = normalizeBannerPayload(rawPayload);
+      } catch (error: any) {
+        return reply.status(400).send({
+          error: error?.message || "invalid_banner_target",
+          message: "Banner 跳转目标不合法：仅允许内容/分类/内容包/会员页，或受控 HTTPS / 公开 Telegram 链接。",
+        });
+      }
       const res = await prisma.$transaction(async (tx: any) => {
         const cr = await tx.banner.create({
           data: {
@@ -1406,9 +1445,30 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const id = z.string().uuid().parse(req.params.id);
       const body = ZBAN_EDIT.omit({ id: true }).parse(req.body);
       const meta = adminMeta(req);
-      const { reason, startsAt, endsAt, ...payload } = body;
+      const { reason, startsAt, endsAt, ...payloadInput } = body;
       const before = await prisma.banner.findUnique({ where: { id } });
       if (!before) return reply.status(404).send({ error: "not_found" });
+      let payload: any;
+      try {
+        payload = normalizeBannerPayload({
+          targetType: payloadInput.targetType ?? before.targetType,
+          targetId: payloadInput.targetId ?? before.targetId,
+          externalUrl: payloadInput.externalUrl ?? before.externalUrl,
+          title: payloadInput.title ?? before.title,
+          description: payloadInput.description ?? before.description,
+          imageUrl: payloadInput.imageUrl ?? before.imageUrl,
+          actionLabel: payloadInput.actionLabel ?? before.actionLabel,
+          slot: payloadInput.slot ?? before.slot,
+          status: payloadInput.status ?? before.status,
+          sortOrder: payloadInput.sortOrder ?? before.sortOrder,
+          categoryId: payloadInput.categoryId ?? before.categoryId,
+        });
+      } catch (error: any) {
+        return reply.status(400).send({
+          error: error?.message || "invalid_banner_target",
+          message: "Banner 跳转目标不合法：仅允许内容/分类/内容包/会员页，或受控 HTTPS / 公开 Telegram 链接。",
+        });
+      }
       const data: any = {};
       for (const k of Object.keys(payload)) {
         const v = (payload as any)[k];
@@ -1447,10 +1507,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
   // HOMEPAGE PUBLISH (Step 3 BE-R4) — single version published only
   // ===========================================================================
   const ZHOME_CONFIG = z.object({
-    bannerIds: z.array(z.string().uuid()).max(50).optional().default([]),
+    bannerIds: z.array(z.string().uuid()).max(3).optional().default([]),
     recommendContentIds: z.array(z.string().uuid()).max(100).optional().default([]),
-    featuredContentIds: z.array(z.string().uuid()).max(50).optional().default([]),
-    categoryOrderIds: z.array(z.string().uuid()).max(50).optional().default([]),
+    featuredContentIds: z.array(z.string().uuid()).max(1).optional().default([]),
+    categoryOrderIds: z.array(z.string().uuid()).max(4).optional().default([]),
   });
   const ZHOME_DRAFT_PUT = z.object({
     versionLabel: z.string().max(80).optional().nullable(),
@@ -2323,38 +2383,171 @@ function truncateNote(s: unknown, n: number): string | null {
 }
 
 // ===========================================================================
-// CONTENT PACKAGES (阶段一：只读列表，供内容卡关联选择受控内容包)
-// 不暴露 channelId 明文；channelConfigured 只是一个布尔标记
+// CONTENT PACKAGES
+// - 后台需要能补齐「内容包」这个前台会员页核心对象
+// - 频道映射仍由 Channels 页面完成，这里只维护包与商品本身
 // ===========================================================================
 async function adminPackageRoutes(fastify: any) {
   const prisma = (fastify as any).prisma as PrismaClient;
+
+  const PackageStatusZ = z.enum(["draft", "published", "offline"]);
+  const ProductStatusZ = z.enum(["active", "inactive"]);
+  const CurrencyZ = z.string().trim().min(2).max(16).transform((value) => value.toUpperCase());
+  const PriceMinorZ = z.union([z.string(), z.number(), z.bigint()]).transform((value) => String(value).trim()).refine(
+    (value) => /^\d+$/.test(value),
+    "priceMinor 必须是非负整数的最小货币单位值",
+  );
+
+  const ZPACKAGE_INPUT = z.object({
+    title: z.string().trim().min(1).max(200),
+    coverUrl: z.string().trim().url().max(500).optional().nullable(),
+    status: PackageStatusZ.default("draft"),
+    productTitle: z.string().trim().min(1).max(200),
+    priceMinor: PriceMinorZ,
+    currency: CurrencyZ.default("XTR"),
+    productStatus: ProductStatusZ.default("active"),
+    reason: z.string().max(500).optional(),
+  });
+
+  async function serializePackages() {
+    const rows = await prisma.contentPackage.findMany({
+      orderBy: [{ status: "asc" }, { updatedAt: "desc" }],
+      include: {
+        product: { select: { id: true, title: true, status: true, priceMinor: true, currency: true } },
+        _count: { select: { contents: true } },
+      },
+    });
+    return rows.map((row: any) => ({
+      id: row.id,
+      title: row.title,
+      coverUrl: row.coverUrl ?? null,
+      status: row.status,
+      productId: row.productId ?? null,
+      productTitle: row.product?.title ?? null,
+      productActive: row.product?.status === "active",
+      productStatus: row.product?.status ?? "inactive",
+      priceMinor: row.product?.priceMinor?.toString() ?? null,
+      currency: row.product?.currency ?? null,
+      channelConfigured:
+        resolvePackageChannelId({ channelId: row.channelId, channelIdCiphertext: row.channelIdCiphertext }) != null,
+      contentsCount: row._count?.contents || 0,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
   fastify.get(
     "/admin/packages",
     { preHandler: [requireAdmin("content:view")] },
     async (_req: any, reply: any) => {
-      const rows = await prisma.contentPackage.findMany({
-        orderBy: [{ status: "asc" }, { updatedAt: "desc" }],
-        include: {
-          product: { select: { id: true, title: true, status: true } },
-          _count: { select: { contents: true } },
-        },
+      return reply.send({ data: await serializePackages() });
+    },
+  );
+
+  fastify.post(
+    "/admin/packages",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply: any) => {
+      const body = ZPACKAGE_INPUT.parse(req.body);
+      const meta = adminMeta(req);
+      const created = await prisma.$transaction(async (tx: any) => {
+        const product = await tx.product.create({
+          data: {
+            type: "package",
+            title: body.productTitle,
+            priceMinor: BigInt(body.priceMinor),
+            currency: body.currency,
+            status: body.productStatus,
+          },
+        });
+        const contentPackage = await tx.contentPackage.create({
+          data: {
+            title: body.title,
+            coverUrl: body.coverUrl ?? null,
+            status: body.status,
+            productId: product.id,
+          },
+        });
+        await writeAudit(tx, meta, "package.create", "content_package", contentPackage.id, null, serialize({
+          title: contentPackage.title,
+          status: contentPackage.status,
+          productId: product.id,
+          currency: product.currency,
+          priceMinor: product.priceMinor.toString(),
+        }), body.reason);
+        return contentPackage;
       });
-      return reply.send({
-        data: rows.map((r: any) => ({
-          id: r.id,
-          title: r.title,
-          coverUrl: r.coverUrl ?? null,
-          status: r.status,
-          productId: r.productId ?? null,
-          productTitle: r.product?.title ?? null,
-          productActive: r.product?.status === "active" ? true : false,
-          channelConfigured:
-            resolvePackageChannelId({ channelId: r.channelId, channelIdCiphertext: r.channelIdCiphertext }) != null,
-          contentsCount: r._count?.contents || 0,
-          createdAt: r.createdAt,
-          updatedAt: r.updatedAt,
-        })),
+      return reply.status(201).send({ ok: true, id: created.id });
+    },
+  );
+
+  fastify.patch(
+    "/admin/packages/:id",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply: any) => {
+      const id = z.string().uuid().parse(req.params.id);
+      const body = ZPACKAGE_INPUT.partial().parse(req.body);
+      const meta = adminMeta(req);
+      const before = await prisma.contentPackage.findUnique({
+        where: { id },
+        include: { product: true },
       });
+      if (!before) return reply.status(404).send({ error: "not_found" });
+
+      const updated = await prisma.$transaction(async (tx: any) => {
+        let productId = before.productId;
+        if (body.productTitle || body.priceMinor || body.currency || body.productStatus) {
+          if (before.productId) {
+            await tx.product.update({
+              where: { id: before.productId },
+              data: {
+                title: body.productTitle ?? before.product?.title,
+                priceMinor: body.priceMinor ? BigInt(body.priceMinor) : before.product?.priceMinor,
+                currency: body.currency ?? before.product?.currency,
+                status: body.productStatus ?? before.product?.status,
+              },
+            });
+          } else {
+            const createdProduct = await tx.product.create({
+              data: {
+                type: "package",
+                title: body.productTitle || body.title || before.title,
+                priceMinor: BigInt(body.priceMinor || "0"),
+                currency: body.currency || "XTR",
+                status: body.productStatus || "active",
+              },
+            });
+            productId = createdProduct.id;
+          }
+        }
+
+        const after = await tx.contentPackage.update({
+          where: { id },
+          data: {
+            title: body.title ?? undefined,
+            coverUrl: body.coverUrl ?? undefined,
+            status: body.status ?? undefined,
+            productId: productId ?? undefined,
+          },
+        });
+        await writeAudit(tx, meta, "package.update", "content_package", id, serialize({
+          title: before.title,
+          status: before.status,
+          productId: before.productId,
+          productTitle: before.product?.title ?? null,
+          priceMinor: before.product?.priceMinor?.toString() ?? null,
+          currency: before.product?.currency ?? null,
+        }), serialize({
+          title: body.title ?? before.title,
+          status: body.status ?? before.status,
+          productId,
+          productTitle: body.productTitle ?? before.product?.title ?? null,
+          priceMinor: body.priceMinor ?? before.product?.priceMinor?.toString() ?? null,
+          currency: body.currency ?? before.product?.currency ?? null,
+        }), body.reason);
+        return after;
+      });
+      return reply.send({ ok: true, id: updated.id });
     },
   );
 }

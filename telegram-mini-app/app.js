@@ -2,6 +2,7 @@
   "use strict";
 
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  const RECENT_KEY = "intune_recent_views_v1";
 
   const CLIENT_ERRORS = {
     unauthorized: "请先完成会话建立后再继续。",
@@ -25,23 +26,20 @@
     },
     session: null,
     booting: false,
-    bootError: null,
     home: null,
-    discover: {
-      loading: false,
-      loaded: false,
-      items: [],
-      pagination: null,
-      categoryId: "all",
-      search: "",
-    },
     detailCache: {},
     detailLoading: false,
+    library: {
+      loading: false,
+      items: [],
+      loaded: false,
+      categoryId: "all",
+      search: "",
+      sort: "newest",
+    },
     orders: {
       loading: false,
       items: [],
-      status: "",
-      pagination: null,
     },
     entitlements: {
       loading: false,
@@ -71,21 +69,113 @@
     });
   }
 
-  function ensureMetaTag(selector, attrs) {
-    let el = document.head.querySelector(selector);
-    if (!el) {
-      el = document.createElement("meta");
-      Object.keys(attrs).forEach(function (key) {
-        el.setAttribute(key, attrs[key]);
+  function apiText(err) {
+    const payload = err && err.payload ? err.payload : {};
+    const code = payload.userError || payload.error || payload.errorClass || "";
+    if (code && CLIENT_ERRORS[code]) return CLIENT_ERRORS[code];
+    return payload.message || err.message || "请稍后重试。";
+  }
+
+  function requestWithCompatibility(url, opts) {
+    if (typeof window.fetch === "function") return window.fetch(url, opts);
+    return new Promise(function (resolve, reject) {
+      const xhr = new XMLHttpRequest();
+      xhr.open(opts.method || "GET", url, true);
+      xhr.withCredentials = opts.credentials === "include";
+      Object.keys(opts.headers || {}).forEach(function (key) {
+        xhr.setRequestHeader(key, opts.headers[key]);
       });
-      document.head.appendChild(el);
+      xhr.onload = function () {
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status,
+          text: function () { return Promise.resolve(xhr.responseText || ""); },
+        });
+      };
+      xhr.onerror = function () { reject(new Error("network_request_failed")); };
+      xhr.send(opts.body || null);
+    });
+  }
+
+  async function apiCall(url, options) {
+    const opts = options || {};
+    const headers = Object.assign({ Accept: "application/json" }, opts.headers || {});
+    if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+    const res = await requestWithCompatibility(url, {
+      credentials: "include",
+      method: opts.method || "GET",
+      body: opts.body,
+      headers: headers,
+    });
+    const text = await res.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = null; }
+    if (!res.ok) {
+      const err = new Error((payload && (payload.message || payload.error)) || ("HTTP " + res.status));
+      err.status = res.status;
+      err.payload = payload;
+      throw err;
     }
-    return el;
+    return payload;
+  }
+
+  function isStarsProduct(product) {
+    return product && String(product.currency || "").toUpperCase() === "XTR";
+  }
+
+  function normalizeXtrMinor(minor) {
+    try {
+      const value = BigInt(minor == null || minor === "" ? "0" : String(minor));
+      if (value > 0n && value >= 1000000n && value % 1000000n === 0n) return value / 1000000n;
+      return value;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function formatPriceMinor(minor, currency) {
+    if (minor == null || minor === "") return "未配置价格";
+    if (String(currency || "").toUpperCase() === "XTR") {
+      const starsMinor = normalizeXtrMinor(minor);
+      return starsMinor == null ? String(minor) + " XTR" : starsMinor.toString() + " Stars";
+    }
+    const numeric = Number(minor);
+    if (!Number.isFinite(numeric)) return String(minor) + " " + (currency || "");
+    if (String(currency || "").toUpperCase() === "USDT") {
+      return (numeric / 1000000).toFixed(2).replace(/\.?0+$/, "") + " USDT";
+    }
+    return numeric + " " + (currency || "");
+  }
+
+  function formatDate(iso) {
+    if (!iso) return "—";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return String(iso);
+    const pad = function (n) { return String(n).padStart(2, "0"); };
+    return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+  }
+
+  function formatDateShort(iso) {
+    if (!iso) return "—";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return String(iso);
+    const pad = function (n) { return String(n).padStart(2, "0"); };
+    return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+  }
+
+  function ensureMetaTag(selector, attrs) {
+    let element = document.head.querySelector(selector);
+    if (!element) {
+      element = document.createElement("meta");
+      Object.keys(attrs).forEach(function (key) { element.setAttribute(key, attrs[key]); });
+      document.head.appendChild(element);
+    }
+    return element;
   }
 
   function setMetaContent(selector, attrs, value) {
-    const el = ensureMetaTag(selector, attrs);
-    el.setAttribute("content", String(value || ""));
+    const element = ensureMetaTag(selector, attrs);
+    element.setAttribute("content", String(value || ""));
   }
 
   function updatePageSeo(seo) {
@@ -108,141 +198,21 @@
 
   function updateJsonLd(jsonLd) {
     const el = $("videoObjectJsonLd");
-    if (!el) return;
-    el.textContent = jsonLd ? JSON.stringify(jsonLd) : "";
-  }
-
-  function apiText(err) {
-    const payload = err && err.payload ? err.payload : {};
-    const code = payload.userError || payload.error || payload.errorClass || "";
-    if (code && CLIENT_ERRORS[code]) return CLIENT_ERRORS[code];
-    return payload.message || err.message || "请稍后重试。";
-  }
-
-  function isStarsProduct(product) {
-    return product && String(product.currency || "").toUpperCase() === "XTR";
-  }
-
-  function formatDate(iso) {
-    if (!iso) return "—";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return String(iso);
-    const pad = function (n) { return String(n).padStart(2, "0"); };
-    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
-  }
-
-  function formatDateShort(iso) {
-    if (!iso) return "—";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return String(iso);
-    const pad = function (n) { return String(n).padStart(2, "0"); };
-    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
-  }
-
-  function normalizeXtrMinor(minor) {
-    try {
-      var n = BigInt(minor == null || minor === "" ? "0" : String(minor));
-      if (n > 0n && n >= 1000000n && n % 1000000n === 0n) return n / 1000000n;
-      return n;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function formatPriceMinor(minor, currency) {
-    if (minor == null || minor === "") return "未配置价格";
-    if (String(currency || "").toUpperCase() === "XTR") {
-      const starsMinor = normalizeXtrMinor(minor);
-      if (starsMinor == null) return String(minor) + " " + (currency || "");
-      return starsMinor.toString() + " Stars";
-    }
-    const num = Number(minor);
-    if (!Number.isFinite(num)) return String(minor) + " " + (currency || "");
-    if (String(currency || "").toUpperCase() === "USDT") {
-      const usdt = (num / 1000000).toFixed(2).replace(/\.?0+$/, "");
-      return usdt + " USDT";
-    }
-    return String(num) + " " + (currency || "");
-  }
-
-  function showBootError(title, message) {
-    state.bootError = { title: title, message: message };
-    $("globalErrorTitle").textContent = title;
-    $("globalErrorMessage").textContent = message;
-    $("globalError").classList.remove("is-hidden");
-  }
-
-  function clearBootError() {
-    state.bootError = null;
-    $("globalError").classList.add("is-hidden");
-  }
-
-  function requestWithCompatibility(url, opts) {
-    if (typeof window.fetch === "function") {
-      return window.fetch(url, opts);
-    }
-    return new Promise(function (resolve, reject) {
-      if (typeof window.XMLHttpRequest !== "function") {
-        reject(new Error("network_api_unavailable"));
-        return;
-      }
-      const xhr = new window.XMLHttpRequest();
-      xhr.open(opts.method || "GET", url, true);
-      xhr.withCredentials = opts.credentials === "include";
-      Object.keys(opts.headers || {}).forEach(function (key) {
-        xhr.setRequestHeader(key, opts.headers[key]);
-      });
-      xhr.onload = function () {
-        resolve({
-          ok: xhr.status >= 200 && xhr.status < 300,
-          status: xhr.status,
-          text: function () { return Promise.resolve(xhr.responseText || ""); },
-        });
-      };
-      xhr.onerror = function () { reject(new Error("network_request_failed")); };
-      xhr.ontimeout = function () { reject(new Error("network_request_timeout")); };
-      xhr.send(opts.body || null);
-    });
-  }
-
-  async function apiCall(url, options) {
-    const opts = options || {};
-    const headers = Object.assign({}, opts.headers || {});
-    if (!headers.Accept) headers.Accept = "application/json";
-    if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-
-    const res = await requestWithCompatibility(url, {
-      credentials: "include",
-      method: opts.method || "GET",
-      body: opts.body,
-      headers: headers,
-    });
-    const text = await res.text();
-    let payload = null;
-    try {
-      payload = text ? JSON.parse(text) : null;
-    } catch (_) {
-      payload = null;
-    }
-    if (!res.ok) {
-      const err = new Error((payload && (payload.message || payload.error)) || ("HTTP " + res.status));
-      err.status = res.status;
-      err.payload = payload;
-      throw err;
-    }
-    return payload;
+    if (el) el.textContent = jsonLd ? JSON.stringify(jsonLd) : "";
   }
 
   function parseHash() {
     const raw = String(window.location.hash || "").replace(/^#/, "");
     const params = new URLSearchParams(raw);
-    const view = params.get("view");
-    const id = params.get("id") || "";
-    const fromTab = params.get("from") || "home";
-    const tab = params.get("tab") || "home";
-    if (view === "content" && id) {
-      return { view: "detail", id: id, tab: fromTab, fromTab: fromTab };
+    if (params.get("view") === "content" && params.get("id")) {
+      return {
+        view: "detail",
+        id: params.get("id") || "",
+        tab: params.get("from") || "home",
+        fromTab: params.get("from") || "home",
+      };
     }
+    const tab = params.get("tab") || "home";
     return { view: "tab", id: "", tab: tab, fromTab: tab };
   }
 
@@ -256,52 +226,26 @@
     const params = new URLSearchParams();
     params.set("view", "content");
     params.set("id", id);
-    params.set("from", fromTab || state.route.tab || "home");
+    params.set("from", fromTab || "home");
     window.location.hash = params.toString();
   }
 
-  function routeTo(hashState) {
-    state.route = hashState;
-    const isDetail = hashState.view === "detail";
-    const titleMap = {
-      home: ["同频点播", "首页 · 推荐、继续浏览与热门内容"],
-      discover: ["发现", "搜索、分类筛选与完整目录"],
-      membership: ["会员", "会员权益、内容包与支付入口"],
-      orders: ["订单", "查看待支付、已支付与过期订单"],
-      me: ["我的", "访客身份、绑定 Telegram、权益与频道入口"],
-    };
-    $("backButton").hidden = !isDetail;
-    $("bottomNav").classList.toggle("is-hidden", isDetail);
-    if (isDetail) {
-      $("headerTitle").textContent = "内容详情";
-      $("headerSubtitle").textContent = "返回后将恢复原来源 Tab 与浏览状态";
-    } else {
-      $("headerTitle").textContent = titleMap[hashState.tab][0];
-      $("headerSubtitle").textContent = titleMap[hashState.tab][1];
-      updateJsonLd(null);
-      updatePageSeo(state.home && state.home.seo ? state.home.seo : null);
-      updateOgImage("");
-    }
+  function showBootError(title, message) {
+    $("globalErrorTitle").textContent = title;
+    $("globalErrorMessage").textContent = message;
+    $("globalError").classList.remove("is-hidden");
+  }
 
-    ["home", "discover", "membership", "orders", "me"].forEach(function (tab) {
-      $(tab + "View").classList.toggle("is-hidden", isDetail || hashState.tab !== tab);
-    });
-    $("detailView").classList.toggle("is-hidden", !isDetail);
+  function clearBootError() {
+    $("globalError").classList.add("is-hidden");
+  }
 
-    document.querySelectorAll(".nav-item").forEach(function (btn) {
-      btn.classList.toggle("is-active", !isDetail && btn.getAttribute("data-tab") === hashState.tab);
-    });
-
-    if (isDetail) {
-      renderDetail(hashState.id);
+  function showInlineMessage(message) {
+    if (tg && tg.showPopup) {
+      tg.showPopup({ title: "提示", message: message, buttons: [{ type: "ok" }] }).catch(function () {});
       return;
     }
-    if (hashState.tab === "discover") loadDiscover();
-    if (hashState.tab === "orders") loadOrders();
-    if (hashState.tab === "me") {
-      loadEntitlements();
-      loadChannels();
-    }
+    window.alert(message);
   }
 
   function createSkeletonCards(count) {
@@ -310,282 +254,310 @@
     return out.join("");
   }
 
-  function renderHome() {
+  function getAccessLabel(item) {
+    if (item.unlocked) return "已解锁";
+    if (item.accessType === "public") return "公开预览";
+    if (item.accessType === "membership") return "会员内容";
+    if (item.accessType === "package") return "内容包内容";
+    return "查看详情";
+  }
+
+  function getRecentItems() {
+    try {
+      const raw = JSON.parse(window.localStorage.getItem(RECENT_KEY) || "[]");
+      if (!Array.isArray(raw)) return [];
+      return raw.filter(function (item) { return item && item.id; }).slice(0, 3);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function rememberRecent(detail) {
+    if (!detail || !detail.id) return;
+    const next = getRecentItems().filter(function (item) { return item.id !== detail.id; });
+    next.unshift({
+      id: detail.id,
+      title: detail.title || "未命名内容",
+      duration: detail.duration || "—",
+      accessType: detail.accessType || "public",
+      coverUrl: detail.coverUrl || null,
+      viewedAt: new Date().toISOString(),
+    });
+    window.localStorage.setItem(RECENT_KEY, JSON.stringify(next.slice(0, 3)));
+  }
+
+  function renderContentCards(hostId, items, fromTab) {
+    const host = $(hostId);
+    host.innerHTML = "";
+    const template = $("contentCardTemplate");
+    items.forEach(function (item) {
+      const node = template.content.cloneNode(true);
+      const cover = node.querySelector(".card-cover");
+      if (item.coverUrl) {
+        cover.style.backgroundImage = "linear-gradient(135deg, rgba(166, 107, 255, 0.24), rgba(38, 34, 54, 0.72)), url('" + String(item.coverUrl).replace(/'/g, "%27") + "')";
+        cover.style.backgroundSize = "cover";
+        cover.style.backgroundPosition = "center";
+      }
+      node.querySelector(".cover-duration").textContent = item.duration || "—";
+      node.querySelector(".card-tag").textContent = (item.tags || []).join(" · ") || getAccessLabel(item);
+      node.querySelector(".card-title").textContent = item.title || "未命名内容";
+      node.querySelector(".card-desc").textContent = item.description || "暂无描述";
+      node.querySelector(".card-price").textContent = item.accessType === "public"
+        ? "公开预览"
+        : formatPriceMinor(item.priceMinor, item.priceCurrency);
+      node.querySelector(".card-access").textContent = getAccessLabel(item);
+      node.querySelector(".cover-button").addEventListener("click", function () {
+        setHashForDetail(item.id, fromTab);
+      });
+      const action = node.querySelector(".card-action");
+      action.textContent = item.unlocked ? "查看详情" : "查看并了解权益";
+      action.addEventListener("click", function () {
+        setHashForDetail(item.id, fromTab);
+      });
+      host.appendChild(node);
+    });
+  }
+
+  function renderBannerList() {
     const home = state.home;
-    if (!home) {
-      $("homeBannerList").innerHTML = createSkeletonCards(2);
-      $("homeRecommendedGrid").innerHTML = createSkeletonCards(4);
-      $("homeUnlockedGrid").innerHTML = '<div class="inline-state">正在加载目录…</div>';
+    const host = $("homeBannerList");
+    host.innerHTML = "";
+    if (!home || !home.banners || home.banners.length === 0) {
+      host.innerHTML = '<div class="inline-state">当前没有 Banner 配置。</div>';
       return;
     }
-
-    const membershipActive = !!home.meta && !!home.meta.hasMembership;
-    $("heroTitle").textContent = membershipActive ? "你的会员内容已同步到当前设备" : "先浏览真实目录，再决定是否解锁";
-    $("heroDescription").textContent = state.session && state.session.identity === "guest"
-      ? "当前为访客模式，订单会自动保存在本设备；绑定 Telegram 后可跨端恢复权益。"
-      : "当前会话已建立，可直接浏览、下单与查看订单/权益。";
-
-    $("homeBannerList").innerHTML = "";
-    if (!home.banners || home.banners.length === 0) {
-      $("homeBannerList").innerHTML = '<div class="inline-state">暂无推荐 Banner。</div>';
-    } else {
-      home.banners.forEach(function (banner) {
-        const card = document.createElement("article");
-        card.className = "banner-card";
-        card.innerHTML =
-          '<p class="eyebrow">' + escapeHtml(banner.eyebrow || "RECOMMENDED") + '</p>' +
-          '<h3>' + escapeHtml(banner.title || "") + '</h3>' +
-          '<p>' + escapeHtml(banner.description || "") + '</p>' +
-          '<button class="ghost-button" type="button">' + escapeHtml(banner.actionLabel || "查看") + '</button>';
-        card.querySelector("button").addEventListener("click", function () {
-          handleBannerAction(banner);
-        });
-        $("homeBannerList").appendChild(card);
+    home.banners.forEach(function (banner) {
+      const card = document.createElement("article");
+      card.className = "banner-card" + (banner.imageUrl ? " has-image" : "");
+      if (banner.imageUrl) {
+        card.style.backgroundImage = "linear-gradient(140deg, rgba(166, 107, 255, 0.3), rgba(38, 34, 54, 0.92)), url('" + String(banner.imageUrl).replace(/'/g, "%27") + "')";
+      }
+      card.innerHTML =
+        '<p class="eyebrow">' + escapeHtml(banner.eyebrow || "BANNER") + '</p>' +
+        '<h3>' + escapeHtml(banner.title || "") + '</h3>' +
+        '<p>' + escapeHtml(banner.description || "") + '</p>' +
+        '<button class="ghost-button" type="button">' + escapeHtml(banner.actionLabel || "查看详情") + '</button>';
+      card.querySelector("button").addEventListener("click", function () {
+        handleBannerAction(banner);
       });
+      host.appendChild(card);
+    });
+  }
+
+  function renderFeaturedCard() {
+    const host = $("homeFeaturedCard");
+    const featured = state.home && state.home.featuredContent ? state.home.featuredContent : null;
+    if (!featured) {
+      host.innerHTML = '<div class="inline-state">当前还没有配置今日精选。</div>';
+      return;
     }
+    host.innerHTML = "";
+    renderContentCards("homeFeaturedCard", [featured], "home");
+  }
 
-    const recommended = (home.contents || []).slice(0, 6);
-    const unlocked = (home.contents || []).filter(function (item) { return item.unlocked; }).slice(0, 4);
-    renderContentCards("homeRecommendedGrid", recommended, "home");
-    $("homeUnlockedGrid").innerHTML = unlocked.length ? "" : '<div class="inline-state">暂无已解锁内容，完成购买后会显示在这里。</div>';
-    if (unlocked.length) renderContentCards("homeUnlockedGrid", unlocked, "home");
+  function renderRecentList() {
+    const section = $("homeRecentSection");
+    const host = $("homeRecentList");
+    const recent = getRecentItems();
+    if (!recent.length) {
+      section.classList.add("is-hidden");
+      host.innerHTML = "";
+      return;
+    }
+    section.classList.remove("is-hidden");
+    host.innerHTML = "";
+    recent.forEach(function (item) {
+      const card = document.createElement("article");
+      card.className = "stack-card";
+      card.innerHTML =
+        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.title) + '</div>' +
+        '<div class="stack-subtitle">' + escapeHtml(item.accessType === "membership" ? "会员内容" : item.accessType === "package" ? "内容包内容" : "公开预览") + "</div></div>" +
+        '<div class="status-badge status-warning">' + escapeHtml(item.duration || "—") + "</div></div>" +
+        '<div class="stack-meta"><span>最近打开</span><span>' + escapeHtml(formatDate(item.viewedAt)) + "</span></div>" +
+        '<div class="channel-actions" style="margin-top:12px;"><button class="ghost-button" type="button">继续查看</button></div>';
+      card.querySelector("button").addEventListener("click", function () {
+        setHashForDetail(item.id, "home");
+      });
+      host.appendChild(card);
+    });
+  }
 
-    renderMembershipBadge();
-    renderSessionChip();
-    updatePageSeo(home.seo || null);
+  function renderThemeCards() {
+    const themes = state.home && state.home.themeCategories ? state.home.themeCategories : [];
+    const host = $("homeThemesList");
+    host.innerHTML = "";
+    if (!themes.length) {
+      host.innerHTML = '<div class="inline-state">当前没有本周主题。</div>';
+      return;
+    }
+    themes.forEach(function (theme) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "topic-card";
+      card.innerHTML =
+        '<strong>' + escapeHtml(theme.name) + '</strong>' +
+        '<p class="muted-copy">' + escapeHtml((theme.publishedContentCount || 0) + " 条内容") + '</p>';
+      card.addEventListener("click", function () {
+        state.library.categoryId = theme.id;
+        setHashForTab("library");
+      });
+      host.appendChild(card);
+    });
+  }
+
+  function renderHome() {
+    if (!state.home) {
+      $("homeBannerList").innerHTML = createSkeletonCards(1);
+      $("homeFeaturedCard").innerHTML = createSkeletonCards(1);
+      $("homeLatestGrid").innerHTML = createSkeletonCards(4);
+      return;
+    }
+    $("homeBrandHint").textContent = state.home.brandHint || "真实表达，在理解与边界中被看见";
+    renderBannerList();
+    renderFeaturedCard();
+    renderRecentList();
+    renderThemeCards();
+    renderContentCards("homeLatestGrid", state.home.latestContents || [], "home");
+    updatePageSeo(state.home.seo || null);
     updateOgImage("");
     updateJsonLd(null);
   }
 
-  function renderMembershipBadge() {
-    const summary = state.entitlements.data && state.entitlements.data.summary ? state.entitlements.data.summary.membership : null;
-    const badge = $("membershipStatusBadge");
-    if (!summary || summary.status === "none") {
-      badge.textContent = "未开通";
-      badge.className = "status-badge status-warning";
-      $("membershipHeadline").textContent = "会员与内容包入口";
-      $("membershipCopy").textContent = state.env.isTelegram
-        ? "Telegram 内优先展示 Stars；若存在 USDT 变体，可在后续版本一起呈现。"
-        : "站外 H5 默认走 USDT；若当前商品仅有 Stars 版本，会提示前往 Telegram。";
-      return;
-    }
-    if (summary.status === "active") {
-      badge.textContent = summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已生效";
-      badge.className = "status-badge";
-      $("membershipHeadline").textContent = "你的会员权益已生效";
-      $("membershipCopy").textContent = "已生效的会员或内容包会在详情页直接展示进入频道入口。";
-      return;
-    }
-    badge.textContent = summary.status;
-    badge.className = "status-badge status-warning";
-  }
-
-  function renderDiscover() {
-    const home = state.home;
-    if (!home) {
-      $("discoverState").innerHTML = "正在加载目录…";
-      $("discoverGrid").innerHTML = createSkeletonCards(4);
-      return;
-    }
-    renderDiscoverCategoryChips(home.categories || []);
-    if (!state.discover.loaded && !state.discover.loading) loadDiscover();
-    if (state.discover.loading) {
-      $("discoverState").innerHTML = "正在加载发现页…";
-      $("discoverGrid").innerHTML = createSkeletonCards(6);
-      return;
-    }
-    const filtered = filterDiscoverItems();
-    $("discoverState").innerHTML = filtered.length
-      ? '共 ' + filtered.length + ' 条内容'
-      : '没有匹配结果，试试更换关键词或分类。';
-    if (filtered.length === 0) {
-      $("discoverGrid").innerHTML = '<div class="inline-state">暂无匹配内容。</div>';
-      return;
-    }
-    renderContentCards("discoverGrid", filtered, "discover");
-  }
-
-  function renderDiscoverCategoryChips(categories) {
-    const host = $("discoverCategoryList");
+  function renderLibraryCategories() {
+    const host = $("libraryCategoryList");
+    const categories = (state.home && state.home.categories) || [];
     host.innerHTML = "";
-    categories.forEach(function (cat) {
+    categories.forEach(function (category) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "chip" + (state.discover.categoryId === cat.id ? " is-active" : "");
-      btn.textContent = cat.name;
+      btn.className = "chip" + (state.library.categoryId === category.id ? " is-active" : "");
+      btn.textContent = category.name;
       btn.addEventListener("click", function () {
-        state.discover.categoryId = cat.id;
-        renderDiscover();
+        state.library.categoryId = category.id;
+        loadLibrary();
       });
       host.appendChild(btn);
     });
   }
 
-  function filterDiscoverItems() {
-    const keyword = String(state.discover.search || "").trim().toLowerCase();
-    return (state.discover.items || []).filter(function (item) {
-      const byCategory = state.discover.categoryId === "all" || item.categoryId === state.discover.categoryId;
-      const byKeyword = !keyword || String(item.title || "").toLowerCase().includes(keyword) || String(item.description || "").toLowerCase().includes(keyword);
-      return byCategory && byKeyword;
+  function renderLibrary() {
+    renderLibraryCategories();
+    if (state.library.loading) {
+      $("libraryState").textContent = "片库加载中…";
+      $("libraryGrid").innerHTML = createSkeletonCards(6);
+      return;
+    }
+    const items = state.library.items.filter(function (item) {
+      const keyword = String(state.library.search || "").trim().toLowerCase();
+      return !keyword
+        || String(item.title || "").toLowerCase().includes(keyword)
+        || String(item.description || "").toLowerCase().includes(keyword);
     });
+    $("libraryState").textContent = items.length ? "共 " + items.length + " 条内容" : "没有匹配结果。";
+    if (!items.length) {
+      $("libraryGrid").innerHTML = '<div class="inline-state">当前没有匹配内容。</div>';
+      return;
+    }
+    renderContentCards("libraryGrid", items, "library");
+  }
+
+  function groupPackageItems(items) {
+    const map = new Map();
+    items.forEach(function (item) {
+      const packageId = item.packageId || "package:" + item.id;
+      if (!map.has(packageId)) {
+        map.set(packageId, {
+          id: packageId,
+          title: item.packageTitle || item.title,
+          count: 0,
+          priceMinor: item.priceMinor,
+          priceCurrency: item.priceCurrency,
+          unlocked: false,
+          sampleContentId: item.id,
+        });
+      }
+      const target = map.get(packageId);
+      target.count += 1;
+      target.unlocked = target.unlocked || !!item.unlocked;
+    });
+    return Array.from(map.values());
+  }
+
+  function findMembershipEntry() {
+    const items = state.library.items || [];
+    return items.find(function (item) { return item.accessType === "membership"; }) || null;
   }
 
   function renderMembership() {
-    const items = (state.home && state.home.contents ? state.home.contents : []).filter(function (item) {
-      return item.accessType === "membership" || item.accessType === "package";
-    });
-    if (!state.home) {
-      $("membershipGrid").innerHTML = createSkeletonCards(4);
-      return;
+    const summary = state.entitlements.data && state.entitlements.data.summary
+      ? state.entitlements.data.summary.membership
+      : { status: "none", expiresAt: null };
+    const badge = $("membershipStatusBadge");
+    if (summary.status === "active") {
+      badge.textContent = summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已开通";
+      badge.className = "status-badge";
+      $("membershipHeadline").textContent = "会员主频道与内容包";
+      $("membershipCopy").textContent = "支付成功后，只会进入你实际拥有权益对应的频道。";
+    } else {
+      badge.textContent = "未开通";
+      badge.className = "status-badge status-warning";
+      $("membershipHeadline").textContent = "理解权益，再决定购买方式";
+      $("membershipCopy").textContent = state.env.isTelegram
+        ? "Telegram 内默认优先使用 Stars，同时提供 USDT。"
+        : "H5 默认使用 USDT；若需 Stars，请在 Telegram 内打开。";
     }
-    if (!items.length) {
-      $("membershipGrid").innerHTML = '<div class="inline-state">当前目录中还没有会员或内容包内容。</div>';
-      return;
-    }
-    renderContentCards("membershipGrid", items, "membership");
-  }
 
-  function renderOrders() {
-    const host = $("ordersList");
-    if (state.orders.loading) {
-      host.innerHTML = createSkeletonCards(3);
+    const membershipEntry = findMembershipEntry();
+    const membershipHost = $("membershipPrimaryCard");
+    if (!membershipEntry) {
+      membershipHost.innerHTML = '<div class="inline-state">当前还没有配置会员主频道入口。</div>';
+    } else {
+      membershipHost.innerHTML = "";
+      renderContentCards("membershipPrimaryCard", [membershipEntry], "membership");
+    }
+
+    const packageHost = $("membershipPackagesList");
+    const packages = groupPackageItems((state.library.items || []).filter(function (item) { return item.accessType === "package"; }));
+    packageHost.innerHTML = "";
+    if (!packages.length) {
+      packageHost.innerHTML = '<div class="inline-state">当前没有在售内容包。</div>';
       return;
     }
-    if (!state.orders.items.length) {
-      host.innerHTML = '<div class="inline-state">当前没有符合筛选条件的订单。</div>';
-      return;
-    }
-    host.innerHTML = "";
-    state.orders.items.forEach(function (order) {
+    packages.forEach(function (item) {
       const card = document.createElement("article");
-      const statusClass = order.status === "paid" ? "" : (order.status === "pending" ? " status-warning" : " status-danger");
       card.className = "stack-card";
       card.innerHTML =
-        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(order.product && order.product.title ? order.product.title : order.orderNo) + '</div>' +
-        '<div class="stack-subtitle">订单号 ' + escapeHtml(order.orderNo) + "</div></div>" +
-        '<div class="status-badge' + statusClass + '">' + escapeHtml(order.status) + "</div></div>" +
-        '<div class="stack-meta"><span>' + escapeHtml(formatPriceMinor(order.amountMinor, order.currency)) + '</span><span>' + escapeHtml(formatDate(order.createdAt)) + "</span></div>" +
-        '<div class="channel-actions" style="margin-top:12px;"></div>';
-      const actions = card.querySelector(".channel-actions");
-      const detailBtn = document.createElement("button");
-      detailBtn.type = "button";
-      detailBtn.className = "ghost-button";
-      detailBtn.textContent = "查看商品";
-      detailBtn.addEventListener("click", function () {
-        if (order.product && order.product.id) showInlineMessage("当前订单商品已绑定，可在首页/发现中继续查看。");
+        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.title) + '</div>' +
+        '<div class="stack-subtitle">共 ' + escapeHtml(String(item.count)) + ' 条内容</div></div>' +
+        '<div class="status-badge' + (item.unlocked ? "" : " status-warning") + '">' + escapeHtml(item.unlocked ? "已解锁" : "内容包") + "</div></div>" +
+        '<div class="stack-meta"><span>' + escapeHtml(formatPriceMinor(item.priceMinor, item.priceCurrency)) + '</span><span>' + escapeHtml(item.unlocked ? "可直接进入对应频道" : "购买后解锁该包频道") + "</span></div>" +
+        '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + escapeHtml(item.unlocked ? "查看已解锁内容" : "查看内容包") + "</button></div>";
+      card.querySelector("button").addEventListener("click", function () {
+        setHashForDetail(item.sampleContentId, "membership");
       });
-      actions.appendChild(detailBtn);
-
-      if (order.status === "pending" && !state.env.isTelegram && order.product && !isStarsProduct(order.product)) {
-        const payBtn = document.createElement("button");
-        payBtn.type = "button";
-        payBtn.className = "primary-button";
-        payBtn.textContent = "继续 USDT 支付";
-        payBtn.addEventListener("click", function () {
-          window.location.assign("./h5-pay.html?orderNo=" + encodeURIComponent(order.orderNo));
-        });
-        actions.appendChild(payBtn);
-      }
-
-      if (order.status === "paid") {
-        const accessBtn = document.createElement("button");
-        accessBtn.type = "button";
-        accessBtn.className = "primary-button";
-        accessBtn.textContent = "进入频道";
-        accessBtn.addEventListener("click", function () {
-          const first = (order.entitlements || [])[0];
-          if (!first) {
-            showInlineMessage("该订单还没有已激活权益，请稍后刷新重试。");
-            return;
-          }
-          if (first.resourceType === "membership_channel") {
-            const content = findFirstContentByType("membership");
-            if (!content) {
-              showInlineMessage("还没有可作为交付触发点的会员内容。");
-              return;
-            }
-            openChannelAccess(content.id);
-            return;
-          }
-          if (first.resourceType === "package") {
-            const content = findFirstContentByPackage(first.resourceId);
-            if (!content) {
-              showInlineMessage("该内容包暂无可触发的已发布内容。");
-              return;
-            }
-            openChannelAccess(content.id);
-          }
-        });
-        actions.appendChild(accessBtn);
-      }
-      host.appendChild(card);
+      packageHost.appendChild(card);
     });
-    renderOrdersBadge();
   }
 
-  function renderMe() {
-    const session = state.session;
-    $("profileTitle").textContent = session && session.identity === "telegram"
-      ? (session.displayName || "已绑定 Telegram")
-      : "访客模式";
-    $("profileSubtitle").textContent = session && session.identity === "telegram"
-      ? "已绑定 Telegram，可跨设备恢复订单与权益。"
-      : "已自动保存本设备订单；绑定 Telegram 后可跨设备恢复权益。";
-    $("logoutButton").classList.toggle("is-hidden", !(session && session.identity));
-
-    if (!state.entitlements.loaded || state.entitlements.loading) {
-      $("meEntitlementsList").innerHTML = createSkeletonCards(2);
-      $("meMembershipText").textContent = "加载中";
-      $("meMembershipHint").textContent = "正在读取权益摘要…";
-    } else {
-      const summary = state.entitlements.data && state.entitlements.data.summary ? state.entitlements.data.summary.membership : { status: "none", expiresAt: null };
-      $("meMembershipText").textContent = summary.status === "active"
-        ? (summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已生效")
-        : "未开通";
-      $("meMembershipHint").textContent = summary.status === "active"
-        ? "会员内容会在详情页直接展示进入频道入口。"
-        : "完成购买后，会员/内容包/单条内容权益会显示在这里。";
-      renderEntitlementCards();
-    }
-
-    $("meOrdersText").textContent = state.orders.items.length
-      ? "共 " + state.orders.items.length + " 条"
-      : "暂无订单";
-    $("meOrdersHint").textContent = state.orders.items.some(function (item) { return item.status === "pending"; })
-      ? "你有待支付订单，可前往订单页继续支付。"
-      : "订单页会显示待支付、已支付与过期状态。";
-
-    if (!state.channels.loaded || state.channels.loading) {
-      $("meChannelsList").innerHTML = createSkeletonCards(2);
-    } else {
-      renderChannelCards();
-    }
-  }
-
-  function renderEntitlementCards() {
-    const host = $("meEntitlementsList");
+  function renderUnlockedList() {
+    const host = $("meUnlockedList");
+    const items = (state.library.items || []).filter(function (item) { return item.unlocked; }).slice(0, 8);
     host.innerHTML = "";
-    const data = state.entitlements.data;
-    const all = []
-      .concat(data.memberships || [])
-      .concat(data.packages || [])
-      .concat(data.contents || []);
-    if (!all.length) {
-      host.innerHTML = '<div class="inline-state">暂无权益记录。</div>';
+    if (!items.length) {
+      host.innerHTML = '<div class="inline-state">暂无已解锁内容。</div>';
       return;
     }
-    all.slice(0, 8).forEach(function (item) {
-      const metaTitle = item.meta && item.meta.title ? item.meta.title : (
-        item.resourceType === "membership_channel" ? "VIP 会员频道" : item.resourceType
-      );
+    items.forEach(function (item) {
       const card = document.createElement("article");
-      const statusClass = item.status === "active" ? "" : " status-warning";
       card.className = "stack-card";
       card.innerHTML =
-        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(metaTitle) + '</div>' +
-        '<div class="stack-subtitle">' + escapeHtml(item.resourceType) + "</div></div>" +
-        '<div class="status-badge' + statusClass + '">' + escapeHtml(item.status) + "</div></div>" +
-        '<div class="stack-meta"><span>开始 ' + escapeHtml(formatDate(item.startsAt)) + '</span><span>到期 ' + escapeHtml(item.expiresAt ? formatDate(item.expiresAt) : "永久") + "</span></div>";
+        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.title) + '</div>' +
+        '<div class="stack-subtitle">' + escapeHtml(getAccessLabel(item)) + '</div></div>' +
+        '<div class="status-badge">已解锁</div></div>' +
+        '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">前往频道</button></div>';
+      card.querySelector("button").addEventListener("click", function () {
+        openChannelAccess(item.id);
+      });
       host.appendChild(card);
     });
   }
@@ -603,15 +575,11 @@
       card.innerHTML =
         '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.label) + '</div>' +
         '<div class="stack-subtitle">' + escapeHtml(item.subtitle || "") + '</div></div>' +
-        '<div class="status-badge' + (item.available ? "" : " status-warning") + '">' + (item.available ? "可进入" : "待配置") + "</div></div>" +
-        '<div class="channel-actions" style="margin-top:12px;"></div>';
-      const actions = card.querySelector(".channel-actions");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = item.available ? "primary-button" : "ghost-button";
-      btn.textContent = item.accessMode === "public_link" ? "打开频道" : "进入频道";
-      btn.disabled = !item.available;
-      btn.addEventListener("click", function () {
+        '<div class="status-badge' + (item.available ? "" : " status-warning") + '">' + escapeHtml(item.available ? "可进入" : "待配置") + "</div></div>" +
+        '<div class="channel-actions" style="margin-top:12px;"><button class="' + (item.available ? "primary-button" : "ghost-button") + '" type="button">' + escapeHtml(item.accessMode === "public_link" ? "打开频道" : "进入频道") + "</button></div>";
+      const button = card.querySelector("button");
+      button.disabled = !item.available;
+      button.addEventListener("click", function () {
         if (item.link) {
           if (tg && tg.openTelegramLink) tg.openTelegramLink(item.link);
           else window.open(item.link, "_blank", "noopener");
@@ -619,7 +587,6 @@
         }
         if (item.resourceId) openChannelAccess(item.resourceId);
       });
-      actions.appendChild(btn);
       if (!item.available && item.reason) {
         const note = document.createElement("div");
         note.className = "stack-note";
@@ -630,13 +597,109 @@
     });
   }
 
+  function renderOrdersList() {
+    const host = $("meOrdersList");
+    host.innerHTML = "";
+    if (state.orders.loading) {
+      host.innerHTML = createSkeletonCards(2);
+      return;
+    }
+    if (!state.orders.items.length) {
+      host.innerHTML = '<div class="inline-state">当前没有订单记录。</div>';
+      return;
+    }
+    state.orders.items.forEach(function (order) {
+      const statusClass = order.status === "paid" ? "" : (order.status === "pending" ? " status-warning" : " status-danger");
+      const card = document.createElement("article");
+      card.className = "stack-card";
+      card.innerHTML =
+        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(order.product && order.product.title ? order.product.title : order.orderNo) + '</div>' +
+        '<div class="stack-subtitle">订单号 ' + escapeHtml(order.orderNo) + "</div></div>" +
+        '<div class="status-badge' + statusClass + '">' + escapeHtml(order.status) + "</div></div>" +
+        '<div class="stack-meta"><span>' + escapeHtml(formatPriceMinor(order.amountMinor, order.currency)) + '</span><span>' + escapeHtml(formatDate(order.createdAt)) + "</span></div>" +
+        '<div class="channel-actions" style="margin-top:12px;"></div>';
+      const actions = card.querySelector(".channel-actions");
+      const primary = document.createElement("button");
+      primary.type = "button";
+      primary.className = order.status === "pending" ? "primary-button" : "ghost-button";
+      primary.textContent = order.status === "pending" && !state.env.isTelegram && order.product && !isStarsProduct(order.product)
+        ? "继续 USDT 支付"
+        : order.status === "paid"
+          ? "查看权益"
+          : "查看内容";
+      primary.addEventListener("click", function () {
+        if (order.status === "pending" && !state.env.isTelegram && order.product && !isStarsProduct(order.product)) {
+          window.location.assign("./h5-pay.html?orderNo=" + encodeURIComponent(order.orderNo));
+          return;
+        }
+        if (order.product && order.product.id) {
+          const target = (state.library.items || []).find(function (item) { return item.productId === order.product.id; });
+          if (target) setHashForDetail(target.id, "me");
+        }
+      });
+      actions.appendChild(primary);
+      host.appendChild(card);
+    });
+  }
+
+  function renderPreferenceCards() {
+    $("mePreferenceList").innerHTML =
+      '<article class="stack-card"><div class="stack-head"><div><div class="stack-title">内容偏好</div><div class="stack-subtitle">控制推荐与内容主题偏好</div></div></div><div class="stack-note">首期保留基础能力，后续会接入更细的偏好配置与推荐开关。</div></article>' +
+      '<article class="stack-card"><div class="stack-head"><div><div class="stack-title">帮助、规则与隐私</div><div class="stack-subtitle">账号与安全、通知设置、帮助反馈</div></div></div><div class="stack-note">如需跨设备恢复权益，请先在此页绑定 Telegram。</div></article>';
+  }
+
+  function renderMe() {
+    const session = state.session;
+    const isTelegram = session && session.identity === "telegram";
+    $("profileTitle").textContent = isTelegram
+      ? "当前账户 · " + (session.displayName || "已连接 Telegram")
+      : "本机账户 · " + (session.displayName || "同频访客账户");
+    $("profileSubtitle").textContent = isTelegram
+      ? "已连接 Telegram，可跨设备恢复订单与权益。"
+      : "首次打开已自动创建本机账户；绑定 Telegram 后可跨设备恢复权益。";
+
+    const membershipSummary = state.entitlements.data && state.entitlements.data.summary
+      ? state.entitlements.data.summary.membership
+      : { status: "none", expiresAt: null };
+    $("meMembershipText").textContent = membershipSummary.status === "active"
+      ? (membershipSummary.expiresAt ? "已开通至 " + formatDateShort(membershipSummary.expiresAt) : "已开通")
+      : "未开通";
+    $("meMembershipHint").textContent = membershipSummary.status === "active"
+      ? "会员内容会在详情页直接展示频道入口。"
+      : "会员与内容包购买入口在「会员」页。";
+    $("meOrdersText").textContent = state.orders.items.length ? "共 " + state.orders.items.length + " 条" : "暂无订单";
+    $("meOrdersHint").textContent = state.orders.items.some(function (item) { return item.status === "pending"; })
+      ? "你有待支付订单，通知入口会直接带你回到这里。"
+      : "已支付、待支付、失效订单都会统一收进这里。";
+
+    renderUnlockedList();
+    renderChannelCards();
+    renderOrdersList();
+    renderPreferenceCards();
+  }
+
+  function pendingOrderForProduct(productId) {
+    return (state.orders.items || []).find(function (order) {
+      return order.status === "pending" && order.product && order.product.id === productId;
+    }) || null;
+  }
+
+  function getPrimaryDetailAction(detail) {
+    if (detail.unlocked) {
+      return { text: "前往频道", handler: function () { openChannelAccess(detail.id); } };
+    }
+    if (detail.accessType === "membership") {
+      return { text: "开通会员", handler: function () { startPurchase(detail); } };
+    }
+    if (detail.accessType === "package") {
+      return { text: "查看内容包", handler: function () { startPurchase(detail); } };
+    }
+    return { text: "查看频道预览", handler: function () { openChannelAccess(detail.id); } };
+  }
+
   async function renderDetail(id) {
     if (!id) {
       $("detailContent").innerHTML = '<div class="empty-state">内容 ID 缺失。</div>';
-      return;
-    }
-    if (state.detailLoading) {
-      $("detailContent").innerHTML = createSkeletonCards(1);
       return;
     }
     if (!state.detailCache[id]) {
@@ -652,102 +715,85 @@
       state.detailLoading = false;
     }
     const detail = state.detailCache[id];
+    rememberRecent(detail);
+    renderRecentList();
     updatePageSeo(detail.effectiveSeo || { title: detail.title, description: detail.description, keywords: [] });
     updateOgImage(detail.coverUrl || "");
     updateJsonLd(detail.videoObjectJsonLd || null);
+
+    const primaryAction = getPrimaryDetailAction(detail);
+    const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;
     const coverClass = detail.coverUrl ? "detail-cover has-image" : "detail-cover";
-    const priceText = detail.product ? formatPriceMinor(detail.product.priceMinor, detail.product.currency) : "未配置商品";
     $("detailContent").innerHTML =
       '<div class="' + coverClass + '"' + (detail.coverUrl ? ' style="background-image:url(\'' + String(detail.coverUrl).replace(/'/g, "%27") + '\')"' : "") + '></div>' +
       '<div class="detail-copy">' +
-      '<p class="eyebrow">' + escapeHtml((detail.tags || []).join(" · ") || detail.accessType || "DETAIL") + '</p>' +
+      '<p class="eyebrow">' + escapeHtml((detail.tags || []).join(" · ") || getAccessLabel(detail)) + '</p>' +
       '<h2>' + escapeHtml(detail.title || "") + '</h2>' +
-      '<div class="detail-meta"><span>' + escapeHtml(detail.duration || "—") + '</span><span>' + escapeHtml(priceText) + '</span><span>' + escapeHtml(detail.ownedBy || detail.accessType || "") + '</span></div>' +
+      '<div class="detail-meta"><span>' + escapeHtml(detail.duration || "—") + '</span><span>' + escapeHtml(detail.categories && detail.categories[0] ? detail.categories[0].name : "未分类") + '</span><span>' + escapeHtml(formatDateShort(detail.publishedAt)) + '</span></div>' +
       '<div class="detail-description">' + escapeHtml(detail.description || "暂无内容介绍。") + '</div>' +
-      '<div class="detail-actions"></div>' +
+      '<div class="detail-status-card">' +
+      '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(detail.unlocked ? "已解锁，可直接进入频道" : getAccessLabel(detail)) + '</div>' +
+      '<div class="stack-subtitle">' + escapeHtml(detail.unlocked
+        ? "该内容已归属到你当前账户的有效权益。"
+        : detail.accessType === "membership"
+          ? "该内容通过会员主频道交付。"
+          : detail.accessType === "package"
+            ? "该内容通过所属内容包频道交付。"
+            : "该内容为公开预览，可直接查看。") + '</div></div>' +
+      '<div class="status-badge' + (detail.unlocked ? "" : " status-warning") + '">' + escapeHtml(detail.unlocked ? "已解锁" : "未解锁") + "</div></div>" +
+      (pendingOrder ? '<div class="stack-note">当前有待支付订单：' + escapeHtml(pendingOrder.orderNo) + '，可在「我的 > 我的订单」继续支付。</div>' : "") +
+      '</div>' +
+      (detail.accessType !== "public" ? '<div class="detail-purchase-list"></div>' : "") +
+      '<div class="sticky-action-bar"><button id="detailPrimaryButton" class="primary-button" type="button">' + escapeHtml(primaryAction.text) + '</button><button id="detailBackButton" class="ghost-button" type="button">返回</button></div>' +
       "</div>";
-    const actions = $("detailContent").querySelector(".detail-actions");
-    if (detail.unlocked) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "primary-button";
-      btn.textContent = "进入频道观看";
-      btn.addEventListener("click", function () {
-        openChannelAccess(detail.id);
-      });
-      actions.appendChild(btn);
-    } else if (detail.product) {
-      const buyBtn = document.createElement("button");
-      buyBtn.type = "button";
-      buyBtn.className = "primary-button";
-      buyBtn.textContent = state.env.isTelegram && isStarsProduct(detail.product) ? "使用 Stars 解锁" : "去支付";
-      buyBtn.addEventListener("click", function () {
-        startPurchase(detail);
-      });
-      actions.appendChild(buyBtn);
+
+    const purchaseHost = $("detailContent").querySelector(".detail-purchase-list");
+    if (purchaseHost) {
+      if (detail.accessType === "membership") {
+        purchaseHost.innerHTML =
+          '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 开通会员，持续获得会员主频道更新。</p></div>';
+      } else if (detail.accessType === "package") {
+        purchaseHost.innerHTML =
+          '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 解锁所属内容包；2. 若你已经拥有该包权益，可直接前往频道。</p></div>';
+      }
     }
-    const backBtn = document.createElement("button");
-    backBtn.type = "button";
-    backBtn.className = "ghost-button";
-    backBtn.textContent = "返回";
-    backBtn.addEventListener("click", function () {
+
+    $("detailPrimaryButton").addEventListener("click", primaryAction.handler);
+    $("detailBackButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
     });
-    actions.appendChild(backBtn);
   }
 
-  function renderContentCards(hostId, items, fromTab) {
-    const host = $(hostId);
-    host.innerHTML = "";
-    const tpl = $("contentCardTemplate");
-    items.forEach(function (item) {
-      const node = tpl.content.cloneNode(true);
-      const cover = node.querySelector(".card-cover");
-      if (item.coverUrl) {
-        cover.style.backgroundImage = "linear-gradient(135deg, rgba(166,107,255,0.24), rgba(38,34,54,0.62)), url('" + String(item.coverUrl).replace(/'/g, "%27") + "')";
-        cover.style.backgroundSize = "cover";
-        cover.style.backgroundPosition = "center";
+  function handleBannerAction(banner) {
+    if (banner.targetType === "content" && banner.targetId) {
+      setHashForDetail(banner.targetId, "home");
+      return;
+    }
+    if (banner.targetType === "category" && banner.targetId) {
+      state.library.categoryId = banner.targetId;
+      setHashForTab("library");
+      return;
+    }
+    if (banner.targetType === "package" && banner.targetId) {
+      const target = (state.library.items || []).find(function (item) { return item.packageId === banner.targetId; });
+      if (target) {
+        setHashForDetail(target.id, "home");
+        return;
       }
-      node.querySelector(".cover-duration").textContent = item.duration || "—";
-      node.querySelector(".card-tag").textContent = (item.tags || []).join(" · ") || item.accessType || "";
-      node.querySelector(".card-title").textContent = item.title || "未命名内容";
-      node.querySelector(".card-desc").textContent = item.description || "暂无描述";
-      node.querySelector(".card-price").textContent = item.priceMinor ? formatPriceMinor(item.priceMinor, item.priceCurrency) : "免费";
-      node.querySelector(".card-access").textContent = item.unlocked ? "已解锁" : (item.accessType || "待解锁");
-      node.querySelector(".cover-button").addEventListener("click", function () {
-        setHashForDetail(item.id, fromTab);
-      });
-      const action = node.querySelector(".card-action");
-      action.textContent = item.unlocked ? "查看详情" : "查看并解锁";
-      action.addEventListener("click", function () {
-        setHashForDetail(item.id, fromTab);
-      });
-      host.appendChild(node);
-    });
-  }
-
-  function renderSessionChip() {
-    const session = state.session;
-    const text = $("sessionChipText");
-    const icon = $("sessionChipIcon");
-    if (!session) {
-      icon.textContent = "…";
-      text.textContent = "建立会话中";
+    }
+    if (banner.targetType === "membership") {
+      setHashForTab("membership");
       return;
     }
-    if (session.identity === "telegram") {
-      icon.textContent = (session.displayName || "T").slice(0, 1);
-      text.textContent = session.displayName || "已绑定 Telegram";
-      return;
+    if (banner.externalUrl) {
+      if (/^https:\/\/t\.me\//.test(banner.externalUrl) && tg && tg.openTelegramLink) tg.openTelegramLink(banner.externalUrl);
+      else window.open(banner.externalUrl, "_blank", "noopener");
     }
-    icon.textContent = "访";
-    text.textContent = "访客模式";
   }
 
   async function bootstrapSession() {
     state.booting = true;
     clearBootError();
-    renderSessionChip();
     let session = null;
 
     if (state.env.isTelegram && state.env.hasInitData) {
@@ -758,12 +804,13 @@
         });
         session = {
           identity: "telegram",
-          displayName: payload.user && (payload.user.first_name || payload.user.username) ? (payload.user.first_name || payload.user.username) : "Telegram 用户",
+          displayName: payload.user && (payload.user.first_name || payload.user.username)
+            ? (payload.user.first_name || payload.user.username)
+            : "Telegram 用户",
           telegramBound: true,
           userId: payload.user && payload.user.id ? String(payload.user.id) : null,
         };
-      } catch (_) {
-      }
+      } catch (_) {}
     }
 
     if (!session) {
@@ -771,89 +818,61 @@
         session = await apiCall("/api/auth/h5/session");
       } catch (err) {
         if (err.status === 401) {
-          try {
-            session = await apiCall("/api/auth/h5/guest-session", {
-              method: "POST",
-              body: JSON.stringify({}),
-            });
-          } catch (guestErr) {
-            showBootError("暂时无法建立会话", apiText(guestErr));
-            state.booting = false;
-            return false;
-          }
+          session = await apiCall("/api/auth/h5/guest-session", {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
         } else {
-          showBootError("暂时无法建立会话", apiText(err));
-          state.booting = false;
-          return false;
+          throw err;
         }
       }
     }
 
     state.session = session;
-    renderSessionChip();
     state.booting = false;
-    return true;
-  }
-
-  async function bootstrapApp() {
-    if (state.booting) return;
-    const sessionOk = await bootstrapSession();
-    if (!sessionOk) return;
-    await loadHome();
-    routeTo(parseHash());
   }
 
   async function loadHome() {
-    try {
-      state.home = await apiCall("/api/home");
-      renderHome();
-      renderDiscover();
-      renderMembership();
-    } catch (err) {
-      showBootError("目录加载失败", apiText(err));
-    }
+    state.home = await apiCall("/api/home");
+    renderHome();
   }
 
-  async function loadDiscover() {
-    if (state.discover.loading) return;
-    state.discover.loading = true;
-    renderDiscover();
+  async function loadLibrary() {
+    if (state.library.loading) return;
+    state.library.loading = true;
+    renderLibrary();
     try {
       const params = new URLSearchParams({
         page: "1",
         pageSize: "50",
-        sort: "newest",
+        sort: state.library.sort,
       });
+      if (state.library.categoryId) params.set("categoryId", state.library.categoryId);
       const data = await apiCall("/api/contents?" + params.toString());
-      state.discover.items = (data && data.items) || [];
-      state.discover.pagination = data && data.pagination ? data.pagination : null;
-      state.discover.loaded = true;
+      state.library.items = data.items || [];
+      state.library.loaded = true;
     } catch (err) {
-      $("discoverState").innerHTML = "发现页加载失败：" + escapeHtml(apiText(err));
+      $("libraryState").textContent = "片库加载失败：" + apiText(err);
     } finally {
-      state.discover.loading = false;
-      renderDiscover();
+      state.library.loading = false;
+      renderLibrary();
+      renderMembership();
+      renderMe();
     }
   }
 
   async function loadOrders() {
     if (state.orders.loading) return;
     state.orders.loading = true;
-    renderOrders();
+    renderOrdersList();
     try {
-      const params = new URLSearchParams({
-        page: "1",
-        pageSize: "50",
-      });
-      if (state.orders.status) params.set("status", state.orders.status);
-      const data = await apiCall("/api/user/orders?" + params.toString());
+      const data = await apiCall("/api/user/orders?page=1&pageSize=50");
       state.orders.items = data.items || [];
-      state.orders.pagination = data.pagination || null;
     } catch (err) {
-      $("ordersList").innerHTML = '<div class="inline-state">订单加载失败：' + escapeHtml(apiText(err)) + "</div>";
+      $("meOrdersList").innerHTML = '<div class="inline-state">订单加载失败：' + escapeHtml(apiText(err)) + "</div>";
     } finally {
       state.orders.loading = false;
-      renderOrders();
+      renderNotifyBadge();
       renderMe();
     }
   }
@@ -861,15 +880,14 @@
   async function loadEntitlements() {
     if (state.entitlements.loading) return;
     state.entitlements.loading = true;
-    renderMe();
     try {
       state.entitlements.data = await apiCall("/api/user/entitlements");
       state.entitlements.loaded = true;
     } catch (err) {
-      $("meEntitlementsList").innerHTML = '<div class="inline-state">权益加载失败：' + escapeHtml(apiText(err)) + "</div>";
+      $("meUnlockedList").innerHTML = '<div class="inline-state">权益加载失败：' + escapeHtml(apiText(err)) + "</div>";
     } finally {
       state.entitlements.loading = false;
-      renderMembershipBadge();
+      renderMembership();
       renderMe();
     }
   }
@@ -877,7 +895,6 @@
   async function loadChannels() {
     if (state.channels.loading) return;
     state.channels.loading = true;
-    renderMe();
     try {
       const data = await apiCall("/api/user/channels");
       state.channels.items = data.items || [];
@@ -890,6 +907,17 @@
     }
   }
 
+  function renderNotifyBadge() {
+    const pending = state.orders.items.filter(function (item) { return item.status === "pending"; }).length;
+    const badge = $("notifyBadge");
+    if (!pending) {
+      badge.classList.add("is-hidden");
+      return;
+    }
+    badge.classList.remove("is-hidden");
+    badge.textContent = pending > 99 ? "99+" : String(pending);
+  }
+
   function openChannelAccess(resourceId) {
     const form = document.createElement("form");
     form.method = "POST";
@@ -899,41 +927,6 @@
     document.body.appendChild(form);
     form.submit();
     form.remove();
-  }
-
-  function showInlineMessage(message) {
-    if (tg && tg.showPopup) {
-      tg.showPopup({ title: "提示", message: message, buttons: [{ type: "ok" }] }).catch(function () {});
-      return;
-    }
-    window.alert(message);
-  }
-
-  function handleBannerAction(banner) {
-    if (banner.targetType === "content" && banner.targetId) {
-      setHashForDetail(banner.targetId, "home");
-      return;
-    }
-    if (banner.targetType === "category" && banner.targetId) {
-      state.discover.categoryId = banner.targetId;
-      setHashForTab("discover");
-      return;
-    }
-    if (banner.externalUrl || banner.targetId) {
-      const url = banner.externalUrl || banner.targetId;
-      if (/^https:\/\/t\.me\//.test(url) && tg && tg.openTelegramLink) tg.openTelegramLink(url);
-      else window.open(url, "_blank", "noopener");
-    }
-  }
-
-  function findFirstContentByType(type) {
-    return (state.home && state.home.contents ? state.home.contents : []).find(function (item) { return item.accessType === type; }) || null;
-  }
-
-  function findFirstContentByPackage(packageId) {
-    return Object.keys(state.detailCache).map(function (id) { return state.detailCache[id]; }).find(function (detail) {
-      return detail && detail.package && detail.package.id === packageId;
-    }) || null;
   }
 
   function getLaunchBotKey() {
@@ -954,7 +947,7 @@
       window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id));
       return;
     }
-    showInlineMessage("当前商品仅支持 Telegram Stars。请在 Telegram Mini App 内打开后支付。");
+    showInlineMessage("当前商品仅支持 Telegram Stars，请在 Telegram Mini App 内打开后支付。");
   }
 
   async function createStarsOrderAndPay(detail) {
@@ -984,39 +977,81 @@
     tg.openInvoice(invoiceLink, function () {
       loadOrders();
       loadEntitlements();
-      showInlineMessage("Stars 支付已提交，请在订单页确认状态。");
+      showInlineMessage("Stars 支付已提交，请稍后在「我的」查看订单与权益状态。");
     });
   }
 
-  function renderOrdersBadge() {
-    const pending = state.orders.items.filter(function (item) { return item.status === "pending"; }).length;
-    const badge = $("ordersBadge");
-    if (!pending) {
-      badge.classList.add("is-hidden");
+  function routeTo(routeState) {
+    state.route = routeState;
+    const isDetail = routeState.view === "detail";
+    const titleMap = {
+      home: ["同频点播", "今天看什么"],
+      library: ["片库", "搜索、分类与筛选"],
+      membership: ["会员", "会员主频道与内容包"],
+      me: ["我的", "资产、订单、频道入口与绑定"],
+    };
+
+    $("backButton").hidden = !isDetail;
+    $("bottomNav").classList.toggle("is-hidden", isDetail);
+    $("headerTitle").textContent = isDetail ? "视频详情" : titleMap[routeState.tab][0];
+    $("headerSubtitle").textContent = isDetail ? "查看权益与购买方式" : titleMap[routeState.tab][1];
+
+    ["home", "library", "membership", "me"].forEach(function (tab) {
+      $(tab + "View").classList.toggle("is-hidden", isDetail || routeState.tab !== tab);
+    });
+    $("detailView").classList.toggle("is-hidden", !isDetail);
+
+    document.querySelectorAll(".nav-item").forEach(function (button) {
+      button.classList.toggle("is-active", !isDetail && button.getAttribute("data-tab") === routeState.tab);
+    });
+
+    if (isDetail) {
+      renderDetail(routeState.id);
       return;
     }
-    badge.classList.remove("is-hidden");
-    badge.textContent = pending > 99 ? "99+" : String(pending);
+
+    if (!state.library.loaded && routeState.tab !== "home") loadLibrary();
+    if (routeState.tab === "membership") renderMembership();
+    if (routeState.tab === "me") {
+      loadOrders();
+      loadEntitlements();
+      loadChannels();
+    }
+  }
+
+  async function bootstrapApp() {
+    if (state.booting) return;
+    try {
+      await bootstrapSession();
+      await loadHome();
+      await loadLibrary();
+      await Promise.all([loadOrders(), loadEntitlements(), loadChannels()]);
+      routeTo(parseHash());
+    } catch (err) {
+      showBootError("暂时无法建立会话", apiText(err));
+    }
   }
 
   function bindEvents() {
-    $("retryBootstrapButton").addEventListener("click", function () {
-      bootstrapApp();
-    });
+    $("retryBootstrapButton").addEventListener("click", bootstrapApp);
     $("backButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
     });
-    $("homePrimaryAction").addEventListener("click", function () {
-      setHashForTab("discover");
+    $("searchButton").addEventListener("click", function () {
+      setHashForTab("library");
+      window.setTimeout(function () {
+        $("librarySearchInput").focus();
+      }, 50);
     });
-    $("homeSecondaryAction").addEventListener("click", function () {
+    $("notifyButton").addEventListener("click", function () {
       setHashForTab("me");
+      window.setTimeout(function () {
+        const section = $("meOrdersSection");
+        if (section && typeof section.scrollIntoView === "function") section.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
     });
-    $("jumpDiscoverButton").addEventListener("click", function () {
-      setHashForTab("discover");
-    });
-    $("sessionChip").addEventListener("click", function () {
-      setHashForTab("me");
+    $("jumpLibraryButton").addEventListener("click", function () {
+      setHashForTab("library");
     });
     $("bindTelegramButton").addEventListener("click", function () {
       const redirect = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
@@ -1024,31 +1059,27 @@
     });
     $("logoutButton").addEventListener("click", async function () {
       try {
-        await apiCall("/api/auth/h5/logout", {
-          method: "POST",
-          body: JSON.stringify({}),
-        });
-      } catch (_) {
-      }
+        await apiCall("/api/auth/h5/logout", { method: "POST", body: JSON.stringify({}) });
+      } catch (_) {}
       window.location.reload();
     });
-    $("discoverSearchInput").addEventListener("input", function (evt) {
-      state.discover.search = evt.target.value || "";
-      renderDiscover();
+    $("librarySearchInput").addEventListener("input", function (event) {
+      state.library.search = event.target.value || "";
+      renderLibrary();
     });
-    $("ordersStatusSegment").querySelectorAll(".segment-button").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        $("ordersStatusSegment").querySelectorAll(".segment-button").forEach(function (node) {
+    $("librarySortSegment").querySelectorAll(".segment-button").forEach(function (button) {
+      button.addEventListener("click", function () {
+        $("librarySortSegment").querySelectorAll(".segment-button").forEach(function (node) {
           node.classList.remove("is-active");
         });
-        btn.classList.add("is-active");
-        state.orders.status = btn.getAttribute("data-status") || "";
-        loadOrders();
+        button.classList.add("is-active");
+        state.library.sort = button.getAttribute("data-sort") || "newest";
+        loadLibrary();
       });
     });
-    document.querySelectorAll(".nav-item").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        setHashForTab(btn.getAttribute("data-tab"));
+    document.querySelectorAll(".nav-item").forEach(function (button) {
+      button.addEventListener("click", function () {
+        setHashForTab(button.getAttribute("data-tab"));
       });
     });
     window.addEventListener("hashchange", function () {
@@ -1067,11 +1098,12 @@
   document.addEventListener("DOMContentLoaded", function () {
     initTelegram();
     bindEvents();
-    renderHome();
-    renderDiscover();
-    renderMembership();
-    renderOrders();
-    renderMe();
+    $("homeBannerList").innerHTML = createSkeletonCards(1);
+    $("homeFeaturedCard").innerHTML = createSkeletonCards(1);
+    $("homeLatestGrid").innerHTML = createSkeletonCards(4);
+    $("libraryGrid").innerHTML = createSkeletonCards(4);
+    $("membershipPrimaryCard").innerHTML = createSkeletonCards(1);
+    $("meUnlockedList").innerHTML = createSkeletonCards(1);
     if (!window.location.hash) setHashForTab("home");
     else routeTo(parseHash());
     bootstrapApp();

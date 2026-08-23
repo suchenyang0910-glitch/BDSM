@@ -111,9 +111,9 @@
 请在本仓库的 telegram-mini-app 目录基础上，实现“同频 InTune Telegram Mini App + 管理后台”。
 
 必须先阅读以下文档：
-1. telegram-mini-app/开发任务书-Trae.md
-2. telegram-mini-app/产品与后台技术PRD.md
-3. telegram-mini-app/数据模型与API契约.md
+1. docs/tasks/开发任务书-Trae.md
+2. docs/architecture/产品与后台技术PRD.md
+3. docs/architecture/数据模型与API契约.md
 
 技术栈：React + Vite + TypeScript（Mini App 和 Admin），Node.js + TypeScript + Fastify/NestJS，PostgreSQL + Prisma，Telegram Bot API。
 

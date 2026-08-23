@@ -42,6 +42,7 @@ const PAGE_TITLE_BY_PATH: Record<string, string> = {
   "/users": "订单与权益 · 用户检索",
   "/tickets": "订单与权益 · 客服工单",
   "/contents": "内容管理 · 视频内容",
+  "/packages": "内容管理 · 内容包管理",
   "/categories": "内容管理 · 分类与标签",
   "/banners": "内容管理 · Banner 运营位",
   "/homepage": "内容管理 · 首页配置",
@@ -59,6 +60,7 @@ const AdminLayout: React.FC = () => {
     const p = location.pathname;
     if (p.startsWith("/dashboard")) return "/dashboard";
     if (p.startsWith("/contents")) return "/contents";
+    if (p.startsWith("/packages")) return "/packages";
     if (p.startsWith("/categories")) return "/categories";
     if (p.startsWith("/banners")) return "/banners";
     if (p.startsWith("/homepage")) return "/homepage";
@@ -74,7 +76,7 @@ const AdminLayout: React.FC = () => {
   const openKeys = (() => {
     const p = location.pathname;
     const keys: string[] = ["orders"];
-    if (["/contents", "/categories", "/banners", "/homepage"].some((k) => p.startsWith(k))) keys.push("content");
+    if (["/contents", "/packages", "/categories", "/banners", "/homepage"].some((k) => p.startsWith(k))) keys.push("content");
     if (["/channels", "/platform-metadata"].some((k) => p.startsWith(k))) keys.push("settings");
     return keys;
   })();
@@ -138,6 +140,7 @@ const AdminLayout: React.FC = () => {
               label: "内容管理",
               children: [
                 { key: "/contents", icon: <VideoCameraOutlined />, label: "视频内容" },
+                { key: "/packages", icon: <AppstoreOutlined />, label: "内容包管理" },
                 { key: "/categories", icon: <TagsOutlined />, label: "分类与标签" },
                 { key: "/banners", icon: <HomeOutlined />, label: "Banner 运营位" },
                 { key: "/homepage", icon: <HomeOutlined />, label: "首页配置" },

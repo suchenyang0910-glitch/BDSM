@@ -122,7 +122,7 @@ export type AdminAuditLog = {
 
 export type ContentStatus = "draft" | "in_review" | "scheduled" | "published" | "archived";
 export type BannerStatus = "draft" | "active" | "inactive" | "scheduled" | "archived";
-export type BannerTargetType = "none" | "content" | "category" | "product" | "package" | "external";
+export type BannerTargetType = "content" | "category" | "package" | "membership" | "external";
 export type HomepageVersionStatus = "draft" | "published" | "archived";
 
 export type CategoryBrief = {
@@ -154,11 +154,27 @@ export type AdminPackageItem = {
   productId: string | null;
   productTitle?: string | null;
   productActive: boolean;
+  productStatus?: "active" | "inactive";
+  priceMinor?: string | null;
+  currency?: string | null;
   channelConfigured: boolean;
   contentsCount: number;
   createdAt: string;
   updatedAt: string;
 };
+
+export type CreateAdminPackageInput = {
+  title: string;
+  coverUrl?: string | null;
+  status?: PackageStatus;
+  productTitle: string;
+  priceMinor: string;
+  currency?: string;
+  productStatus?: "active" | "inactive";
+  reason?: string;
+};
+
+export type UpdateAdminPackageInput = Partial<CreateAdminPackageInput>;
 
 export type EditorBrief = {
   id: string;
@@ -560,7 +576,7 @@ export type ApiHomeBanner = {
   title: string;
   description: string;
   actionLabel: string;
-  targetType: "content" | "category" | "product" | "package" | "external" | null;
+  targetType: "content" | "category" | "package" | "membership" | "external" | null;
   targetId: string | null;
   externalUrl?: string;
   imageUrl: string | null;
@@ -581,6 +597,10 @@ export type ApiHomeContent = {
   tags: string[];
   categoryId: string;
   categoryName?: string;
+  packageId?: string | null;
+  packageTitle?: string | null;
+  productId?: string | null;
+  previewUrl?: string | null;
   priceMinor?: string;
   priceCurrency?: string;
   publishedAt?: string;
@@ -602,9 +622,13 @@ export type ApiHomeResp = {
   versionId: string | null;
   versionLabel: string | null;
   publishedAt: string | null;
+  brandHint?: string;
   banners: ApiHomeBanner[];
   categories: ApiHomeCategory[];
   contents: ApiHomeContent[];
+  featuredContent?: ApiHomeContent | null;
+  latestContents?: ApiHomeContent[];
+  themeCategories?: ApiHomeCategory[];
   meta: {
     generatedAt: string;
     entitlementCount: number;

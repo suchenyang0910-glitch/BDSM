@@ -9,7 +9,7 @@ import contentRoutes from "../src/routes/contents.js";
 import homeRoutes from "../src/routes/home.js";
 import resourceRoutes from "../src/routes/resources.js";
 import orderRoutes from "../src/routes/orders.js";
-import adminCmsRoutes from "../src/routes/adminCms.js";
+import adminCmsRoutes, { adminPackageRoutes } from "../src/routes/adminCms.js";
 import adminUsersAndSupportRoutes from "../src/routes/adminUsersAndSupport.js";
 import adminChannelsRoutes from "../src/routes/adminChannels.js";
 import telegramWebhookRoutes from "../src/routes/telegramWebhook.js";
@@ -45,6 +45,7 @@ async function createApp(prisma: any) {
   await app.register(resourceRoutes, { prefix: "/api" });
   await app.register(orderRoutes, { prefix: "/api" });
   await app.register(adminCmsRoutes, { prefix: "/api" });
+  await app.register(adminPackageRoutes, { prefix: "/api" });
   await app.register(adminUsersAndSupportRoutes, { prefix: "/api" });
   await app.register(adminChannelsRoutes, { prefix: "/api" });
   await app.register(telegramWebhookRoutes, { prefix: "/api" });
@@ -509,6 +510,65 @@ test("public 内容绑定完整视频必须返回 full_video_not_allowed_for_pub
     });
     assert.equal(resp.statusCode, 400, resp.body);
     assert.equal((resp.json() as any).error, "full_video_not_allowed_for_public");
+  } finally {
+    await app.close();
+  }
+});
+
+test("内容包管理：editor 可创建、编辑和下架；auditor 只读，价格以字符串安全返回", async () => {
+  const app = await createApp(prisma);
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const auditorCookie = await loginAdmin(app, "auditor");
+
+    const forbidden = await app.inject({
+      method: "POST",
+      url: "/api/admin/packages",
+      headers: { cookie: auditorCookie, "Content-Type": "application/json" },
+      payload: { title: "不应创建", productTitle: "不应创建", priceMinor: "10", currency: "XTR" },
+    });
+    assert.equal(forbidden.statusCode, 403, forbidden.body);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/packages",
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        title: "联调内容包",
+        productTitle: "联调内容包权益",
+        priceMinor: "150",
+        currency: "XTR",
+        status: "published",
+        productStatus: "active",
+        reason: "内容包写操作回归",
+      },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const packageId = (created.json() as any).id;
+    assert.ok(typeof packageId === "string" && packageId.length > 10);
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/packages/${packageId}`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { title: "联调内容包（已下架）", status: "offline", priceMinor: "0", reason: "下架回归" },
+    });
+    assert.equal(updated.statusCode, 200, updated.body);
+
+    const listed = await app.inject({ method: "GET", url: "/api/admin/packages", headers: { cookie: auditorCookie } });
+    assert.equal(listed.statusCode, 200, listed.body);
+    const row = ((listed.json() as any).data || []).find((item: any) => item.id === packageId);
+    assert.ok(row, "created package must be listable to auditor");
+    assert.equal(row.status, "offline");
+    assert.equal(row.priceMinor, "0");
+    assert.equal(row.currency, "XTR");
+    assert.equal(Object.hasOwn(row, "channelId"), false, "package API must never expose raw channel ID");
+
+    const auditActions = await prisma.adminAuditLog.findMany({
+      where: { objectType: "content_package", objectId: packageId },
+      select: { action: true },
+    });
+    assert.deepEqual(auditActions.map((item: any) => item.action).sort(), ["package.create", "package.update"]);
   } finally {
     await app.close();
   }

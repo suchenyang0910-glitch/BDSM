@@ -56,6 +56,8 @@ import type {
   BindChannelPurposeResp,
   ChannelRefreshResp,
   AdminPackageItem,
+  CreateAdminPackageInput,
+  UpdateAdminPackageInput,
   AdminDashboardSummary,
   FreeChannelOption,
   PlatformMetadata,
@@ -301,6 +303,16 @@ export async function startAdminTelegramPublish(
 // ==========================================================================
 export async function listAdminPackages(): Promise<{ data: AdminPackageItem[] }> {
   const res = await http.get("/admin/packages");
+  return res.data;
+}
+
+export async function createAdminPackage(input: CreateAdminPackageInput): Promise<{ ok: true; id: string }> {
+  const res = await http.post("/admin/packages", input);
+  return res.data;
+}
+
+export async function updateAdminPackage(id: string, input: UpdateAdminPackageInput): Promise<{ ok: true; id: string }> {
+  const res = await http.patch(`/admin/packages/${encodeURIComponent(id)}`, input);
   return res.data;
 }
 

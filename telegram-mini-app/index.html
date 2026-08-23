@@ -12,7 +12,7 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="" />
     <title>同频 · 精选点播</title>
-    <link rel="stylesheet" href="./styles.css?v=20260823-3" />
+    <link rel="stylesheet" href="./styles.css?v=20260823-vod-1" />
     <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
     <script id="videoObjectJsonLd" type="application/ld+json"></script>
   </head>
@@ -24,15 +24,20 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
           </button>
           <div class="header-copy">
-            <p class="eyebrow">INTUNE MEMBER LIBRARY</p>
+            <p class="eyebrow">INTUNE VOD</p>
             <h1 id="headerTitle">同频点播</h1>
-            <p id="headerSubtitle" class="header-subtitle">正在建立安全会话…</p>
+            <p id="headerSubtitle" class="header-subtitle">视频点播目录、会员权益与 Telegram 频道交付</p>
           </div>
         </div>
-        <button id="sessionChip" class="session-chip" type="button" aria-label="账户信息">
-          <span id="sessionChipIcon" class="session-chip-icon">访</span>
-          <span id="sessionChipText">访客模式</span>
-        </button>
+        <div class="header-actions">
+          <button id="searchButton" class="icon-button" type="button" aria-label="搜索">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+          </button>
+          <button id="notifyButton" class="icon-button" type="button" aria-label="通知">
+            <span id="notifyBadge" class="header-badge is-hidden">0</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6"></path><path d="M10 18a2 2 0 0 0 4 0"></path></svg>
+          </button>
+        </div>
       </header>
 
       <section id="globalError" class="global-banner is-hidden" aria-live="polite">
@@ -45,23 +50,15 @@
 
       <main id="appMain" class="app-main">
         <section id="homeView" class="tab-view">
-          <div class="panel-card hero-card">
-            <div class="hero-copy">
-              <p class="eyebrow">PRIVATE · RELIABLE · MOBILE</p>
-              <h2 id="heroTitle">在 Telegram 与 H5 之间无缝继续浏览</h2>
-              <p id="heroDescription">首页、发现、会员、订单、我的五栏体验正在同步你的真实目录与会话状态。</p>
-            </div>
-            <div class="hero-actions">
-              <button id="homePrimaryAction" class="primary-button" type="button">浏览发现</button>
-              <button id="homeSecondaryAction" class="ghost-button" type="button">查看我的</button>
-            </div>
+          <div class="brand-hint-card">
+            <p id="homeBrandHint" class="brand-hint">真实表达，在理解与边界中被看见</p>
           </div>
 
           <section class="section-block">
             <div class="section-head">
               <div>
-                <p class="eyebrow">RECOMMENDED</p>
-                <h3>运营推荐</h3>
+                <p class="eyebrow">BANNER</p>
+                <h3>首页运营入口</h3>
               </div>
             </div>
             <div id="homeBannerList" class="banner-rail"></div>
@@ -70,71 +67,103 @@
           <section class="section-block">
             <div class="section-head">
               <div>
-                <p class="eyebrow">FOR YOU</p>
-                <h3>推荐内容</h3>
+                <p class="eyebrow">TODAY</p>
+                <h3>今日精选</h3>
               </div>
-              <button id="jumpDiscoverButton" class="text-button" type="button">查看全部</button>
             </div>
-            <div id="homeRecommendedGrid" class="content-grid"></div>
+            <div id="homeFeaturedCard"></div>
+          </section>
+
+          <section id="homeRecentSection" class="section-block is-hidden">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">RECENT</p>
+                <h3>继续浏览</h3>
+              </div>
+            </div>
+            <div id="homeRecentList" class="stack-list"></div>
           </section>
 
           <section class="section-block">
             <div class="section-head">
               <div>
-                <p class="eyebrow">UNLOCKED</p>
-                <h3>已解锁 / 可直接访问</h3>
+                <p class="eyebrow">TOPICS</p>
+                <h3>本周主题</h3>
               </div>
             </div>
-            <div id="homeUnlockedGrid" class="content-grid"></div>
+            <div id="homeThemesList" class="topic-grid"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">LATEST</p>
+                <h3>最新上架</h3>
+              </div>
+              <button id="jumpLibraryButton" class="text-button" type="button">查看全部</button>
+            </div>
+            <div id="homeLatestGrid" class="content-grid"></div>
           </section>
         </section>
 
-        <section id="discoverView" class="tab-view is-hidden">
+        <section id="libraryView" class="tab-view is-hidden">
           <div class="toolbar-card">
-            <label class="search-box" for="discoverSearchInput">
+            <label class="search-box" for="librarySearchInput">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
-              <input id="discoverSearchInput" type="search" placeholder="搜索标题或描述" autocomplete="off" />
+              <input id="librarySearchInput" type="search" placeholder="搜索标题或描述" autocomplete="off" />
             </label>
-            <div id="discoverCategoryList" class="chip-row"></div>
+            <div id="libraryCategoryList" class="chip-row"></div>
+            <div id="librarySortSegment" class="segment" role="tablist" aria-label="片库排序">
+              <button type="button" class="segment-button is-active" data-sort="newest">最新</button>
+              <button type="button" class="segment-button" data-sort="popular">最受欢迎</button>
+              <button type="button" class="segment-button" data-sort="featured">精选</button>
+            </div>
           </div>
-          <div id="discoverState" class="inline-state"></div>
-          <div id="discoverGrid" class="content-grid"></div>
+          <div id="libraryState" class="inline-state"></div>
+          <div id="libraryGrid" class="content-grid"></div>
         </section>
 
         <section id="membershipView" class="tab-view is-hidden">
           <div class="panel-card membership-summary">
             <div>
               <p class="eyebrow">MEMBERSHIP</p>
-              <h2 id="membershipHeadline">会员与内容包入口</h2>
-              <p id="membershipCopy" class="muted-copy">根据当前会话和设备环境展示可购买与已生效的权益入口。</p>
+              <h2 id="membershipHeadline">会员与内容包</h2>
+              <p id="membershipCopy" class="muted-copy">理解权益，再决定购买方式。</p>
             </div>
             <div id="membershipStatusBadge" class="status-badge">加载中</div>
           </div>
-          <div id="membershipGrid" class="content-grid"></div>
-        </section>
 
-        <section id="ordersView" class="tab-view is-hidden">
-          <div class="toolbar-card">
-            <div id="ordersStatusSegment" class="segment" role="tablist" aria-label="订单状态筛选">
-              <button type="button" class="segment-button is-active" data-status="">全部</button>
-              <button type="button" class="segment-button" data-status="pending">待支付</button>
-              <button type="button" class="segment-button" data-status="paid">已支付</button>
-              <button type="button" class="segment-button" data-status="expired">已失效</button>
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">MAIN CHANNEL</p>
+                <h3>会员主频道</h3>
+              </div>
             </div>
-          </div>
-          <div id="ordersList" class="stack-list"></div>
+            <div id="membershipPrimaryCard"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">PACKAGES</p>
+                <h3>内容包</h3>
+              </div>
+            </div>
+            <div id="membershipPackagesList" class="stack-list"></div>
+          </section>
         </section>
 
         <section id="meView" class="tab-view is-hidden">
           <div class="panel-card profile-card">
             <div>
               <p class="eyebrow">MY ACCOUNT</p>
-              <h2 id="profileTitle">访客模式</h2>
-              <p id="profileSubtitle" class="muted-copy">已自动保存本设备订单；绑定 Telegram 后可跨设备恢复权益。</p>
+              <h2 id="profileTitle">加载中</h2>
+              <p id="profileSubtitle" class="muted-copy">正在读取当前账户与本机账户信息…</p>
             </div>
             <div class="profile-actions">
               <button id="bindTelegramButton" class="primary-button" type="button">绑定 Telegram</button>
-              <button id="logoutButton" class="ghost-button" type="button">退出本设备</button>
+              <button id="logoutButton" class="ghost-button" type="button">退出本机账户</button>
             </div>
           </div>
 
@@ -147,28 +176,48 @@
             <article class="info-card">
               <p class="info-label">订单摘要</p>
               <strong id="meOrdersText">加载中</strong>
-              <p id="meOrdersHint" class="muted-copy">待支付与历史订单会显示在这里。</p>
+              <p id="meOrdersHint" class="muted-copy">我的订单会显示在这里。</p>
             </article>
           </div>
 
           <section class="section-block">
             <div class="section-head">
               <div>
-                <p class="eyebrow">ENTITLEMENTS</p>
-                <h3>我的权益</h3>
+                <p class="eyebrow">UNLOCKED</p>
+                <h3>我的已解锁</h3>
               </div>
             </div>
-            <div id="meEntitlementsList" class="stack-list"></div>
+            <div id="meUnlockedList" class="stack-list"></div>
           </section>
 
           <section class="section-block">
             <div class="section-head">
               <div>
                 <p class="eyebrow">CHANNELS</p>
-                <h3>我的频道入口</h3>
+                <h3>频道入口</h3>
               </div>
             </div>
             <div id="meChannelsList" class="stack-list"></div>
+          </section>
+
+          <section class="section-block" id="meOrdersSection">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">ORDERS</p>
+                <h3>我的订单</h3>
+              </div>
+            </div>
+            <div id="meOrdersList" class="stack-list"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">PREFERENCES</p>
+                <h3>偏好与帮助</h3>
+              </div>
+            </div>
+            <div id="mePreferenceList" class="stack-list"></div>
           </section>
         </section>
 
@@ -183,21 +232,15 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5L12 5l8 6.5V20a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z"></path></svg>
           <span>首页</span>
         </button>
-        <button class="nav-item" data-tab="discover" type="button">
+        <button class="nav-item" data-tab="library" type="button">
           <span class="nav-indicator"></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
-          <span>发现</span>
+          <span>片库</span>
         </button>
         <button class="nav-item" data-tab="membership" type="button">
           <span class="nav-indicator"></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19V9.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2V19"></path><path d="M9 7V5a3 3 0 0 1 6 0v2"></path><path d="M8 12h8"></path></svg>
           <span>会员</span>
-        </button>
-        <button class="nav-item" data-tab="orders" type="button">
-          <span class="nav-indicator"></span>
-          <span id="ordersBadge" class="nav-badge is-hidden">0</span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10l2 3v13H5V7z"></path><path d="M9 9h6"></path><path d="M9 13h6"></path></svg>
-          <span>订单</span>
         </button>
         <button class="nav-item" data-tab="me" type="button">
           <span class="nav-indicator"></span>
@@ -227,6 +270,6 @@
       </article>
     </template>
 
-    <script src="./app.js?v=20260823-2"></script>
+    <script src="./app.js?v=20260823-vod-1"></script>
   </body>
 </html>

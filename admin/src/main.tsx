@@ -14,6 +14,7 @@ import PaymentAddressesPage from "./pages/PaymentAddresses";
 import UsersPage from "./pages/Users";
 import SupportTicketsPage from "./pages/SupportTickets";
 import ContentsPage from "./pages/Contents";
+import PackagesPage from "./pages/Packages";
 import CategoriesPage from "./pages/Categories";
 import BannersPage from "./pages/Banners";
 import HomepageConfigPage from "./pages/HomepageConfig";
@@ -56,6 +57,7 @@ const App: React.FC = () => (
               <Route path="/users" element={<UsersPage />} />
               <Route path="/tickets" element={<SupportTicketsPage />} />
               <Route path="/contents" element={<ContentsPage />} />
+              <Route path="/packages" element={<PackagesPage />} />
               <Route path="/categories" element={<CategoriesPage />} />
               <Route path="/banners" element={<BannersPage />} />
               <Route path="/homepage" element={<HomepageConfigPage />} />

@@ -39,9 +39,7 @@ const { RangePicker } = DatePicker;
 const { TextArea } = Input;
 
 const SLOT_OPTIONS = [
-  { value: "home_top", label: "首页顶栏 Banner" },
-  { value: "home_mid", label: "首页中插卡片" },
-  { value: "category_pin", label: "分类页置顶" },
+  { value: "home_primary", label: "首页 Banner" },
 ];
 
 const SLOT_LABEL: Record<string, string> = SLOT_OPTIONS.reduce((acc, o) => {
@@ -60,12 +58,11 @@ const STATUS_TAG: Record<BannerStatus, { color: string; label: string }> = {
 const STATUS_OPTIONS = Object.entries(STATUS_TAG).map(([v, l]) => ({ value: v, label: l.label }));
 
 const TARGET_TYPE_OPTIONS: { value: BannerTargetType; label: string; hint: string }[] = [
-  { value: "none", label: "不跳转", hint: "仅展示，不响应点击" },
   { value: "content", label: "跳转内容详情", hint: "需选择内容 ID" },
   { value: "category", label: "跳转分类页", hint: "需选择分类 ID" },
-  { value: "product", label: "跳转产品购买", hint: "需填写产品 ID" },
   { value: "package", label: "跳转内容包", hint: "需填写内容包 ID" },
-  { value: "external", label: "外部 URL", hint: "需填写 https:// 外部链接" },
+  { value: "membership", label: "跳转会员页", hint: "前台直接打开会员页" },
+  { value: "external", label: "外部 URL", hint: "仅允许 HTTPS 页面或公开 Telegram 链接" },
 ];
 
 const BannersPage: React.FC = () => {
@@ -131,8 +128,8 @@ const BannersPage: React.FC = () => {
     setEditing(null);
     form.resetFields();
     form.setFieldsValue({
-      slot: "home_top",
-      targetType: "none",
+      slot: "home_primary",
+      targetType: "content",
       status: "draft",
       sortOrder: 0,
       actionLabel: "查看详情",
@@ -318,6 +315,9 @@ const BannersPage: React.FC = () => {
 
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Card>
+        首页 Banner 严格按 PRD 执行：仅支持 `0-3` 个运营位；每条都必须有明确跳转目标。外链仅允许合规 `HTTPS` 页面或公开 Telegram 链接，禁止私密邀请链接与支付链接。
+      </Card>
       <Card
         title={<Title level={5} style={{ margin: 0 }}>Banner 运营位</Title>}
         extra={
@@ -416,13 +416,19 @@ const BannersPage: React.FC = () => {
             </Form.Item>
           )}
 
-          {(targetType === "product" || targetType === "package") && (
+          {targetType === "package" && (
             <Form.Item
               name="targetId"
-              label={targetType === "product" ? "产品 ID" : "内容包 ID"}
+              label="内容包 ID"
               rules={[{ required: true, message: "请填写 ID" }]}
             >
               <Input placeholder="粘贴目标 ID" />
+            </Form.Item>
+          )}
+
+          {targetType === "membership" && (
+            <Form.Item label="会员页跳转">
+              <Input value="固定跳转到前台会员页" disabled />
             </Form.Item>
           )}
 
@@ -434,6 +440,7 @@ const BannersPage: React.FC = () => {
                 { required: true, message: "请填写外部 URL" },
                 { pattern: /^https:\/\//i, message: "必须为 https:// 开头" },
               ]}
+              extra="允许公开 Telegram 链接（如 https://t.me/InTune_bdsm）；禁止私密邀请链接、支付链接。"
             >
               <Input placeholder="https://..." />
             </Form.Item>

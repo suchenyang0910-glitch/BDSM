@@ -52,14 +52,15 @@ type BannerDict = Record<string, BannerItem>;
 type ContentDict = Record<string, ContentItem>;
 type CategoryDict = Record<string, CategoryItem>;
 
-const MAX_RECOMMEND = 12;
-const MAX_FEATURED = 8;
+const MAX_RECOMMEND = 6;
+const MAX_FEATURED = 1;
+const MAX_THEMES = 4;
 
 const SECTION_META = {
-  banners: { label: "首页 Banner", max: 5, color: "blue", icon: "🖼️" },
-  recommend: { label: "推荐内容", max: MAX_RECOMMEND, color: "geekblue", icon: "⭐" },
-  featured: { label: "精选内容", max: MAX_FEATURED, color: "purple", icon: "💎" },
-  categories: { label: "分类排序", max: 20, color: "green", icon: "📂" },
+  banners: { label: "首页 Banner", max: 3, color: "blue", icon: "🖼️" },
+  recommend: { label: "最新上架候选", max: MAX_RECOMMEND, color: "geekblue", icon: "🆕" },
+  featured: { label: "今日精选", max: MAX_FEATURED, color: "purple", icon: "💎" },
+  categories: { label: "本周主题", max: MAX_THEMES, color: "green", icon: "📂" },
 } as const;
 
 const HomepageConfigPage: React.FC = () => {
@@ -259,13 +260,12 @@ const HomepageConfigPage: React.FC = () => {
     const pc = published.config;
     return {
       banners: pc.bannerIds.filter((id, i) => id !== config.bannerIds[i]).length + Math.abs(pc.bannerIds.length - config.bannerIds.length),
-      recommend: pc.recommendContentIds.filter((id, i) => id !== config.recommendContentIds[i]).length + Math.abs(pc.recommendContentIds.length - config.recommendContentIds.length),
       featured: pc.featuredContentIds.filter((id, i) => id !== config.featuredContentIds[i]).length + Math.abs(pc.featuredContentIds.length - config.featuredContentIds.length),
       categories: pc.categoryOrderIds.filter((id, i) => id !== config.categoryOrderIds[i]).length + Math.abs(pc.categoryOrderIds.length - config.categoryOrderIds.length),
     };
   }, [published, config]);
 
-  const totalDiff = diffSummary.banners + diffSummary.recommend + diffSummary.featured + diffSummary.categories;
+  const totalDiff = diffSummary.banners + diffSummary.featured + diffSummary.categories;
 
   const publishedContentIds = React.useMemo(
     () => new Set(contents.filter((c) => c.status === "published").map((c) => c.id)),
@@ -322,7 +322,7 @@ const HomepageConfigPage: React.FC = () => {
               suffix="处"
             />
             <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-              Banner {diffSummary.banners} · 推荐 {diffSummary.recommend} · 精选 {diffSummary.featured} · 分类 {diffSummary.categories}
+              Banner {diffSummary.banners} · 今日精选 {diffSummary.featured} · 本周主题 {diffSummary.categories}
             </Paragraph>
           </Card>
         </Col>
@@ -397,6 +397,13 @@ const HomepageConfigPage: React.FC = () => {
             </Col>
           </Row>
 
+          <Alert
+            type="info"
+            showIcon
+            message="本页按视频点播版 PRD 编排首页"
+            description="这里维护 3 类核心元素：Banner（0-3）、今日精选（最多 1 条）、本周主题（最多 4 个分类）。「最新上架」由前台自动读取最新已发布内容，不再单独手工堆卡。"
+          />
+
           <Space size={16} wrap>
             <InputAddonTag title="Banner" ids={config.bannerIds} max={SECTION_META.banners.max} color={SECTION_META.banners.color} icon={SECTION_META.banners.icon}
               options={banners.map((b) => ({ id: b.id, label: `${b.title}  [${b.slot}]`, meta: `${b.status}` }))}
@@ -404,19 +411,13 @@ const HomepageConfigPage: React.FC = () => {
               onChange={(ids) => setConfig({ ...config, bannerIds: ids })}
               disabled={!canEdit}
             />
-            <InputAddonTag title="推荐内容" ids={config.recommendContentIds} max={SECTION_META.recommend.max} color={SECTION_META.recommend.color} icon={SECTION_META.recommend.icon}
-              options={contents.filter((c) => publishedContentIds.has(c.id)).map((c) => ({ id: c.id, label: c.title, meta: `${c.categories.map((x) => x.name).join("/") || "未分类"}` }))}
-              value={config.recommendContentIds}
-              onChange={(ids) => setConfig({ ...config, recommendContentIds: ids })}
-              disabled={!canEdit}
-            />
-            <InputAddonTag title="精选内容" ids={config.featuredContentIds} max={SECTION_META.featured.max} color={SECTION_META.featured.color} icon={SECTION_META.featured.icon}
+            <InputAddonTag title="今日精选" ids={config.featuredContentIds} max={SECTION_META.featured.max} color={SECTION_META.featured.color} icon={SECTION_META.featured.icon}
               options={contents.filter((c) => publishedContentIds.has(c.id)).map((c) => ({ id: c.id, label: c.title, meta: `${c.categories.map((x) => x.name).join("/") || "未分类"}` }))}
               value={config.featuredContentIds}
               onChange={(ids) => setConfig({ ...config, featuredContentIds: ids })}
               disabled={!canEdit}
             />
-            <InputAddonTag title="分类排序" ids={config.categoryOrderIds} max={SECTION_META.categories.max} color={SECTION_META.categories.color} icon={SECTION_META.categories.icon}
+            <InputAddonTag title="本周主题" ids={config.categoryOrderIds} max={SECTION_META.categories.max} color={SECTION_META.categories.color} icon={SECTION_META.categories.icon}
               options={categories.filter((c) => activeCategoryIds.has(c.id)).map((c) => ({ id: c.id, label: c.name, meta: c.slug }))}
               value={config.categoryOrderIds}
               onChange={(ids) => setConfig({ ...config, categoryOrderIds: ids })}
@@ -425,9 +426,8 @@ const HomepageConfigPage: React.FC = () => {
           </Space>
 
           {warnIds(config.bannerIds, activeBannerIds, "Banner 列表")}
-          {warnIds(config.recommendContentIds, publishedContentIds, "推荐内容")}
-          {warnIds(config.featuredContentIds, publishedContentIds, "精选内容")}
-          {warnIds(config.categoryOrderIds, activeCategoryIds, "分类排序")}
+          {warnIds(config.featuredContentIds, publishedContentIds, "今日精选")}
+          {warnIds(config.categoryOrderIds, activeCategoryIds, "本周主题")}
         </Space>
       </Card>
 
@@ -463,20 +463,20 @@ const HomepageConfigPage: React.FC = () => {
         </Col>
         <Col span={8}>
           <Card title={
-            <Space><Tag color={SECTION_META.recommend.color}>{SECTION_META.recommend.icon} 推荐/精选内容</Tag>
-              <Text type="secondary">{homeResp?.contents.length || 0} 条</Text></Space>
+            <Space><Tag color={SECTION_META.featured.color}>{SECTION_META.featured.icon} 今日精选</Tag>
+              <Text type="secondary">{homeResp?.featuredContent ? 1 : 0} 条</Text></Space>
           }>
-            {!homeResp?.contents.length ? <Empty description="无内容" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
+            {!homeResp?.featuredContent ? <Empty description="未配置今日精选" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
               <List
                 size="small"
-                dataSource={homeResp.contents.slice(0, 10)}
+                dataSource={[homeResp.featuredContent]}
                 renderItem={(c) => (
                   <List.Item key={c.id}>
                     <Space direction="vertical" size={0} style={{ width: "100%" }}>
                       <Space>
                         {c.tag && <Tag color="gold">{c.tag}</Tag>}
                         <Text strong>{c.title}</Text>
-                        {c.unlocked ? <Tag color="green">已解锁</Tag> : <Tag color="red">会员</Tag>}
+                        {c.unlocked ? <Tag color="green">已解锁</Tag> : <Tag color="red">{c.accessType}</Tag>}
                       </Space>
                       <Text style={{ fontSize: 12, color: "#999" }}>{c.categoryName || c.categoryId.slice(0, 8)}… {c.duration || ""}</Text>
                     </Space>
@@ -489,12 +489,12 @@ const HomepageConfigPage: React.FC = () => {
         <Col span={8}>
           <Card title={
             <Space><Tag color={SECTION_META.categories.color}>{SECTION_META.categories.icon} 分类排序</Tag>
-              <Text type="secondary">{homeResp?.categories.length || 0} 个</Text></Space>
+              <Text type="secondary">{homeResp?.themeCategories?.length || 0} 个</Text></Space>
           }>
-            {!homeResp?.categories.length ? <Empty description="无分类" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
+            {!homeResp?.themeCategories?.length ? <Empty description="无本周主题" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
               <List
                 size="small"
-                dataSource={homeResp.categories}
+                dataSource={homeResp.themeCategories}
                 renderItem={(c, idx) => (
                   <List.Item key={c.id}>
                     <Space>
