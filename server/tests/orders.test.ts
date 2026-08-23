@@ -920,6 +920,15 @@ test("USDT 创单：XTR 会员可使用独立 USDT 测试价，Stars 主价格�
     assert.equal(ownOrder.usdtPayment.amountMinor, body.usdtPayment.amountMinor, "订单恢复必须保留精确应付金额");
     assert.equal(ownOrder.usdtPayment.toAddress, body.usdtPayment.toAddress, "订单恢复必须保留本人可见的收款地址");
 
+    // 反向安全校验：别的账户不能经由列表或订单号读取到该笔待支付订单及其收款地址。
+    const otherUser = await prisma.user.create({ data: { telegramUserId: 7100001805n, displayName: "xtr-usdt-alt-other-user" } });
+    const otherCookie = await loginAs(app, otherUser.id);
+    const otherOrders = await app.inject({ method: "GET", url: "/api/user/orders?page=1&pageSize=50", headers: { cookie: otherCookie } });
+    assert.equal(otherOrders.statusCode, 200, otherOrders.body);
+    assert.equal((otherOrders.json() as any).items.some((item: any) => item.orderNo === body.orderNo), false, "其他账户订单列表不能包含该订单");
+    const otherDirect = await app.inject({ method: "GET", url: `/api/orders/${encodeURIComponent(body.orderNo)}`, headers: { cookie: otherCookie } });
+    assert.equal(otherDirect.statusCode, 404, "其他账户不能通过订单号读取待支付收款地址");
+
     const stored = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
     assert.equal(stored.currency, "XTR", "备用 USDT 定价不能篡改 Stars 主币种");
     assert.equal(stored.priceMinor, 150_000_000n, "备用 USDT 定价不能篡改 Stars 主价格");
