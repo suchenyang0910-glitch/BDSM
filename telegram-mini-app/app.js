@@ -21,11 +21,11 @@
 
   const state = {
     env: {
-      // Telegram 会在普通 H5 页面也注入 WebApp SDK 对象，但没有 initData
-      // 就不是可支付的 Mini App 上下文。以 initData 作为唯一判定，避免 H5
-      // 误走 Stars/Popup 分支而无法进入 USDT 支付页。
-      isTelegram: !!(tg && tg.initData),
-      hasInitData: !!(tg && tg.initData),
+      // Telegram 会在普通 H5 页面也注入 WebApp SDK 对象，甚至可能留下空的
+      // initData。只有真实 Mini App 同时具备已注入的 Telegram 用户与 initData，
+      // 才允许走 Stars / Popup；其余所有网页访问统一走 H5 + USDT。
+      isTelegram: !!(tg && tg.initData && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id),
+      hasInitData: !!(tg && tg.initData && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id),
     },
     session: null,
     booting: false,
