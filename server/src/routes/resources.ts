@@ -17,6 +17,7 @@ import {
   PUBLIC_FREE_CHANNELS,
 } from "../services/freeChannels.js";
 import { emitSafetyEvent } from "../utils/structuredError.js";
+import { decryptChatIdAesGcm } from "../utils/crypto.js";
 
 export default async function resourceRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
@@ -126,7 +127,22 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
           return reply.status(403).send({ error: "forbidden", message: "无访问权限，请完成会员订单" });
         }
         matchedEntitlement = membershipE;
-        channelRef = refMembershipMain();
+        // Production may manage the membership channel through the encrypted
+        // admin channel registry. Prefer that binding; retain env fallback for
+        // existing installations and isolated tests.
+        const managedMembership = await prisma.adminManagedChannel.findFirst({
+          where: { purpose: "membership_main" },
+          select: { deprecatedChatIdBig: true, chatIdCiphertextB64: true },
+          orderBy: [{ updatedAt: "desc" }],
+        });
+        let managedChatId: bigint | null = null;
+        if (managedMembership?.chatIdCiphertextB64) {
+          try { managedChatId = decryptChatIdAesGcm(managedMembership.chatIdCiphertextB64); } catch { managedChatId = null; }
+        }
+        if (managedChatId == null && typeof managedMembership?.deprecatedChatIdBig === "bigint") {
+          managedChatId = managedMembership.deprecatedChatIdBig;
+        }
+        channelRef = managedChatId != null ? refRawChatId(managedChatId) : refMembershipMain();
       } else if (content.accessType === "package") {
         if (!content.packageId) {
           return reply.status(400).send({

@@ -17,6 +17,7 @@ import orderRoutes from "../src/routes/orders.js";
 import adminCmsRoutes, { adminPackageRoutes } from "../src/routes/adminCms.js";
 import adminUsersAndSupportRoutes from "../src/routes/adminUsersAndSupport.js";
 import adminChannelsRoutes from "../src/routes/adminChannels.js";
+import { chatIdIndexKey, encryptChatIdAesGcm } from "../src/utils/crypto.js";
 import {
   setupTestHarness,
   teardownTestHarness,
@@ -307,13 +308,15 @@ test("[S1-E] pkg-test-main access-link，用户已有 package 权益但包未配
 });
 
 // ============================================================
-// [F] membership 内容 access-link：只走 refMembershipMain() → _resolvedChannelId===TELEGRAM_CHANNEL_MEMBERSHIP
+// [F] membership 内容 access-link：优先走后台登记 membership_main，缺失时才回退 env
 //     验证点：
 //       ① 302 Location 头（非 JSON）
 //       ② telegramInvite.create 内部 _resolvedChannelId === 会员频道 BigInt（仅写入 DB 的那一次）
 //       ③ JSON 响应体绝不包含 inviteLink / -100 明文
 // ============================================================
-test("[S1-F] membership 内容 access-link：仅解析 refMembershipMain 会员频道，302 重定向，DB _resolvedChannelId 匹配 env", async () => {
+test("[S1-F] membership 内容 access-link：优先解析后台登记会员频道，302 重定向且不泄露邀请", async () => {
+  const originalAesKey = process.env.CRYPTO_CHAT_ID_AES_KEY;
+  process.env.CRYPTO_CHAT_ID_AES_KEY = "12345678901234567890123456789012";
   const app = Fastify();
   await app.register(cookie);
   await app.register(session, {
@@ -363,6 +366,23 @@ test("[S1-F] membership 内容 access-link：仅解析 refMembershipMain 会员�
         expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
       },
     });
+    const managedMembershipChannelId = BigInt(`-100${String(tgid).slice(-10)}`);
+    await prisma.adminManagedChannel.create({
+      data: {
+        chatIdHmac: chatIdIndexKey(managedMembershipChannelId),
+        chatIdCiphertextB64: encryptChatIdAesGcm(managedMembershipChannelId),
+        deprecatedChatIdBig: managedMembershipChannelId,
+        chatType: "channel",
+        title: "S1-F Managed Membership",
+        isPrivate: true,
+        purpose: "membership_main",
+        source: "manual_add",
+        botIsAdmin: true,
+        botCanPostMessages: true,
+        botCanInviteUsers: true,
+        botCanRestrictMembers: true,
+      },
+    });
     const loginRes = await app.inject({
       method: "POST",
       url: `/__test/login/${user.id}`,
@@ -380,9 +400,9 @@ test("[S1-F] membership 内容 access-link：仅解析 refMembershipMain 会员�
       302,
       `membership access-link expected 302 redirect, got ${resp.statusCode}: ${resp.body}`,
     );
-    const expected = BigInt(process.env.TELEGRAM_CHANNEL_MEMBERSHIP || "-1000000000001");
+    const expected = managedMembershipChannelId;
     assert.equal(lastResolvedChannelId, expected,
-      `membership content _resolvedChannelId MUST equal TELEGRAM_CHANNEL_MEMBERSHIP=${expected}, got ${lastResolvedChannelId}`);
+      "membership content must prefer the backend-managed membership channel binding");
     // body 永不泄露 invite
     assertNoSensitiveLeaks(resp.body, "membership 302 body (no JSON leak)");
     const location = resp.headers["location"];
@@ -391,6 +411,8 @@ test("[S1-F] membership 内容 access-link：仅解析 refMembershipMain 会员�
       `membership access-link Location must be https://t.me/+ invite; got ${location}`,
     );
   } finally {
+    if (originalAesKey === undefined) delete process.env.CRYPTO_CHAT_ID_AES_KEY;
+    else process.env.CRYPTO_CHAT_ID_AES_KEY = originalAesKey;
     await app.close();
   }
 });

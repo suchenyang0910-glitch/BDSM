@@ -12,13 +12,15 @@ import {
   type ChannelRef,
 } from "../services/telegramBot.js";
 import { PUBLIC_FREE_CHANNELS, refFreeChannelByCode } from "../services/freeChannels.js";
+import { PrismaClient } from "@prisma/client";
+import { decryptChatIdAesGcm } from "../utils/crypto.js";
 
 type Target = { channel: ChannelRef };
 
 const miniAppUrl = process.env.PUBLIC_MINI_APP_URL || "https://bdsm.linkx.club/";
 const shouldPublish = process.argv.includes("--confirm");
 
-function configuredTargets(): Target[] {
+async function configuredTargets(): Promise<Target[]> {
   const declaredFreeTargets = PUBLIC_FREE_CHANNELS.flatMap((entry) => {
     const raw = process.env[entry.envVarName];
     if (!raw || !/^-?\d{6,22}$/.test(raw)) return [];
@@ -32,12 +34,45 @@ function configuredTargets(): Target[] {
     .map((value) => value.trim())
     .filter((value) => /^-?\d{6,22}$/.test(value))
     .map((value) => ({ channel: refRawChatId(BigInt(value)) }));
-  const freeTargets = declaredFreeTargets.length > 0 ? declaredFreeTargets : multiValueTargets;
+  const directFreeTargets = declaredFreeTargets.length > 0 ? declaredFreeTargets : multiValueTargets;
   const membershipRaw = process.env.TELEGRAM_CHANNEL_MEMBERSHIP ?? process.env.MEMBERSHIP_CHANNEL_ID;
-  if (!membershipRaw || !/^-?\d{6,22}$/.test(membershipRaw)) {
-    throw new Error("membership_channel_not_configured");
+  const directMembershipTarget = membershipRaw && /^-?\d{6,22}$/.test(membershipRaw)
+    ? { channel: refMembershipMain() }
+    : null;
+
+  if (directFreeTargets.length > 0 && directMembershipTarget) {
+    return [...directFreeTargets, directMembershipTarget];
   }
-  return [...freeTargets, { channel: refMembershipMain() }];
+
+  // Fallback for the managed-channel deployment model: channel IDs stay
+  // encrypted in the registry and are resolved only inside this server script.
+  const prisma = new PrismaClient();
+  try {
+    const rows = await prisma.adminManagedChannel.findMany({
+      where: { purpose: { in: ["free_preview", "membership_main"] } },
+      select: { purpose: true, deprecatedChatIdBig: true, chatIdCiphertextB64: true },
+      orderBy: [{ updatedAt: "desc" }],
+    });
+    const managedFree: Target[] = [];
+    let managedMembership: Target | null = null;
+    for (const row of rows) {
+      let id: bigint | null = null;
+      if (row.chatIdCiphertextB64) {
+        try { id = decryptChatIdAesGcm(row.chatIdCiphertextB64); } catch { id = null; }
+      }
+      if (id == null && typeof row.deprecatedChatIdBig === "bigint") id = row.deprecatedChatIdBig;
+      if (id == null) continue;
+      const target = { channel: refRawChatId(id) };
+      if (row.purpose === "membership_main" && !managedMembership) managedMembership = target;
+      if (row.purpose === "free_preview") managedFree.push(target);
+    }
+    const freeTargets = directFreeTargets.length > 0 ? directFreeTargets : managedFree;
+    const membershipTarget = directMembershipTarget ?? managedMembership;
+    if (!membershipTarget) throw new Error("membership_channel_not_configured");
+    return [...freeTargets, membershipTarget];
+  } finally {
+    await prisma.$disconnect();
+  }
 }
 
 const text = [
@@ -47,7 +82,7 @@ const text = [
 ].join("\n");
 
 async function main() {
-  const targets = configuredTargets();
+  const targets = await configuredTargets();
   if (targets.length < 2) throw new Error("no_free_channel_configured");
 
   const members = await Promise.all(targets.map((target) => getBotChatMember(target.channel)));
