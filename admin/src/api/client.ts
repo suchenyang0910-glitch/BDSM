@@ -65,9 +65,13 @@ http.interceptors.response.use(
   (err) => {
     if (err?.response?.status === 401 && !err.config?._ignoreUnauth) {
       if (typeof window !== "undefined") {
-        const already = window.location.pathname.startsWith("/login");
+        const adminBase = "/admin";
+        const currentPath = window.location.pathname.startsWith(adminBase)
+          ? window.location.pathname.slice(adminBase.length) || "/"
+          : window.location.pathname;
+        const already = currentPath.startsWith("/login");
         if (!already) {
-          window.location.href = "/login?redirect=" + encodeURIComponent(window.location.pathname + window.location.search);
+          window.location.href = adminBase + "/login?redirect=" + encodeURIComponent(currentPath + window.location.search);
         }
       }
     }
