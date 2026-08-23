@@ -418,14 +418,25 @@ export async function processPublishJob(
         },
       });
       if (job!.contentId) {
+        const contentUpdate: any = {
+          telegramMessageId: BigInt(result.messageId!),
+          telegramSentAt: now,
+          telegramChatFingerprint: resolved.chatFingerprint,
+        };
+        // 完整视频的 Telegram metadata 是最终时长；免费试看仅在内容尚无时长时兜底回填。
+        if (typeof result.durationSeconds === "number" && result.durationSeconds > 0 && job!.channelKind !== "public_free_preview") {
+          contentUpdate.durationSeconds = result.durationSeconds;
+        }
         await tx.content.update({
           where: { id: job!.contentId },
-          data: {
-            telegramMessageId: BigInt(result.messageId!),
-            telegramSentAt: now,
-            telegramChatFingerprint: resolved.chatFingerprint,
-          },
+          data: contentUpdate,
         });
+        if (typeof result.durationSeconds === "number" && result.durationSeconds > 0 && job!.channelKind === "public_free_preview") {
+          await tx.content.updateMany({
+            where: { id: job!.contentId, durationSeconds: null },
+            data: { durationSeconds: result.durationSeconds },
+          });
+        }
         if (resolved.managedChannelId) {
           await (tx as any).telegramChannelMessage.upsert({
             where: {

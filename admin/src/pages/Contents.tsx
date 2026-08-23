@@ -139,6 +139,7 @@ type InitMediaUploadReq = {
   originalFilename: string;
   mimeType: string;
   contentLength: number;
+  durationSeconds?: number | null;
   expectedChecksumSha256?: string | null;
 };
 type InitMediaUploadResp = {
@@ -155,6 +156,37 @@ export async function initMediaUpload(req: InitMediaUploadReq): Promise<InitMedi
   const res = await http.post("/admin/media/init-upload", req, { timeout: 20_000 });
   return res.data;
 }
+
+/**
+ * 在浏览器端读取本地视频 metadata；失败不阻断上传，后台仍可手动填写。
+ * 只读取 duration，不上传、缓存或记录本地文件内容。
+ */
+async function readLocalVideoDurationSeconds(file: File): Promise<number | null> {
+  if (!String(file.type || "").startsWith("video/")) return null;
+  const objectUrl = URL.createObjectURL(file);
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    let settled = false;
+    const finish = (value: number | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(objectUrl);
+      resolve(value);
+    };
+    const timeout = window.setTimeout(() => finish(null), 10_000);
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const seconds = Math.round(Number(video.duration));
+      finish(Number.isFinite(seconds) && seconds > 0 && seconds <= 86_400 ? seconds : null);
+    };
+    video.onerror = () => finish(null);
+    video.src = objectUrl;
+  });
+}
+
 function normalizeMediaAsset(raw: any): MediaAssetItem {
   return {
     ...raw,
@@ -580,12 +612,15 @@ const ContentsPage: React.FC = () => {
     setters.setUploading(true);
     let createdAssetId: string | null = null;
     try {
+      // 在预签名上传前先读取浏览器本地视频时长；不支持 metadata 的文件仍可正常上传并手动填写。
+      const detectedDurationSeconds = await readLocalVideoDurationSeconds(file);
       // Step 1: init-upload 拿预签名 PUT URL + 事务内写 mediaAsset
       const init = await initMediaUpload({
         kind,
         originalFilename: file.name,
         mimeType: file.type || "application/octet-stream",
         contentLength: file.size,
+        durationSeconds: detectedDurationSeconds,
       });
       createdAssetId = init.mediaAssetId;
       setters.setAssetId(createdAssetId);
@@ -614,6 +649,13 @@ const ContentsPage: React.FC = () => {
       const comp = await completeMediaUpload(createdAssetId, { ok: true, reportedContentLength: file.size, etag: "" });
       const verified = await getMediaAsset(createdAssetId);
       setters.setAsset(verified);
+      if ((kind === "preview_video" || kind === "full_video") && Number(verified.durationSeconds || 0) > 0) {
+        const currentDuration = Number(form.getFieldValue("durationSeconds") || 0);
+        if (!currentDuration) {
+          form.setFieldValue("durationSeconds", verified.durationSeconds);
+          message.info(`已读取视频时长 ${Math.floor(Number(verified.durationSeconds) / 60)}分${Number(verified.durationSeconds) % 60}秒；请点击保存使前台同步。`);
+        }
+      }
       if (comp.status !== "ready") {
         message.error(`对象存储校验失败：${verified.lastErrorClass || comp.status}${verified.lastErrorNote ? `（${verified.lastErrorNote}）` : ""}`);
       } else {

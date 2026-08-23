@@ -1851,6 +1851,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     originalFilename: z.string().trim().min(1).max(512),
     mimeType: z.string().trim().min(1).max(128),
     contentLength: z.number().int().min(1),
+    durationSeconds: z.number().int().min(1).max(86_400).optional().nullable(),
     expectedChecksumSha256: z.string().trim().max(128).optional().nullable(),
     note: z.string().max(500).optional().nullable(),
   });
@@ -1914,6 +1915,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             originalFilename: body.originalFilename,
             mimeType: body.mimeType,
             contentLength: BigInt(body.contentLength),
+            durationSeconds: body.kind === "cover_image" ? null : (body.durationSeconds ?? null),
             checksumSha256: body.expectedChecksumSha256 || null,
             storageBucket: storage!.bucket,
             storageRegion: storage!.region,
