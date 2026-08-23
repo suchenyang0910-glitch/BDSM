@@ -128,6 +128,36 @@ test.after(async () => {
 });
 
 // ============================================================
+// [S1-0] 管理后台内容列表/详情：Prisma BigInt 必须序列化为字符串
+// ============================================================
+test("[S1-0] GET /admin/contents 与详情包含商品 BigInt 金额时仍返回 200", async () => {
+  const app = await buildTestApp(prisma);
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/contents",
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(list.statusCode, 200, `content list expected 200, got ${list.statusCode}: ${list.body}`);
+    const listBody = list.json();
+    const draft = listBody.data.find((row: any) => row.id === TEST_KNOWN_IDS.contentDraft);
+    assert.ok(draft, "seeded draft content must be present");
+    assert.equal(typeof draft.product?.priceMinor, "string", "BigInt priceMinor must be emitted as a decimal string");
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(detail.statusCode, 200, `content detail expected 200, got ${detail.statusCode}: ${detail.body}`);
+    assert.equal(typeof detail.json().product?.priceMinor, "string", "detail must serialize BigInt priceMinor too");
+  } finally {
+    await app.close();
+  }
+});
+
+// ============================================================
 // [A] single 内容全局禁止：CREATE 409
 // ============================================================
 test("[S1-A] single 类型内容 CREATE → 409 single_delivery_not_enabled，响应体无敏感泄露", async () => {

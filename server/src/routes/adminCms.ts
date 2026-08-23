@@ -76,7 +76,9 @@ function writeAudit(
 
 function serialize(v: any) {
   if (v == null) return null;
-  return JSON.parse(JSON.stringify(v));
+  // Prisma 的金额、文件大小和 Telegram messageId 使用 BigInt；JSON 本身无法编码 BigInt。
+  // 后台 API 统一以十进制字符串交付，避免列表/详情页因单个关联字段而整体 500。
+  return JSON.parse(JSON.stringify(v, (_key, value) => (typeof value === "bigint" ? value.toString() : value)));
 }
 
 function stripSensitiveFields(v: any): any {
@@ -397,13 +399,13 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           orderBy: [{ sortOrder: "desc" }, { isFeatured: "desc" }, { isRecommended: "desc" }, { updatedAt: "desc" }],
         }),
       ]);
-      return reply.send({
+      return reply.send(serialize({
         total, page: qp.page, limit: qp.limit,
         data: rows.map((c: any) => ({
           ...c,
           categories: c.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
         })),
-      });
+      }));
     },
   );
 
@@ -445,10 +447,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         },
       });
       if (!row) return reply.status(404).send({ error: "not_found" });
-      return reply.send({
+      return reply.send(serialize({
         ...row,
         categories: row.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
-      });
+      }));
     },
   );
 
