@@ -268,10 +268,8 @@
           <div class="eyebrow">Telegram Login</div>
           <h3>请先完成 Telegram 登录绑定</h3>
           <p class="desc">
-            独立站外支付页（USDT-TRC20）必须先绑定你的 Telegram 账号后才能发放权益；
-            我们会通过 Bot 私信给你发送频道邀请。<br/><br/>
-            <strong>推荐方式（免手动登录）：</strong> 直接在 Telegram Mini App 中通过分享入口跳回本页，
-            系统会自动携带你的身份。
+            本机账户可直接创建 USDT-TRC20 订单。完成 Telegram 绑定后，订单与权益可跨设备恢复，并可领取私密频道邀请。<br/><br/>
+            <strong>推荐方式：</strong> 直接在 Telegram Mini App 中打开，系统会自动携带你的身份。
           </p>
           <a id="tgDeepLinkBtn" class="tg-btn" href="#">
             <span style="font-size:18px">✈</span>
@@ -405,8 +403,8 @@
           <ol id="toFlow">
             <li>按上方 <strong>精确金额 + 唯一尾数</strong>，使用 TRON (TRC-20) 钱包向显示的地址转账。</li>
             <li>转账成功后本页会开始自动轮询；首次链上广播后状态变为「检测中」。</li>
-            <li>达到 <strong id="confirmNum">—</strong> 个区块确认后，系统立即发放权益；Telegram Bot 会私信你发送频道邀请。</li>
-            <li>权益激活后请点击下方「进入 Telegram 频道」按钮，或直接前往 Bot 的私信点击邀请。</li>
+            <li>达到 <strong id="confirmNum">—</strong> 个区块确认后，系统立即发放权益；已绑定 Telegram 的用户会收到 Bot 私信邀请。</li>
+            <li>如尚未绑定 Telegram，请先完成绑定，再返回本页或 Mini App 领取频道入口。</li>
           </ol>
         </div>
 
@@ -415,8 +413,7 @@
             <div class="check">✓</div>
             <h3>✅ 权益已激活</h3>
             <p>
-              订单已确认支付成功，频道邀请已通过 Telegram Bot 私信发送给你。<br/>
-              请在 Telegram 中打开 Bot 邀请进入频道，或返回 Mini App 点击已解锁内容进入。
+              <span id="activatedMessage">订单已确认支付成功，频道邀请已通过 Telegram Bot 私信发送给你。<br/>请在 Telegram 中打开 Bot 邀请进入频道，或返回 Mini App 点击已解锁内容进入。</span>
             </p>
             <div class="btn-row" style="justify-content:center; max-width:360px; margin:0 auto;">
               <button class="btn btn-primary" id="btnBackMiniApp">返回 Telegram Mini App</button>
@@ -444,6 +441,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-    <script src="./h5-pay.js?v=20260823-device-checkout-5"></script>
+    <script src="./h5-pay.js?v=20260823-device-checkout-6"></script>
   </body>
 </html>

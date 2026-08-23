@@ -291,6 +291,22 @@
   }
 
   let lastAddress = "";
+
+  function showActivatedCard() {
+    const card = $("activatedCard");
+    if (!card) return;
+    const bound = currentIdentitySession?.telegramBound === true;
+    const message = $("activatedMessage");
+    const button = $("btnBackMiniApp");
+    if (message) {
+      message.innerHTML = bound
+        ? "订单已确认支付成功，频道邀请已通过 Telegram Bot 私信发送给你。<br/>请在 Telegram 中打开 Bot 邀请进入频道，或返回 Mini App 点击已解锁内容进入。"
+        : "订单已确认支付成功。请先绑定 Telegram，以便把本机账户的权益合并到你的 Telegram 身份并领取私密频道邀请。";
+    }
+    if (button) button.textContent = bound ? "返回 Telegram Mini App" : "绑定 Telegram 后领取频道";
+    card.style.display = "block";
+  }
+
   function applyOrderData(o) {
     const metaEl = $("orderMeta");
     if (metaEl) {
@@ -347,7 +363,10 @@
 
     if (o.status === "pending") setStep(1);
     else if (o.status === "processing") setStep(2);
-    else if (o.status === "paid") setStep(3);
+    else if (o.status === "paid") {
+      setStep(3);
+      showActivatedCard();
+    }
     else if (["expired", "cancelled", "failed"].includes(o.status)) {
       setStep(1);
     }
@@ -907,6 +926,11 @@
       showView("orders");
     });
     $("btnBackMiniApp")?.addEventListener("click", () => {
+      if (!currentIdentitySession?.telegramBound) {
+        const returnTo = encodeURIComponent(location.pathname + location.search + location.hash);
+        location.href = `/login.html?redirect=${returnTo}`;
+        return;
+      }
       location.href = "./index.html#view=entitlements";
     });
   }
