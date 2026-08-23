@@ -26,7 +26,7 @@ import type { PrismaClient, TelegramPublishJob, MediaAsset, Content, ContentPack
 import type { FastifyInstance } from "fastify";
 
 import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
-import { decryptChatIdAesGcm } from "../utils/crypto.js";
+import { decryptChatIdAesGcm, chatIdIndexKey, hmacSha256Hex } from "../utils/crypto.js";
 
 import {
   sendMediaFromStorage,
@@ -75,6 +75,8 @@ type ResolvedTarget = {
   channelRef: ChannelRef;
   chatFingerprint: string;
   chatMasked: string;
+  chatId: bigint;
+  managedChannelId: string | null;
 };
 
 // ====================== 工具函数（与 adminCms.ts 一致，避免跨层循环依赖）======================
@@ -140,6 +142,8 @@ async function resolveJobTargetChannelRef(
         channelRef,
         chatFingerprint: chatIdFingerprint(chatId),
         chatMasked: maskFreeChannelSafe(job.targetFreeChannelCode),
+        chatId,
+        managedChannelId: null,
       };
     }
     case "membership_full": {
@@ -166,10 +170,16 @@ async function resolveJobTargetChannelRef(
         }
         cid = BigInt(membershipRaw);
       }
+      const managed = await extras.prisma.adminManagedChannel.findUnique({
+        where: { chatIdHmac: chatIdIndexKey(cid) },
+        select: { id: true },
+      });
       return {
         channelRef: refRawChatId(cid),
         chatFingerprint: chatIdFingerprint(cid),
         chatMasked: maskChatIdSafe(cid),
+        chatId: cid,
+        managedChannelId: managed?.id || null,
       };
     }
     case "package_full": {
@@ -181,10 +191,16 @@ async function resolveJobTargetChannelRef(
       if (!pkg) throw new Error(`[publisher:package_full] package not found`);
       const cid = resolvePackageChannelId({ channelId: pkg.channelId, channelIdCiphertext: pkg.channelIdCiphertext });
       if (cid == null) throw new Error(`[publisher:package_full] package channel not configured`);
+      const managed = await extras.prisma.adminManagedChannel.findUnique({
+        where: { chatIdHmac: chatIdIndexKey(cid) },
+        select: { id: true },
+      });
       return {
         channelRef: refRawChatId(cid),
         chatFingerprint: chatIdFingerprint(cid),
         chatMasked: maskChatIdSafe(cid),
+        chatId: cid,
+        managedChannelId: managed?.id || null,
       };
     }
     case "manual_target":
@@ -410,6 +426,36 @@ export async function processPublishJob(
             telegramChatFingerprint: resolved.chatFingerprint,
           },
         });
+        if (resolved.managedChannelId) {
+          await (tx as any).telegramChannelMessage.upsert({
+            where: {
+              managedChannelId_messageId: {
+                managedChannelId: resolved.managedChannelId,
+                messageId: BigInt(result.messageId!),
+              },
+            },
+            create: {
+              managedChannelId: resolved.managedChannelId,
+              messageId: BigInt(result.messageId!),
+              mediaKind: meta.tgMethod === "sendPhoto" ? "photo" : "video",
+              captionFingerprint: captionBundle.caption ? hmacSha256Hex(`telegram_channel_caption:${captionBundle.caption}`) : null,
+              postedAt: now,
+              associationStatus: "linked",
+              contentId: job!.contentId,
+              linkedAt: now,
+              linkedBy: job!.adminId || null,
+            },
+            update: {
+              mediaKind: meta.tgMethod === "sendPhoto" ? "photo" : "video",
+              captionFingerprint: captionBundle.caption ? hmacSha256Hex(`telegram_channel_caption:${captionBundle.caption}`) : null,
+              postedAt: now,
+              associationStatus: "linked",
+              contentId: job!.contentId,
+              linkedAt: now,
+              linkedBy: job!.adminId || null,
+            },
+          });
+        }
       }
       if (job!.packageId) {
         // 注意：content_package 目前无独立 telegram_message_id 列（需要时再补 migration），先不写。

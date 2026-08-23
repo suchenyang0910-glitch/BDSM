@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 let savedOriginalFetch: typeof globalThis.fetch | null = null;
 const FAKE_BOT_TOKEN = "1234567890:TESTBOTaBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789";
@@ -157,6 +158,12 @@ export function assertTestDatabaseName(dbName: string): void {
 }
 
 const ALL_TABLES_ORDERED = [
+  "telegram_channel_messages",
+  "usdt_monitor_cursors",
+  "usdt_monitor_runtime_states",
+  "analytics_events",
+  "analytics_daily_aggregates",
+  "user_content_preferences",
   "admin_managed_channels",
   "admin_audit_logs",
   "content_categories",
@@ -172,25 +179,54 @@ const ALL_TABLES_ORDERED = [
   "categories",
   "users",
   "admin_users",
+  "platform_metadata",
   "telegram_update_logs",
 ];
 
 export async function ensureMigrationsApplied(prisma: PrismaClient, migrateFolder: string): Promise<{ applied: string[] }> {
-  const { PrismaMigrator } = (await import("@prisma/migrate")) as any;
-  let migrator: any | null = null;
+  void prisma;
+  const testDbName = extractDbName(requireTestDatabaseUrl());
+  const prismaDirectory = path.dirname(migrateFolder);
+  const schemaPath = path.join(prismaDirectory, "schema.prisma");
+  const projectRoot = path.dirname(prismaDirectory);
+  const prismaCli = path.join(projectRoot, "node_modules", "prisma", "build", "index.js");
   try {
-    const migratorCls = (PrismaMigrator as any) || ((await import("@prisma/migrate/dist/PrismaMigrator.js")) as any)?.PrismaMigrator;
-    migrator = new migratorCls({ migrationsPath: migrateFolder, schemaPath: path.join(migrateFolder, "..", "schema.prisma") });
-    const diagnose = await migrator.diagnoseMigrationHistory({ optInToShadowDatabase: true });
-    if (diagnose.history?.diagnostic === "databaseIsBehind") {
-      const applied = await migrator.applyMigrations();
-      return { applied: applied.flat().map(String) };
+    const result = spawnSync(process.execPath, [prismaCli, "migrate", "deploy", "--schema", schemaPath], {
+      cwd: projectRoot,
+      env: { ...process.env, DATABASE_URL: requireTestDatabaseUrl() },
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+    if (result.status !== 0 || result.error) {
+      const initialDiagnostic = `${String(result.stdout || "")}\n${String(result.stderr || "")}`
+        .split(/\r?\n/)
+        .filter((line) => !/(postgres(?:ql)?:\/\/|password|database_url)/i.test(line))
+        .slice(-8)
+        .join(" | ");
+      // A failed migration can only be repaired automatically in the already
+      // validated isolated test database. Production never executes this harness.
+      const reset = spawnSync(process.execPath, [prismaCli, "migrate", "reset", "--force", "--skip-seed", "--schema", schemaPath], {
+        cwd: projectRoot,
+        env: { ...process.env, DATABASE_URL: requireTestDatabaseUrl() },
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+      if (reset.status !== 0 || reset.error) {
+        const resetDiagnostic = `${String(reset.stdout || "")}\n${String(reset.stderr || "")}`
+          .split(/\r?\n/)
+          .filter((line) => !/(postgres(?:ql)?:\/\/|password|database_url)/i.test(line))
+          .slice(-8)
+          .join(" | ");
+        throw new Error(`prisma_cli_exit_${String(result.status ?? "unknown")}:${initialDiagnostic}; reset_exit_${String(reset.status ?? "unknown")}:${resetDiagnostic}`);
+      }
     }
     return { applied: [] };
-  } catch {
-    return { applied: [] };
-  } finally {
-    try { if (migrator?.stop) await migrator.stop(); } catch { /* ignore */ }
+  } catch (err: any) {
+    // 测试库只能由正式 Prisma migration 建表；绝不允许下方任何临时 DDL 兜底掩盖漏迁移。
+    const safeMessage = String(err?.message || err?.code || "unknown")
+      .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, "postgresql://***")
+      .slice(0, 900);
+    throw new Error(`[test-harness] FATAL: prisma migrate deploy failed for isolated test DB name=${testDbName} (${safeMessage})`);
   }
 }
 
@@ -234,6 +270,120 @@ export async function ensureManagedChannelsTable(prisma: PrismaClient): Promise<
   }
 }
 
+export async function ensureTelegramChannelMessagesTable(prisma: PrismaClient): Promise<void> {
+  try {
+    await (prisma as any).telegramChannelMessage.count();
+  } catch {
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "telegram_channel_messages" (
+        "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        "managed_channel_id" TEXT NOT NULL,
+        "message_id" BIGINT NOT NULL,
+        "media_kind" VARCHAR(32) NOT NULL,
+        "telegram_file_id_cipher" TEXT,
+        "preview_file_id_cipher" TEXT,
+        "caption_fingerprint" VARCHAR(64),
+        "posted_at" TIMESTAMPTZ NOT NULL,
+        "association_status" VARCHAR(32) NOT NULL DEFAULT 'unlinked',
+        "content_id" TEXT UNIQUE,
+        "linked_at" TIMESTAMPTZ,
+        "linked_by" TEXT,
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );`,
+    );
+    try {
+      await prisma.$executeRawUnsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS telegram_channel_messages_managed_channel_id_message_id_key ON "telegram_channel_messages"("managed_channel_id", "message_id");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS telegram_channel_messages_managed_channel_id_association_status_posted_at_idx ON "telegram_channel_messages"("managed_channel_id", "association_status", "posted_at" DESC);`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS telegram_channel_messages_association_status_posted_at_idx ON "telegram_channel_messages"("association_status", "posted_at" DESC);`,
+      );
+    } catch { /* ignore */ }
+  }
+}
+
+export async function ensureAnalyticsPreferenceTables(prisma: PrismaClient): Promise<void> {
+  try {
+    await prisma.$executeRawUnsafe(
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'AnalyticsPlatform') THEN
+          CREATE TYPE "AnalyticsPlatform" AS ENUM ('h5', 'telegram_mini_app', 'server', 'unknown');
+        END IF;
+      END $$;`,
+    );
+  } catch { /* ignore */ }
+  try {
+    await prisma.$executeRawUnsafe(
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'PreferenceType') THEN
+          CREATE TYPE "PreferenceType" AS ENUM ('content_topic', 'content_format', 'discovery_mode', 'notification');
+        END IF;
+      END $$;`,
+    );
+  } catch { /* ignore */ }
+  try {
+    await prisma.$executeRawUnsafe(
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'PreferenceSource') THEN
+          CREATE TYPE "PreferenceSource" AS ENUM ('guest_onboarding', 'my_preferences', 'first_browse_prompt', 'migration_confirmed');
+        END IF;
+      END $$;`,
+    );
+  } catch { /* ignore */ }
+
+  try {
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "analytics_events" (
+        "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        "occurred_at" TIMESTAMPTZ NOT NULL,
+        "event_name" VARCHAR(64) NOT NULL,
+        "user_id" TEXT,
+        "anonymous_id_hmac" VARCHAR(64) NOT NULL,
+        "user_id_hmac" VARCHAR(64),
+        "session_id_hmac" VARCHAR(64) NOT NULL,
+        "platform" "AnalyticsPlatform" NOT NULL DEFAULT 'unknown',
+        "properties_json" JSONB,
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );`,
+    );
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "analytics_daily_aggregates" (
+        "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        "stat_date" DATE NOT NULL,
+        "event_name" VARCHAR(64) NOT NULL,
+        "platform" "AnalyticsPlatform" NOT NULL DEFAULT 'unknown',
+        "group_key" VARCHAR(64),
+        "group_value" VARCHAR(128),
+        "sample_count" INTEGER NOT NULL DEFAULT 0,
+        "unique_sessions" INTEGER NOT NULL DEFAULT 0,
+        "unique_anonymous" INTEGER NOT NULL DEFAULT 0,
+        "unique_users" INTEGER NOT NULL DEFAULT 0,
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );`,
+    );
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "user_content_preferences" (
+        "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        "user_id" TEXT NOT NULL,
+        "category_id" TEXT,
+        "preference_type" "PreferenceType" NOT NULL,
+        "value_key" VARCHAR(64) NOT NULL,
+        "is_enabled" BOOLEAN NOT NULL DEFAULT true,
+        "source" "PreferenceSource" NOT NULL DEFAULT 'my_preferences',
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );`,
+    );
+  } catch { /* ignore */ }
+}
+
 export async function ensureUsdtMonitorTables(prisma: PrismaClient): Promise<void> {
   try {
     await (prisma as any).usdtMonitorRuntimeState.count();
@@ -275,6 +425,236 @@ export async function ensureUsdtMonitorTables(prisma: PrismaClient): Promise<voi
       );`,
     );
   }
+}
+
+export async function ensureUsdtPaymentTables(prisma: PrismaClient): Promise<void> {
+  try {
+    await prisma.$executeRawUnsafe(
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'paymentmethod') THEN
+          CREATE TYPE "PaymentMethod" AS ENUM ('telegram_stars', 'usdt_trc20_external', 'manual');
+        END IF;
+      END $$;`,
+    );
+  } catch { /* ignore */ }
+
+  try {
+    await prisma.paymentAddress.count();
+  } catch {
+    try {
+      await prisma.$executeRawUnsafe(
+        `DO $$
+        BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'paymentaddressstatus') THEN
+            CREATE TYPE "PaymentAddressStatus" AS ENUM ('available', 'assigned', 'retired');
+          END IF;
+        END $$;`,
+      );
+    } catch { /* ignore */ }
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "payment_addresses" (
+        "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        "network" VARCHAR(32) NOT NULL DEFAULT 'tron_trc20',
+        "address" VARCHAR(64) NOT NULL,
+        "address_masked" VARCHAR(16) NOT NULL,
+        "status" "PaymentAddressStatus" NOT NULL DEFAULT 'pending_approval',
+        "assigned_order_id" TEXT,
+        "assigned_at" TIMESTAMPTZ,
+        "release_at" TIMESTAMPTZ,
+        "retired_at" TIMESTAMPTZ,
+        "retire_reason" VARCHAR(128),
+        "created_by" TEXT,
+        "approved_by" TEXT,
+        "approved_at" TIMESTAMPTZ,
+        "activation_ready_at" TIMESTAMPTZ,
+        "lifecycle_version" INTEGER NOT NULL DEFAULT 1,
+        "integrity_mac" VARCHAR(64),
+        "auto_credit_frozen_at" TIMESTAMPTZ,
+        "auto_credit_freeze_reason" VARCHAR(128),
+        "last_integrity_check_at" TIMESTAMPTZ,
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`,
+    );
+    try {
+      await prisma.$executeRawUnsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS payment_addresses_address_key ON "payment_addresses" ("address");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS payment_addresses_assigned_order_id_key ON "payment_addresses" ("assigned_order_id")
+         WHERE "assigned_order_id" IS NOT NULL;`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_addresses_network_status_idx ON "payment_addresses" ("network", "status");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_addresses_status_release_at_idx ON "payment_addresses" ("status", "release_at");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_addresses_status_activation_ready_at_idx ON "payment_addresses" ("status", "activation_ready_at");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_addresses_auto_credit_frozen_at_idx ON "payment_addresses" ("auto_credit_frozen_at");`,
+      );
+    } catch { /* ignore */ }
+  }
+  try {
+    await prisma.$executeRawUnsafe(
+      `ALTER TYPE "PaymentAddressStatus" ADD VALUE IF NOT EXISTS 'pending_approval';`,
+    );
+  } catch { /* ignore */ }
+  try {
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "payment_addresses"
+         ADD COLUMN IF NOT EXISTS "created_by" TEXT,
+         ADD COLUMN IF NOT EXISTS "approved_by" TEXT,
+         ADD COLUMN IF NOT EXISTS "approved_at" TIMESTAMPTZ,
+         ADD COLUMN IF NOT EXISTS "activation_ready_at" TIMESTAMPTZ,
+         ADD COLUMN IF NOT EXISTS "lifecycle_version" INTEGER NOT NULL DEFAULT 1,
+         ADD COLUMN IF NOT EXISTS "integrity_mac" VARCHAR(64),
+         ADD COLUMN IF NOT EXISTS "auto_credit_frozen_at" TIMESTAMPTZ,
+         ADD COLUMN IF NOT EXISTS "auto_credit_freeze_reason" VARCHAR(128),
+         ADD COLUMN IF NOT EXISTS "last_integrity_check_at" TIMESTAMPTZ;`,
+    );
+  } catch { /* ignore */ }
+
+  try {
+    await prisma.paymentTransaction.count();
+  } catch {
+    try {
+      await prisma.$executeRawUnsafe(
+        `DO $$
+        BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'paymenttransactionstatus') THEN
+            CREATE TYPE "PaymentTransactionStatus" AS ENUM ('detected', 'confirming', 'confirmed', 'rejected', 'refunded');
+          END IF;
+        END $$;`,
+      );
+    } catch { /* ignore */ }
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "payment_transactions" (
+        "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        "order_id" TEXT NOT NULL,
+        "provider" VARCHAR(32) NOT NULL,
+        "status" "PaymentTransactionStatus" NOT NULL DEFAULT 'detected',
+        "provider_charge_id" VARCHAR(256),
+        "network" VARCHAR(32),
+        "token_contract" VARCHAR(64),
+        "to_address" VARCHAR(64),
+        "from_address" VARCHAR(64),
+        "amount_minor" BIGINT NOT NULL,
+        "currency" VARCHAR(16) NOT NULL DEFAULT 'XTR',
+        "confirmations" INTEGER,
+        "confirmations_target" INTEGER,
+        "raw_event_hash" VARCHAR(64) NOT NULL,
+        "telegram_payload_hmac" VARCHAR(64),
+        "block_number" BIGINT,
+        "received_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        "confirmed_at" TIMESTAMPTZ,
+        "rejected_at" TIMESTAMPTZ,
+        "reject_reason" VARCHAR(128),
+        "refunded_at" TIMESTAMPTZ,
+        "refund_reason" VARCHAR(1000),
+        "refund_admin_id" VARCHAR(64),
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`,
+    );
+    try {
+      await prisma.$executeRawUnsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS payment_transactions_provider_charge_id_key
+         ON "payment_transactions" ("provider_charge_id") WHERE "provider_charge_id" IS NOT NULL;`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS payment_transactions_raw_event_hash_key
+         ON "payment_transactions" ("raw_event_hash");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_transactions_order_id_created_at_idx
+         ON "payment_transactions" ("order_id", "created_at");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_transactions_status_created_at_idx
+         ON "payment_transactions" ("status", "created_at");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_transactions_provider_status_created_at_idx
+         ON "payment_transactions" ("provider", "status", "created_at");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_transactions_to_address_status_idx
+         ON "payment_transactions" ("to_address", "status");`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS payment_transactions_block_number_idx
+         ON "payment_transactions" ("block_number");`,
+      );
+    } catch { /* ignore */ }
+  }
+  try {
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "payment_transactions"
+         ADD COLUMN IF NOT EXISTS "network" VARCHAR(32),
+         ADD COLUMN IF NOT EXISTS "token_contract" VARCHAR(64),
+         ADD COLUMN IF NOT EXISTS "to_address" VARCHAR(64),
+         ADD COLUMN IF NOT EXISTS "from_address" VARCHAR(64),
+         ADD COLUMN IF NOT EXISTS "confirmations" INTEGER,
+         ADD COLUMN IF NOT EXISTS "confirmations_target" INTEGER,
+         ADD COLUMN IF NOT EXISTS "raw_event_hash" VARCHAR(64),
+         ADD COLUMN IF NOT EXISTS "telegram_payload_hmac" VARCHAR(64),
+         ADD COLUMN IF NOT EXISTS "block_number" BIGINT,
+         ADD COLUMN IF NOT EXISTS "received_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+         ADD COLUMN IF NOT EXISTS "confirmed_at" TIMESTAMPTZ,
+         ADD COLUMN IF NOT EXISTS "rejected_at" TIMESTAMPTZ,
+         ADD COLUMN IF NOT EXISTS "reject_reason" VARCHAR(128),
+         ADD COLUMN IF NOT EXISTS "refunded_at" TIMESTAMPTZ,
+         ADD COLUMN IF NOT EXISTS "refund_reason" VARCHAR(1000),
+         ADD COLUMN IF NOT EXISTS "refund_admin_id" VARCHAR(64);`,
+    );
+  } catch { /* ignore */ }
+
+  try {
+    await prisma.$executeRawUnsafe(
+      `DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'orders'
+        ) THEN
+          ALTER TABLE "orders"
+            ADD COLUMN IF NOT EXISTS "payment_method" "PaymentMethod" NOT NULL DEFAULT 'telegram_stars',
+            ADD COLUMN IF NOT EXISTS "payment_payload_hmac" VARCHAR(64),
+            ADD COLUMN IF NOT EXISTS "telegram_user_id_hmac" VARCHAR(64),
+            ADD COLUMN IF NOT EXISTS "expires_at" TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS "rejected_at" TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS "reject_reason" VARCHAR(128),
+            ADD COLUMN IF NOT EXISTS "refunded_at" TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS "refund_reason" VARCHAR(1000),
+            ADD COLUMN IF NOT EXISTS "refund_admin_id" VARCHAR(64),
+            ADD COLUMN IF NOT EXISTS "usdt_payment_address_id" TEXT;
+        END IF;
+      END $$;`,
+    );
+  } catch { /* ignore */ }
+  try {
+    await prisma.$executeRawUnsafe(
+      `CREATE UNIQUE INDEX IF NOT EXISTS orders_payment_payload_hmac_key
+       ON "orders" ("payment_payload_hmac") WHERE "payment_payload_hmac" IS NOT NULL;`,
+    );
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS orders_payment_method_status_created_at_idx
+       ON "orders" ("payment_method", "status", "created_at");`,
+    );
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS orders_expires_at_status_idx
+       ON "orders" ("expires_at", "status");`,
+    );
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS orders_usdt_payment_address_id_status_idx
+       ON "orders" ("usdt_payment_address_id", "status");`,
+    );
+  } catch { /* ignore */ }
 }
 
 export async function ensurePlatformMetadataTable(prisma: PrismaClient): Promise<void> {
@@ -324,21 +704,9 @@ export async function ensureSeoMetadataColumns(prisma: PrismaClient): Promise<vo
 export async function wipeTestDatabase(prisma: PrismaClient): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const migrateFolder = path.join(__dirname, "..", "prisma", "migrations");
-  try { await ensureMigrationsApplied(prisma, migrateFolder); } catch { /* ignore */ }
-  await ensureManagedChannelsTable(prisma);
-  await ensureUsdtMonitorTables(prisma);
-  await ensurePlatformMetadataTable(prisma);
-  await ensureSeoMetadataColumns(prisma);
+  await ensureMigrationsApplied(prisma, migrateFolder);
   for (const table of ALL_TABLES_ORDERED) {
-    try {
-      await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE;`);
-    } catch (e: any) {
-      const code = typeof e?.meta?.code === "string" ? e.meta.code : String(e?.code || "");
-      if (code === "42P01" || /relation .* does not exist/i.test(String(e?.message || ""))) {
-        continue;
-      }
-      throw e;
-    }
+    await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE;`);
   }
 }
 

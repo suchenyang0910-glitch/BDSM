@@ -1,6 +1,7 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomInt } from "node:crypto";
 import { emitSafetyEvent } from "../utils/structuredError.js";
+import { verifyAndFreezePaymentAddressIntegrity } from "./paymentAddressIntegrity.js";
 
 export const USDT_ORDER_EXPIRES_MS = 20 * 60 * 1000;
 export const USDT_CONFIRMATIONS_TARGET_DEFAULT = 19;
@@ -40,41 +41,51 @@ export async function assignUsdtTrc20Address(
   const skipArr = Array.isArray(skipAddressIds) && skipAddressIds.length > 0 ? skipAddressIds : null;
   const runOne = async (tx: any) => {
     const now = new Date();
-    let row: any[];
-    if (skipArr && skipArr.length > 0) {
-      // 使用 ANY($3) 参数化 WHERE id NOT IN (...)，skipArr 长度为 0 时走无 skip 分支避免空数组 ANY 语法问题
-      const placeholders = skipArr.map((_, i) => `$${i + 3}`).join(",");
-      const sql = `SELECT id, address FROM "payment_addresses"
-       WHERE network = $1 AND status = 'available' AND ("release_at" IS NULL OR "release_at" < $2)
-       AND id NOT IN (${placeholders})
-       ORDER BY "assigned_at" ASC NULLS FIRST, id ASC
-       LIMIT 1
-       FOR UPDATE SKIP LOCKED`;
-      row = await tx.$queryRawUnsafe(sql, "tron_trc20", now, ...skipArr);
-    } else {
-      row = await tx.$queryRawUnsafe(
-        `SELECT id, address FROM "payment_addresses"
-       WHERE network = $1 AND status = 'available' AND ("release_at" IS NULL OR "release_at" < $2)
-       ORDER BY "assigned_at" ASC NULLS FIRST, id ASC
-       LIMIT 1
-       FOR UPDATE SKIP LOCKED`,
-        "tron_trc20",
-        now,
-      );
+    const rows: any[] = await tx.$queryRaw(
+      Prisma.sql`
+        SELECT
+          id,
+          address,
+          network,
+          status,
+          created_at AS "createdAt",
+          created_by AS "createdBy",
+          lifecycle_version AS "lifecycleVersion",
+          integrity_mac AS "integrityMac",
+          auto_credit_frozen_at AS "autoCreditFrozenAt",
+          activation_ready_at AS "activationReadyAt"
+        FROM "payment_addresses"
+        WHERE network = ${"tron_trc20"}
+          AND status = 'available'::"PaymentAddressStatus"
+          AND (approved_at IS NOT NULL OR created_by IS NULL)
+          AND (approved_at IS NULL OR activation_ready_at IS NULL OR activation_ready_at <= ${now})
+          AND auto_credit_frozen_at IS NULL
+          AND ("release_at" IS NULL OR "release_at" < ${now})
+          ${skipArr && skipArr.length > 0 ? Prisma.sql`AND id NOT IN (${Prisma.join(skipArr)})` : Prisma.empty}
+        ORDER BY "assigned_at" ASC NULLS FIRST, id ASC
+        LIMIT 5
+        FOR UPDATE SKIP LOCKED
+      `,
+    );
+    if (!rows || rows.length === 0) return null;
+    for (const candidate of rows) {
+      const verify = await verifyAndFreezePaymentAddressIntegrity(tx, candidate, "assign");
+      if (!verify.ok) continue;
+      const id = String(candidate.id);
+      const address = String(candidate.address);
+      await tx.paymentAddress.update({
+        where: { id },
+        data: {
+          status: "assigned",
+          assignedOrderId: forOrderId,
+          assignedAt: now,
+          releaseAt,
+          lastIntegrityCheckAt: now,
+        },
+      });
+      return { id, address };
     }
-    if (!row || row.length === 0) return null;
-    const id = String(row[0].id);
-    const address = String(row[0].address);
-    await tx.paymentAddress.update({
-      where: { id },
-      data: {
-        status: "assigned",
-        assignedOrderId: forOrderId,
-        assignedAt: now,
-        releaseAt,
-      },
-    });
-    return { id, address };
+    return null;
   };
   try {
     // 判断是否为 interactive tx：如果 client.$transaction 被「当前已在事务中」跳过，则直接 runOne(client)
@@ -125,7 +136,7 @@ export async function generateUsdtUniqueAmountForAddress(
   const now = new Date();
   const windowStart = new Date(now.getTime() - USDT_ORDER_EXPIRES_MS);
   // 同地址并发串行化：悲观锁 payment_addresses 行（若上游已锁则为重入，但锁可重入不会死锁）
-  await client.$queryRawUnsafe(`SELECT id FROM "payment_addresses" WHERE id = $1 FOR UPDATE`, addressId);
+  await client.$queryRaw(Prisma.sql`SELECT id FROM "payment_addresses" WHERE id = ${addressId} FOR UPDATE`);
   const takenActualTails = new Set<number>();
   const rows: any[] = await client.order.findMany({
     where: {
@@ -219,36 +230,42 @@ export async function releaseExpiredUsdtAddresses(client: PrismaDBClient): Promi
   let released = 0;
   let errors = 0;
   const now = new Date();
-  const r = await client.$executeRawUnsafe(
-    `UPDATE "payment_addresses"
-     SET status = 'available',
-         assigned_order_id = NULL,
-         assigned_at = NULL,
-         release_at = NULL,
-         updated_at = NOW()
-     WHERE status = 'assigned'
-       AND assigned_order_id IN (
-         SELECT o.id FROM "orders" o
-         WHERE o.status IN ('pending','processing')
-           AND o.expires_at IS NOT NULL
-           AND o.expires_at < $1
-       )`,
-    now,
-  );
-  released = typeof r === "number" ? r : 0;
-  const r2 = await client.$executeRawUnsafe(
-    `UPDATE "payment_addresses"
-     SET status = 'available',
-         assigned_order_id = NULL,
-         assigned_at = NULL,
-         release_at = NULL,
-         updated_at = NOW()
-     WHERE status = 'assigned'
-       AND release_at IS NOT NULL
-       AND release_at < $1`,
-    now,
-  );
-  if (typeof r2 === "number") released += r2;
+  const expiredOrderIds = await client.order.findMany({
+    where: {
+      status: { in: ["pending", "processing"] as any },
+      expiresAt: { lt: now },
+      usdtPaymentAddressId: { not: null },
+    },
+    select: { id: true },
+  });
+  if (expiredOrderIds.length > 0) {
+    const r = await client.paymentAddress.updateMany({
+      where: {
+        status: "assigned",
+        assignedOrderId: { in: expiredOrderIds.map((row: any) => row.id) },
+      },
+      data: {
+        status: "available",
+        assignedOrderId: null,
+        assignedAt: null,
+        releaseAt: null,
+      },
+    });
+    released += r.count || 0;
+  }
+  const r2 = await client.paymentAddress.updateMany({
+    where: {
+      status: "assigned",
+      releaseAt: { lt: now },
+    },
+    data: {
+      status: "available",
+      assignedOrderId: null,
+      assignedAt: null,
+      releaseAt: null,
+    },
+  });
+  released += r2.count || 0;
   return { released, errors };
 }
 

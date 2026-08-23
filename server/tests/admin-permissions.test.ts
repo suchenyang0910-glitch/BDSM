@@ -12,6 +12,8 @@ import orderRoutes from "../src/routes/orders.js";
 import adminCmsRoutes from "../src/routes/adminCms.js";
 import adminUsersAndSupportRoutes from "../src/routes/adminUsersAndSupport.js";
 import adminChannelsRoutes from "../src/routes/adminChannels.js";
+import telegramWebhookRoutes from "../src/routes/telegramWebhook.js";
+import { encryptChatIdAesGcm, chatIdIndexKey } from "../src/utils/crypto.js";
 import {
   setupTestHarness,
   teardownTestHarness,
@@ -45,6 +47,7 @@ async function createApp(prisma: any) {
   await app.register(adminCmsRoutes, { prefix: "/api" });
   await app.register(adminUsersAndSupportRoutes, { prefix: "/api" });
   await app.register(adminChannelsRoutes, { prefix: "/api" });
+  await app.register(telegramWebhookRoutes, { prefix: "/api" });
   return app;
 }
 
@@ -480,6 +483,116 @@ test("频道登记请求列表绝不回传私密邀请链接明文", async () =>
     assert.equal(row.submittedLink, "私密邀请已提交");
     assert.equal(row.normalizedLink, null);
     assert.ok(!JSON.stringify(row).includes("PrivateInviteSecret123"), "private invite token must never be exposed");
+  } finally {
+    await app.close();
+  }
+});
+
+test("public 内容绑定完整视频必须返回 full_video_not_allowed_for_public", async () => {
+  const app = await createApp(prisma);
+  try {
+    const superCookie = await loginAdmin(app, "superAdmin");
+    const mediaAsset = await seedReadyMediaAsset(prisma, {
+      id: `full-video-public-forbidden-${crypto.randomUUID()}`,
+      kind: "full_video",
+      ownerAdminId: null,
+      filename: "public-full.mp4",
+    });
+    const resp = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/contents/${encodeURIComponent(TEST_KNOWN_IDS.contentPublic)}`,
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        fullVideoAssetId: mediaAsset.id,
+        reason: "public 试图绑定完整视频",
+      },
+    });
+    assert.equal(resp.statusCode, 400, resp.body);
+    assert.equal((resp.json() as any).error, "full_video_not_allowed_for_public");
+  } finally {
+    await app.close();
+  }
+});
+
+test("channel_post 收件箱入库后只能按 accessType 关联到允许的内容", async () => {
+  const app = await createApp(prisma);
+  try {
+    const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET || "test-webhook-secret-token-at-least-32chars";
+    process.env.CRYPTO_CHAT_ID_AES_KEY = "12345678901234567890123456789012";
+    process.env.TELEGRAM_WEBHOOK_SECRET = webhookSecret;
+    const superCookie = await loginAdmin(app, "superAdmin");
+    const chatId = BigInt("-1009876543210");
+    await prisma.adminManagedChannel.create({
+      data: {
+        chatIdHmac: chatIdIndexKey(chatId),
+        chatIdCiphertextB64: encryptChatIdAesGcm(chatId),
+        deprecatedChatIdBig: chatId,
+        chatType: "channel",
+        title: "Membership Main Test Channel",
+        isPrivate: true,
+        purpose: "membership_main",
+        source: "manual_add",
+        botIsAdmin: true,
+        botCanPostMessages: true,
+        botCanInviteUsers: true,
+        botCanRestrictMembers: true,
+      },
+    });
+
+    const webhookResp = await app.inject({
+      method: "POST",
+      url: "/api/api/telegram/webhook",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": webhookSecret,
+      },
+      payload: {
+        update_id: 9911223344,
+        channel_post: {
+          message_id: 42,
+          date: Math.floor(Date.now() / 1000),
+          chat: { id: chatId.toString(), type: "channel", title: "Membership Main Test Channel" },
+          video: { file_id: "video-file-id-1", duration: 31, width: 1280, height: 720 },
+          caption: "会员完整视频 webhook 入库测试",
+        },
+      },
+    });
+    assert.equal(webhookResp.statusCode, 200, webhookResp.body);
+
+    const linkable = await app.inject({
+      method: "GET",
+      url: `/api/admin/contents/${encodeURIComponent(TEST_KNOWN_IDS.contentMembership)}/linkable-channel-messages`,
+      headers: { cookie: superCookie },
+    });
+    assert.equal(linkable.statusCode, 200, linkable.body);
+    const items = (linkable.json() as any).items || [];
+    assert.ok(items.length >= 1, "membership content should see at least one unlinked channel message");
+
+    const mismatch = await app.inject({
+      method: "GET",
+      url: `/api/admin/contents/${encodeURIComponent(TEST_KNOWN_IDS.contentPublic)}/linkable-channel-messages`,
+      headers: { cookie: superCookie },
+    });
+    assert.equal(mismatch.statusCode, 200, mismatch.body);
+    assert.equal(((mismatch.json() as any).items || []).length, 0, "public content must not see membership_main messages");
+
+    const selectedId = items[0].id;
+    const linkResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${encodeURIComponent(TEST_KNOWN_IDS.contentMembership)}/link-channel-message`,
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: { channelMessageId: selectedId, reason: "测试关联 membership channel_post" },
+    });
+    assert.equal(linkResp.statusCode, 200, linkResp.body);
+    assert.equal((linkResp.json() as any).status, "linked");
+
+    const duplicate = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${encodeURIComponent(TEST_KNOWN_IDS.contentMembership)}/link-channel-message`,
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: { channelMessageId: selectedId, reason: "测试重复关联" },
+    });
+    assert.equal(duplicate.statusCode, 409, duplicate.body);
   } finally {
     await app.close();
   }

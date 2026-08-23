@@ -1,5 +1,6 @@
 import { hmacSha256Hex, shortFingerprint } from "../utils/crypto.js";
 import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
+import { verifyAndFreezePaymentAddressIntegrity } from "./paymentAddressIntegrity.js";
 
 export const USDT_MONITOR_WORKER_NAME = "usdt_trc20_monitor_v1";
 export const USDT_MONITOR_MAX_BACKOFF_MS = 120_000;
@@ -23,6 +24,7 @@ export type UsdtMonitorConfig = {
 
 export type TronGridTrc20Tx = {
   txHash: string;
+  logIndex: number;
   blockTimestampMs: number;
   blockNumber: bigint;
   tokenContract: string;
@@ -95,12 +97,13 @@ function classifyProviderError(status: number): string {
   return "provider_bad_response";
 }
 
-export function txHashFingerprint(txHash: string): string {
-  return hmacSha256Hex(`usdt_monitor_tx:${String(txHash || "")}`).slice(0, 16);
+export function txHashFingerprint(txHash: string, logIndex?: number): string {
+  return hmacSha256Hex(`usdt_monitor_tx:${String(txHash || "")}:${String(logIndex ?? 0)}`).slice(0, 16);
 }
 
 export function parseTronTx(raw: any, acceptedContracts: string[]): TronGridTrc20Tx | null {
   const txHash = String(raw?.transaction_id || raw?.txID || raw?.hash || "").trim();
+  const logIndex = Number(raw?.event_index ?? raw?.log_index ?? raw?.logIndex ?? 0);
   const blockTimestampMs = Number(raw?.block_timestamp || raw?.blockTimestamp || 0);
   const blockNumRaw = raw?.block_number ?? raw?.blockNumber ?? raw?.block ?? null;
   const tokenContract = String(raw?.token_info?.address || raw?.tokenInfo?.address || raw?.contract_address || "").trim();
@@ -109,7 +112,7 @@ export function parseTronTx(raw: any, acceptedContracts: string[]): TronGridTrc2
   const toAddress = String(raw?.to || raw?.to_address || "").trim();
   const amountRaw = raw?.value ?? raw?.amount_str ?? raw?.quant ?? null;
 
-  if (!txHash || !Number.isFinite(blockTimestampMs) || blockTimestampMs <= 0 || blockNumRaw == null) return null;
+  if (!txHash || !Number.isFinite(logIndex) || logIndex < 0 || !Number.isFinite(blockTimestampMs) || blockTimestampMs <= 0 || blockNumRaw == null) return null;
   if (!tokenContract || !acceptedContracts.includes(tokenContract)) return null;
   if (tokenDecimals !== 6) return null;
   if (!fromAddress || !toAddress) return null;
@@ -121,6 +124,7 @@ export function parseTronTx(raw: any, acceptedContracts: string[]): TronGridTrc2
     if (amountMinor <= 0n || blockNumber < 0n) return null;
     return {
       txHash,
+      logIndex,
       blockTimestampMs,
       blockNumber,
       tokenContract,
@@ -215,9 +219,20 @@ async function listAddressesForCycle(prisma: any, cfg: UsdtMonitorConfig, now: D
   return prisma.paymentAddress.findMany({
     where: {
       network: "tron_trc20",
-      OR: [
-        { status: "assigned" },
-        { updatedAt: { gte: recentThreshold } },
+      autoCreditFrozenAt: null,
+      AND: [
+        {
+          OR: [
+            { status: "assigned" },
+            { updatedAt: { gte: recentThreshold } },
+          ],
+        },
+        {
+          OR: [
+            { approvedAt: { not: null } },
+            { createdBy: null },
+          ],
+        },
       ],
     },
     orderBy: [
@@ -287,14 +302,14 @@ async function recordCursorSuccess(
     create: {
       addressId,
       lastBlockTimestamp: new Date(tx.blockTimestampMs),
-      lastTxHashFingerprint: txHashFingerprint(tx.txHash),
+      lastTxHashFingerprint: txHashFingerprint(tx.txHash, tx.logIndex),
       lastSuccessAt: now,
       lastErrorClass: null,
       consecutiveFailures: 0,
     },
     update: {
       lastBlockTimestamp: new Date(tx.blockTimestampMs),
-      lastTxHashFingerprint: txHashFingerprint(tx.txHash),
+      lastTxHashFingerprint: txHashFingerprint(tx.txHash, tx.logIndex),
       lastSuccessAt: now,
       lastErrorClass: null,
       consecutiveFailures: 0,
@@ -333,6 +348,7 @@ async function postChainEvent(
     source: "tron_listener_v1",
     network: "tron_trc20",
     txHash: tx.txHash,
+    logIndex: tx.logIndex,
     tokenContract: tx.tokenContract,
     fromAddress: tx.fromAddress,
     toAddress: tx.toAddress,
@@ -392,6 +408,11 @@ export async function runUsdtMonitorCycle(
     result.scannedAddressCount = addresses.length;
 
     for (const address of addresses) {
+      const integrity = await verifyAndFreezePaymentAddressIntegrity(prisma, address, "monitor");
+      if (!integrity.ok) {
+        result.rejectedCount += 1;
+        continue;
+      }
       const cursorBaseMs = address.monitorCursor?.lastBlockTimestamp
         ? new Date(address.monitorCursor.lastBlockTimestamp).getTime() - CURSOR_OVERLAP_MS
         : now.getTime() - cfg.lookbackMs;

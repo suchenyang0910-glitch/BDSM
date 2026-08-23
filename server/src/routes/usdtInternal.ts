@@ -11,6 +11,7 @@ const chainEventSchema = z.object({
   source: z.string().min(1).max(64).default("tron_listener_v1"),
   network: z.string().min(1).max(32),
   txHash: z.string().min(1).max(256),
+  logIndex: z.coerce.number().int().min(0).optional().default(0),
   tokenContract: z.string().min(1).max(128),
   fromAddress: z.string().min(1).max(64),
   toAddress: z.string().min(1).max(64),
@@ -19,11 +20,25 @@ const chainEventSchema = z.object({
   confirmations: z.coerce.number().int().min(0),
   confirmationsTarget: z.coerce.number().int().min(1).optional(),
   receivedAt: z.coerce.date().optional(),
-});
+}).strict();
+
+function isPrivateOrLoopbackIp(ipRaw: string | undefined): boolean {
+  const ip = String(ipRaw || "").trim().toLowerCase();
+  if (!ip) return false;
+  if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") return true;
+  if (ip.startsWith("10.") || ip.startsWith("192.168.")) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) return true;
+  return false;
+}
 
 export default async function usdtInternalRoutes(fastify: FastifyInstance) {
   // 前置 Gate：header 恒时比较
   fastify.addHook("onRequest", async (req: any, reply: any) => {
+    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    const remoteIp = forwarded || req.ip;
+    if (!isPrivateOrLoopbackIp(remoteIp)) {
+      return reply.status(403).send({ error: "forbidden", reason: "internal_network_only" });
+    }
     const expected = process.env.USDT_WORKER_SECRET;
     if (!expected || expected.length < 24) {
       return reply.status(500).send({ error: "misconfigured", reason: "USDT_WORKER_SECRET_missing" });
@@ -54,6 +69,7 @@ export default async function usdtInternalRoutes(fastify: FastifyInstance) {
       source: body.source,
       network: body.network,
       txHash: body.txHash,
+      logIndex: body.logIndex,
       tokenContract: body.tokenContract,
       fromAddress: body.fromAddress,
       toAddress: body.toAddress,
@@ -67,7 +83,7 @@ export default async function usdtInternalRoutes(fastify: FastifyInstance) {
 
     // 语义化 HTTP 状态码（不影响幂等）
     if (result.status === "rejected" && result.errorClass?.startsWith("tx_")) {
-      return reply.status(502).send({ ok: false, ...result, eventHash: rawEventHashForUsdt(body.source, body.network, body.txHash).slice(0, 16) });
+      return reply.status(502).send({ ok: false, ...result, eventHash: rawEventHashForUsdt(body.source, body.network, body.txHash, body.logIndex).slice(0, 16) });
     }
     if (result.status === "rejected") {
       return reply.status(422).send({ ok: false, ...result });

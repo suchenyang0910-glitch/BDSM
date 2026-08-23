@@ -53,7 +53,6 @@ import http, {
   listAdminPackages,
   adminMe,
   listFreeChannels,
-  registerTelegramPublishContent,
   startAdminTelegramPublish,
   errMsg,
 } from "../api/client";
@@ -64,10 +63,9 @@ import type {
   AdminMe,
   AdminPackageItem,
   FreeChannelOption,
-  RegisterTelegramPublishResult,
 } from "../api/types";
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 const { TextArea } = Input;
 const { Option } = Select;
 
@@ -121,6 +119,20 @@ export type TelegramPublishJobItem = {
   cancelledByAdmin?: { id: string; displayName?: string | null; email?: string } | null;
 };
 
+export type ChannelMessageItem = {
+  id: string;
+  managedChannelId: string;
+  channelLabel: string;
+  channelPurpose: "free_preview" | "membership_main" | "package_channel" | "none";
+  packageId?: string | null;
+  mediaKind: "video" | "photo" | "document" | "text";
+  postedAt?: string | null;
+  associationStatus: "unlinked" | "linked" | string;
+  contentId?: string | null;
+  linkedAt?: string | null;
+  messageIdMasked?: string | null;
+};
+
 // ================== 新增素材 & 发布 API 封装 ==================
 type InitMediaUploadReq = {
   kind: MediaAssetKind;
@@ -160,6 +172,18 @@ export async function listTelegramPublishJobs(contentId: string): Promise<{ ok: 
 }
 export async function cancelTelegramPublishJob(jobId: string, reason?: string): Promise<{ ok: true; id: string; status: TelegramPublishJobStatus; cancelledAt?: string }> {
   const res = await http.post(`/admin/telegram-publish-jobs/${encodeURIComponent(jobId)}/cancel`, { reason: reason || "运营手动取消" });
+  return res.data;
+}
+export async function listLinkableChannelMessages(contentId: string): Promise<{ contentId: string; accessType: string; currentLink: ChannelMessageItem | null; items: ChannelMessageItem[] }> {
+  const res = await http.get(`/admin/contents/${encodeURIComponent(contentId)}/linkable-channel-messages`);
+  return res.data;
+}
+export async function linkContentChannelMessage(contentId: string, channelMessageId: string, reason?: string): Promise<{ ok: true; contentId: string; messageKind: string; postedAt?: string | null; channelLabel: string; status: string; currentLink: ChannelMessageItem }> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/link-channel-message`, { channelMessageId, reason });
+  return res.data;
+}
+export async function unlinkContentChannelMessage(contentId: string, reason?: string): Promise<{ ok: true; contentId: string; status: string }> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/unlink-channel-message`, { reason });
   return res.data;
 }
 
@@ -217,8 +241,6 @@ const ContentsPage: React.FC = () => {
   const [freeChannels, setFreeChannels] = React.useState<FreeChannelOption[]>([]);
   const [me, setMe] = React.useState<AdminMe | null>(null);
   const [publishingTg, setPublishingTg] = React.useState(false);
-  const [registerForm] = Form.useForm();
-  const [lastPublishResult, setLastPublishResult] = React.useState<RegisterTelegramPublishResult | null>(null);
 
   // ================== 素材上传 state ==================
   const [coverAssetId, setCoverAssetId] = React.useState<string | null>(null);
@@ -242,6 +264,10 @@ const ContentsPage: React.FC = () => {
   const [publishJobsLoading, setPublishJobsLoading] = React.useState(false);
   const [startPublishing, setStartPublishing] = React.useState(false);
   const [publishJobsRefreshTimer, setPublishJobsRefreshTimer] = React.useState<number | null>(null);
+  const [channelMessages, setChannelMessages] = React.useState<ChannelMessageItem[]>([]);
+  const [currentChannelLink, setCurrentChannelLink] = React.useState<ChannelMessageItem | null>(null);
+  const [channelMessagesLoading, setChannelMessagesLoading] = React.useState(false);
+  const [linkingChannelMessageId, setLinkingChannelMessageId] = React.useState<string | null>(null);
 
   const fetchList = React.useCallback(async () => {
     setLoading(true);
@@ -397,10 +423,25 @@ const ContentsPage: React.FC = () => {
     }
   }, []);
 
+  const refreshChannelMessages = React.useCallback(async (contentId: string) => {
+    try {
+      setChannelMessagesLoading(true);
+      const r = await listLinkableChannelMessages(contentId);
+      setCurrentChannelLink(r.currentLink || null);
+      setChannelMessages(Array.isArray(r.items) ? r.items : []);
+    } catch {
+      setCurrentChannelLink(null);
+      setChannelMessages([]);
+    } finally {
+      setChannelMessagesLoading(false);
+    }
+  }, []);
+
   // Drawer 打开后启动定时刷新 publish-jobs（后台异步发送任务 8s 轮询一次 UI）
   React.useEffect(() => {
     if (drawerOpen && editing?.id) {
       refreshPublishJobs(editing.id);
+      refreshChannelMessages(editing.id);
       if (publishJobsRefreshTimer) window.clearInterval(publishJobsRefreshTimer);
       const timer = window.setInterval(() => {
         refreshPublishJobs(editing.id);
@@ -412,13 +453,15 @@ const ContentsPage: React.FC = () => {
         setPublishJobsRefreshTimer(null);
       }
       setPublishJobs([]);
+      setChannelMessages([]);
+      setCurrentChannelLink(null);
     }
     return () => {
       if (publishJobsRefreshTimer) {
         window.clearInterval(publishJobsRefreshTimer);
       }
     };
-  }, [drawerOpen, editing?.id, refreshPublishJobs]);
+  }, [drawerOpen, editing?.id, refreshPublishJobs, refreshChannelMessages]);
 
   const resetMediaState = React.useCallback(() => {
     setCoverAssetId(null); setCoverAsset(null); setCoverProgress(0); setCoverUploading(false);
@@ -431,8 +474,8 @@ const ContentsPage: React.FC = () => {
     setChannelKinds([]);
     resetMediaState();
     form.resetFields();
-    registerForm.resetFields();
-    setLastPublishResult(null);
+    setCurrentChannelLink(null);
+    setChannelMessages([]);
     form.setFieldsValue({
       accessType: "public" as AccessTypeForSelect,
       status: "draft",
@@ -454,8 +497,8 @@ const ContentsPage: React.FC = () => {
     setEditing(row);
     resetMediaState();
     setChannelKinds([]);
-    registerForm.resetFields();
-    setLastPublishResult(null);
+    setCurrentChannelLink(null);
+    setChannelMessages([]);
     // 默认勾选与 accessType 匹配的 channel kinds
     const defaultKinds: Array<TelegramPublishJobItem["channelKind"]> = [];
     if (row.accessType === "public") defaultKinds.push("public_free_preview");
@@ -620,63 +663,68 @@ const ContentsPage: React.FC = () => {
     }
   };
 
-  const onRegisterTelegramPublish = async () => {
+  const onLinkChannelMessage = async (row: ChannelMessageItem) => {
     if (!editing?.id) return;
     try {
-      const vals = await registerForm.validateFields();
       setPublishingTg(true);
-      const midRaw = vals.telegramMessageId;
-      const mid = typeof midRaw === "number" ? String(midRaw) : String(midRaw || "").trim();
-      const result = await registerTelegramPublishContent(editing.id, {
-        telegramMessageId: mid,
-        telegramChatFingerprint: vals.telegramChatFingerprint ? String(vals.telegramChatFingerprint).trim() : null,
-        freeChannelCode: vals.freeChannelCode ? String(vals.freeChannelCode).trim() : null,
-        videoFileIdRemark: vals.videoFileIdRemark ? String(vals.videoFileIdRemark).trim() : null,
-        caption: vals.caption ?? null,
-        reason: vals.reason?.trim() || `后台登记 Telegram 已发布视频（messageId=${mid}）`,
-      });
-      setLastPublishResult(result);
-      if (!result.ok) {
-        message.error("登记失败：请检查字段合法性或查看服务端结构化事件日志");
-      } else {
-        message.success(
-          `已完成人工登记 · 未由系统校验视频是否实际发布在目标频道（${result.channelLabel || "目标频道"}，messageId=${result.messageId}）`,
-        );
-        const refreshed = await getAdminContent(editing.id);
-        setEditing(refreshed);
-        fetchList();
-      }
+      setLinkingChannelMessageId(row.id);
+      const result = await linkContentChannelMessage(editing.id, row.id, `后台关联频道消息：${row.channelLabel} ${row.messageIdMasked || ""}`.trim());
+      message.success(`已关联频道消息：${result.channelLabel}`);
+      await refreshChannelMessages(editing.id);
+      const refreshed = await getAdminContent(editing.id);
+      setEditing(refreshed);
+      fetchList();
     } catch (e) {
-      message.error(errMsg(e, "登记 Telegram 已发布视频失败"));
+      message.error(errMsg(e, "关联频道消息失败"));
     } finally {
       setPublishingTg(false);
+      setLinkingChannelMessageId(null);
     }
   };
 
-  const publishedTelegramCard = React.useMemo(() => {
-    if (!editing) return null;
-    const m = editing.telegramMessageId;
-    const t = editing.telegramSentAt;
-    const fp = editing.telegramChatFingerprint;
-    if (!m && !t && !fp) return null;
+  const onUnlinkChannelMessage = async () => {
+    if (!editing?.id) return;
+    Modal.confirm({
+      title: "解除频道消息关联",
+      content: "解除后该内容卡将失去当前 Telegram 交付消息映射；如需更换消息，请先解除再重新关联。",
+      okText: "确认解除",
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          setPublishingTg(true);
+          await unlinkContentChannelMessage(editing.id, "后台手动解除频道消息关联");
+          message.success("已解除关联");
+          await refreshChannelMessages(editing.id);
+          const refreshed = await getAdminContent(editing.id);
+          setEditing(refreshed);
+          fetchList();
+        } catch (e) {
+          message.error(errMsg(e, "解除关联失败"));
+        } finally {
+          setPublishingTg(false);
+        }
+      },
+    });
+  };
+
+  const currentChannelLinkCard = React.useMemo(() => {
+    if (!currentChannelLink) return null;
     return (
       <Alert
-        type="warning"
+        type="success"
         showIcon
-        message={m ? "已人工登记 Telegram 消息 ID（未由系统校验视频是否实际发布在目标频道）" : "该内容已关联过 Telegram 发布上下文（未校验）"}
+        message={`已关联 · ${currentChannelLink.channelLabel}`}
         description={
           <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-            <Space size={4} style={{ marginBottom: 4 }}>
-              <Tag color="orange">人工登记 · 未校验</Tag>
-            </Space>
-            {m && <span>· 运营声明的 messageId：{m}</span>}
-            {t && <span>· 登记时间（运营声明）：{dayjs(t).format("YYYY-MM-DD HH:mm:ss")}</span>}
-            {fp && <span>· 频道指纹（chatFingerprint，用于审计比对，不可逆）：{fp}</span>}
+            <span>· 媒体类型：{currentChannelLink.mediaKind}</span>
+            {currentChannelLink.messageIdMasked && <span>· 消息号：{currentChannelLink.messageIdMasked}</span>}
+            {currentChannelLink.postedAt && <span>· 发布时间：{dayjs(currentChannelLink.postedAt).format("YYYY-MM-DD HH:mm:ss")}</span>}
+            {currentChannelLink.linkedAt && <span>· 关联时间：{dayjs(currentChannelLink.linkedAt).format("YYYY-MM-DD HH:mm:ss")}</span>}
           </Space>
         }
       />
     );
-  }, [editing]);
+  }, [currentChannelLink]);
 
   const confirmSubmitReview = (row: ContentItem) => {
     Modal.confirm({
@@ -1478,14 +1526,14 @@ const ContentsPage: React.FC = () => {
             // ==================== Tab 3：发布进度（Bot 异步任务队列 + 进度表） ====================
             {
               key: "publish",
-              label: <Space><span>发布进度（Bot 异步队列）</span>{publishJobs.filter(j => j.status === "processing" || j.status === "queued").length > 0 && <Badge color="processing" count={publishJobs.filter(j => j.status === "processing" || j.status === "queued").length} />}</Space>,
+              label: <Space><span>频道发布与关联</span>{publishJobs.filter(j => j.status === "processing" || j.status === "queued").length > 0 && <Badge color="processing" count={publishJobs.filter(j => j.status === "processing" || j.status === "queued").length} />}</Space>,
               children: (
                 <Space direction="vertical" size={20} style={{ width: "100%" }}>
                   {!editing?.id ? (
                     <Alert type="info" showIcon message="新建内容请先在「基本信息」Tab 点击「创建」保存后，再回到此处触发发布到 Telegram。" />
                   ) : (
                     <>
-                      <Card size="small" title="① 选择要发布的目标（可多选）">
+                      <Card size="small" title="① 由 Bot 发布">
                         <Space direction="vertical" size={12} style={{ width: "100%" }}>
                           <Alert
                             type="info"
@@ -1631,9 +1679,100 @@ const ContentsPage: React.FC = () => {
                       </Card>
                       <Card
                         size="small"
+                        title="② 从频道消息关联"
+                        extra={
+                          <Space>
+                            <Button icon={<ReloadOutlined />} onClick={() => editing?.id && refreshChannelMessages(editing.id)} disabled={channelMessagesLoading}>
+                              刷新收件箱
+                            </Button>
+                            {currentChannelLink && me?.role === "super_admin" ? (
+                              <Button danger onClick={onUnlinkChannelMessage} loading={publishingTg}>
+                                解除当前关联
+                              </Button>
+                            ) : null}
+                          </Space>
+                        }
+                      >
+                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="运营手工在频道发视频后，Bot 会通过 Webhook 收到 channel_post，并把未关联消息放进收件箱。这里不再要求人工填 messageId。"
+                          />
+                          {currentChannelLinkCard}
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message={
+                              editing?.accessType === "public"
+                                ? "public 内容只能关联免费频道试看消息。"
+                                : editing?.accessType === "membership"
+                                  ? "membership 内容只能关联会员主频道消息。"
+                                  : editing?.accessType === "package"
+                                    ? "package 内容只能关联所属内容包私密频道消息。"
+                                    : "当前内容类型不支持频道消息关联。"
+                            }
+                            description="若收件箱为空，请确认 @InTune_bdsm_bot 已是目标频道管理员，并在发出视频后等待 webhook 收到 channel_post。"
+                          />
+                          <Table<ChannelMessageItem>
+                            rowKey="id"
+                            size="small"
+                            loading={channelMessagesLoading}
+                            dataSource={channelMessages}
+                            pagination={{ pageSize: 6, hideOnSinglePage: true }}
+                            locale={{ emptyText: "暂无可关联的频道消息" }}
+                            columns={[
+                              {
+                                title: "频道",
+                                key: "channel",
+                                render: (_, r) => (
+                                  <Space direction="vertical" size={0}>
+                                    <span>{r.channelLabel}</span>
+                                    <Text type="secondary" style={{ fontSize: 12 }}>{r.channelPurpose}</Text>
+                                  </Space>
+                                ),
+                              },
+                              {
+                                title: "消息",
+                                key: "message",
+                                render: (_, r) => (
+                                  <Space direction="vertical" size={0}>
+                                    <span>{r.mediaKind}</span>
+                                    <Text type="secondary" style={{ fontSize: 12 }}>{r.messageIdMasked || "-"}</Text>
+                                  </Space>
+                                ),
+                              },
+                              {
+                                title: "发布时间",
+                                dataIndex: "postedAt",
+                                key: "postedAt",
+                                render: (v?: string | null) => v ? dayjs(v).format("MM-DD HH:mm:ss") : "-",
+                              },
+                              {
+                                title: "操作",
+                                key: "action",
+                                width: 120,
+                                render: (_, r) => (
+                                  <Button
+                                    type="primary"
+                                    size="small"
+                                    disabled={!canPublish || !!currentChannelLink}
+                                    loading={publishingTg && linkingChannelMessageId === r.id}
+                                    onClick={() => onLinkChannelMessage(r)}
+                                  >
+                                    选择
+                                  </Button>
+                                ),
+                              },
+                            ]}
+                          />
+                        </Space>
+                      </Card>
+                      <Card
+                        size="small"
                         title={
                           <Space>
-                            <span>② 发送任务进度</span>
+                            <span>③ 发送任务进度</span>
                             {publishJobs.length > 0 && <Tag color="processing">{publishJobs.length} 条</Tag>}
                             <Tooltip title="默认每 8 秒自动刷新，或点击上方按钮立即刷新">
                               <InfoCircleOutlined style={{ color: "#888" }} />
@@ -1762,202 +1901,6 @@ const ContentsPage: React.FC = () => {
                     </>
                   )}
                 </Space>
-              ),
-            },
-            // ==================== Tab 4：人工登记（旧模式，不推荐） ====================
-            {
-              key: "manual",
-              label: <Space><Tag color="default" style={{ opacity: 0.8 }}>不推荐</Tag><span>人工登记（旧模式）</span></Space>,
-              children: (
-                <Card
-                  size="small"
-                  style={{ marginTop: 8 }}
-                  title={
-                    <Space>
-                      <span>📝 登记 Telegram 已发布视频（旧兜底模式）</span>
-                      <Tooltip title="首期保留但不推荐：运营在 Telegram 客户端中手动上传/转发视频到对应频道后，在此手工登记 messageId 等元信息用于交付上下文。需要 content:publish 权限。">
-                        <InfoCircleOutlined style={{ color: "#888" }} />
-                      </Tooltip>
-                      {!canPublish && (
-                        <Tag color="red">当前角色无 content:publish 权限（仅 editor / super_admin）</Tag>
-                      )}
-                    </Space>
-                  }
-                >
-                  <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                    <Alert
-                      type="warning"
-                      showIcon
-                      icon={<InfoCircleOutlined />}
-                      message="人工登记仅记录运营声明的 messageId，不会校验视频是否真实发布在目标频道；所有登记信息在 UI/审计日志/返回值里一律标注「未校验」。"
-                    />
-                    <Alert
-                      type={(editing?.accessType === "public" || editing?.accessType === "membership" || editing?.accessType === "package") ? "info" : "error"}
-                      showIcon
-                      icon={<InfoCircleOutlined />}
-                      message={
-                        !editing
-                          ? "新建内容先「创建」后，本区域才可用（需要内容 id 回写到发布记录）"
-                          : editing.accessType === "public"
-                            ? "公开内容：请先手动上传/转发视频到免费频道（对应 freeChannelCode 白名单），再在此登记 messageId"
-                            : editing.accessType === "membership"
-                              ? "会员内容：请先手动上传/转发视频到会员主私密频道，再在此登记 messageId"
-                              : editing.accessType === "package"
-                                ? "打包内含：请先手动上传/转发视频到内容包对应的受控交付频道（需要 channelConfigured=true），再在此登记 messageId"
-                                : "single（单篇购买）首期已禁止，请先改为 membership/package。"
-                      }
-                      description={
-                        editing?.accessType === "package" && selectedPackage && !selectedPackage.channelConfigured
-                          ? "当前内容包未配置频道映射；请先在服务端完成 ContentPackage 加密列写入后再登记，否则无法解析对应频道。"
-                          : undefined
-                      }
-                    />
-
-                    {publishedTelegramCard}
-
-                    {lastPublishResult && (
-                      <Alert
-                        type={lastPublishResult.ok ? "warning" : "error"}
-                        showIcon
-                        message={lastPublishResult.ok ? `上次登记结果：已完成人工登记 · 未由系统校验视频是否实际发布在目标频道（mode=${lastPublishResult.registerMode || "manual"}）` : "上次登记结果：失败"}
-                        description={
-                          <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-                            {lastPublishResult.ok && (
-                              <Space size={4} style={{ marginBottom: 4 }}>
-                                <Tag color="orange">人工登记 · 未校验</Tag>
-                              </Space>
-                            )}
-                            {lastPublishResult.channelLabel && <span>· 运营声明目标频道：{lastPublishResult.channelLabel}</span>}
-                            {lastPublishResult.freeChannelCode && <span>· freeChannelCode：{lastPublishResult.freeChannelCode}</span>}
-                            {lastPublishResult.chatMasked && <span>· 频道脱敏 ID：{lastPublishResult.chatMasked}</span>}
-                            {lastPublishResult.messageId != null && <span>· 运营声明 messageId：{String(lastPublishResult.messageId)}</span>}
-                            {lastPublishResult.sentAt && <span>· 登记时间（运营声明）：{dayjs(lastPublishResult.sentAt).format("YYYY-MM-DD HH:mm:ss")}</span>}
-                            {lastPublishResult.chatFingerprint && <span>· 频道指纹：{lastPublishResult.chatFingerprint}</span>}
-                            {lastPublishResult.videoFileIdRemark && <span>· videoFileId 备注：{lastPublishResult.videoFileIdRemark}</span>}
-                          </Space>
-                        }
-                      />
-                    )}
-
-                    <Form
-                      form={registerForm}
-                      layout="vertical"
-                      preserve={false}
-                    >
-                      <Form.Item
-                        name="telegramMessageId"
-                        label="Telegram 消息 ID（messageId，必填）"
-                        rules={[{ required: true, message: "请填入 Telegram 客户端中已发送视频的消息 ID（纯数字）" }]}
-                        extra="在 Telegram 频道中右键视频消息 → 复制消息链接 / Copy Message Link，链接末尾的数字就是 messageId。例如 https://t.me/c/1234567890/42 → messageId=42。"
-                      >
-                        <Input
-                          placeholder="例如：42（或复制消息链接中末尾的纯数字）"
-                          maxLength={32}
-                          disabled={!canPublish || !editing?.id}
-                        />
-                      </Form.Item>
-
-                      <Space size={16} style={{ width: "100%" }} align="start">
-                        <Form.Item
-                          name="telegramChatFingerprint"
-                          label="频道指纹（可选，建议填）"
-                          style={{ flex: 1, marginBottom: 0 }}
-                          extra="服务端 /admin/channels 列表会展示每个频道的 16hex HMAC fingerprint；填写用于审计对账。"
-                        >
-                          <Input
-                            placeholder="16hex 指纹（如 a1b2c3d4e5f67890），可选但建议填写"
-                            maxLength={128}
-                            disabled={!canPublish || !editing?.id}
-                          />
-                        </Form.Item>
-                        <Form.Item
-                          name="freeChannelCode"
-                          label="免费频道编码（仅公开内容可选填）"
-                          style={{ width: 240, marginBottom: 0 }}
-                          extra="公开内容若要覆盖/重选白名单可在此选择；通常跟随上方基本信息的免费频道即可。"
-                        >
-                          <Select
-                            allowClear
-                            disabled={!canPublish || !editing?.id || editing?.accessType !== "public"}
-                            placeholder={editing?.accessType !== "public" ? "仅公开内容可选择" : "选择 freeChannelCode（可留空跟随内容卡）"}
-                          >
-                            {freeChannels.map((f) => (
-                              <Option key={f.code} value={f.code}>
-                                {f.label}（{f.code}）
-                              </Option>
-                            ))}
-                          </Select>
-                        </Form.Item>
-                      </Space>
-
-                      <Form.Item
-                        name="videoFileIdRemark"
-                        label="videoFileId 备注（可选）"
-                        style={{ marginTop: 16 }}
-                        extra="若你已向 Bot 发送过该视频并拿到 file_id，可在这里粘贴作为记录备查；服务端不主动调用 Bot。长度 ≤512。"
-                      >
-                        <Input
-                          placeholder="BAACAgUAAxk...（可选，仅登记备忘用）"
-                          maxLength={512}
-                          disabled={!canPublish || !editing?.id}
-                        />
-                      </Form.Item>
-
-                      <Form.Item
-                        name="caption"
-                        label="视频说明文案（caption，可选）"
-                        extra="仅作为该条发布上下文的审计记录写入 afterValue._publishContext.caption，不会重新发送消息。"
-                      >
-                        <TextArea rows={3} maxLength={2048} placeholder="可选：该条视频 caption 备忘…" disabled={!canPublish || !editing?.id} />
-                      </Form.Item>
-
-                      <Form.Item
-                        name="reason"
-                        label="登记原因（推荐填写）"
-                        extra="写入 adminAuditLog.reason，便于后续审计；不填会使用默认文案。"
-                      >
-                        <TextArea rows={2} maxLength={500} placeholder="例如：2026-08-23 运营 Alice 手动上传到会员频道，messageId=42；视频名 xxx.mp4。" disabled={!canPublish || !editing?.id} />
-                      </Form.Item>
-
-                      <Space style={{ marginTop: 12 }}>
-                        <Button
-                          type="primary"
-                          icon={<SendOutlined />}
-                          loading={publishingTg}
-                          disabled={
-                            !canPublish ||
-                            !editing?.id ||
-                            editing.accessType === "single" ||
-                            (editing.accessType === "package" && (!selectedPackage || !selectedPackage.channelConfigured))
-                          }
-                          onClick={onRegisterTelegramPublish}
-                        >
-                          登记 Telegram 已发布视频
-                        </Button>
-                        <Button onClick={() => registerForm.resetFields()} disabled={publishingTg}>
-                          清空登记表单
-                        </Button>
-                        {editing && editing.accessType === "package" && (!selectedPackage || !selectedPackage.channelConfigured) && (
-                          <Tag color="red">内容包未配置交付频道，无法解析（登记后可能缺少 channelLabel）</Tag>
-                        )}
-                      </Space>
-
-                      <Alert
-                        type="warning"
-                        showIcon
-                        style={{ marginTop: 12 }}
-                        message="兜底模式说明 + 审计与脱敏保证"
-                        description={
-                          <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-                            <span>· 运营流程：Telegram 客户端登录管理员 → 找到目标频道 → 手动上传或转发视频 → 右键复制 Message Link 取 messageId → 回到此表单提交登记。</span>
-                            <span>· 后台绝不展示明文 chatId；内容卡、列表、审计日志 afterValue 仅保留：freeChannelCode / messageId / chatFingerprint / chatMasked / videoFileIdRemark。</span>
-                            <span>· 登记失败不会在前端堆栈暴露 chatId 或 env 原始错误；请在 server 端 [safety] 结构化事件中查看（stderr，如 free_channel_env_resolve_failed / tg_publish_register_failed）。</span>
-                          </Space>
-                        }
-                      />
-                    </Form>
-                  </Space>
-                </Card>
               ),
             },
           ]}

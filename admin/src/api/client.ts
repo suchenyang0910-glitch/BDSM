@@ -17,6 +17,7 @@ import type {
   PaymentAddressListResp,
   PaymentAddressCreateInput,
   PaymentAddressCreateResp,
+  PaymentAddressApproveResp,
   PaymentAddressRevealResp,
   PaymentAddressRetireInput,
   PaymentAddressRetireResp,
@@ -184,6 +185,13 @@ export async function createAdminPaymentAddress(
 
 export async function revealAdminPaymentAddress(id: string): Promise<PaymentAddressRevealResp> {
   const res = await http.post(`/admin/payment-addresses/${encodeURIComponent(id)}/reveal`);
+  return res.data;
+}
+
+export async function approveAdminPaymentAddress(id: string, reason?: string): Promise<PaymentAddressApproveResp> {
+  const res = await http.post(`/admin/payment-addresses/${encodeURIComponent(id)}/approve`, {
+    reason: reason || "super_admin 复核通过，允许投入地址池",
+  });
   return res.data;
 }
 

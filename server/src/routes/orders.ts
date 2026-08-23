@@ -25,10 +25,11 @@ import {
   USDT_TRON_TOKEN_CONTRACT_DEFAULT,
   type AssignUsdtAddressResult,
 } from "../services/usdtPool.js";
-import { userIdIndexKey, chatIdIndexKey } from "../utils/crypto.js";
+import { userIdIndexKey, chatIdIndexKey, shortFingerprint } from "../utils/crypto.js";
 import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
 import { normalizeStoredXtrAmountToStars } from "../utils/currency.js";
 import { notifyPaymentSuccess } from "../services/paymentSuccessNotifier.js";
+import { computePaymentAddressIntegrityMac, verifyAndFreezePaymentAddressIntegrity } from "../services/paymentAddressIntegrity.js";
 
 const TRON_BASE58_ADDRESS_RE = /^T[A-Za-z0-9]{8,63}$/;
 
@@ -1168,8 +1169,8 @@ export default async function orderRoutes(fastify: FastifyInstance) {
               ipAddress: (req.ip as string) || null,
               userAgent: (req.headers["user-agent"] as string) || null,
               afterValue: {
-                chargeId: chargeId,
-                viaUserId: tgid ? String(tgid) : null,
+                chargeFingerprint: shortFingerprint("telegram_charge", chargeId),
+                viaUserFingerprint: tgid ? shortFingerprint("telegram_user", tgid) : null,
                 provider: "telegram_stars",
                 txId: refundedTx?.id ?? null,
                 refundOrderAmountMinor: String(fresh.amountMinor),
@@ -1197,10 +1198,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
         orderNo: order.orderNo,
         status: finalResult.order?.status || order.status,
         refundedAt: now.toISOString(),
-        starsRefund: {
-          chargeId,
-          viaUserId: tgid ? String(tgid) : null,
-        },
+        starsRefund: { confirmed: true },
         tip: finalResult.idempotent
           ? "Stars 退款已幂等成功（之前已完成）。"
           : "Stars 退款已完成：Telegram 侧退还 Stars，本地订单与交易行已同步为 refunded，审计已写入。",
@@ -1217,19 +1215,22 @@ export default async function orderRoutes(fastify: FastifyInstance) {
   const paymentAddressListQuery = z.object({
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(30),
-    status: z.enum(["available", "assigned", "retired"]).optional(),
+    status: z.enum(["pending_approval", "available", "assigned", "retired"]).optional(),
     network: z.string().max(32).optional(),
     addressKeyword: z.string().max(64).optional(),
-  });
+  }).strict();
   const createAddressSchema = z.object({
     address: z.string().min(8).max(64),
     network: z.string().min(3).max(32).default("tron_trc20"),
-  });
+  }).strict();
+  const approveAddressSchema = z.object({
+    reason: z.string().min(2).max(128).default("super_admin 批准收款地址投入使用"),
+  }).strict();
   const retireAddressSchema = z.object({
     reason: z.string().min(2).max(128),
     forceReleaseAssigned: z.boolean().default(false),
     forceCancelActiveOrder: z.boolean().default(false),
-  });
+  }).strict();
 
   fastify.get(
     "/admin/payment-addresses/monitor-status",
@@ -1246,11 +1247,13 @@ export default async function orderRoutes(fastify: FastifyInstance) {
       ]);
 
       const counts = {
+        pendingApproval: 0,
         available: 0,
         assigned: 0,
         retired: 0,
       };
       for (const row of grouped as any[]) {
+        if (row.status === "pending_approval") counts.pendingApproval = row._count.id;
         if (row.status === "available") counts.available = row._count.id;
         if (row.status === "assigned") counts.assigned = row._count.id;
         if (row.status === "retired") counts.retired = row._count.id;
@@ -1320,6 +1323,10 @@ export default async function orderRoutes(fastify: FastifyInstance) {
           network: r.network,
           addressMasked: r.addressMasked || addressMasked(r.address),
           status: r.status,
+          approvedAt: r.approvedAt ? new Date(r.approvedAt).toISOString() : null,
+          activationReadyAt: r.activationReadyAt ? new Date(r.activationReadyAt).toISOString() : null,
+          autoCreditFrozenAt: r.autoCreditFrozenAt ? new Date(r.autoCreditFrozenAt).toISOString() : null,
+          autoCreditFreezeReason: r.autoCreditFreezeReason || null,
           assignedOrderId: r.assignedOrderId || null,
           assignedAt: r.assignedAt ? new Date(r.assignedAt).toISOString() : null,
           releaseAt: r.releaseAt ? new Date(r.releaseAt).toISOString() : null,
@@ -1352,6 +1359,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
       const done = await prisma.$transaction(async (tx: any) => {
         const row: any = await tx.paymentAddress.findUnique({ where: { id } });
         if (!row) return { notFound: true };
+        await verifyAndFreezePaymentAddressIntegrity(tx, row, "reveal");
         await tx.adminAuditLog.create({
           data: {
             adminId: admin.adminId,
@@ -1408,22 +1416,28 @@ export default async function orderRoutes(fastify: FastifyInstance) {
               network,
               address: trimmed,
               addressMasked: addressMasked(trimmed),
-              status: "available",
+              status: "pending_approval",
+              createdBy: admin.adminId,
             },
+          });
+          const integrityMac = computePaymentAddressIntegrityMac(created);
+          const finalized: any = await tx.paymentAddress.update({
+            where: { id: created.id },
+            data: { integrityMac },
           });
           await tx.adminAuditLog.create({
             data: {
               adminId: admin.adminId,
-              action: "payment_address.add",
+              action: "payment_address.create_pending_approval",
               objectType: "payment_address",
               objectId: String(created.id),
-              reason: "finance: 新增 USDT 收款地址",
+              reason: "finance: 新增 USDT 收款地址，待 super_admin 复核",
               ipAddress: (req.ip as string) || null,
               userAgent: (req.headers["user-agent"] as string) || null,
-              afterValue: { network, addressMasked: addressMasked(trimmed) },
+              afterValue: { network, addressMasked: addressMasked(trimmed), status: "pending_approval" },
             },
           });
-          return created;
+          return finalized;
         });
         return reply.status(201).send({ ok: true, id: row.id, addressMasked: row.addressMasked, status: row.status });
       } catch (e: any) {
@@ -1432,6 +1446,71 @@ export default async function orderRoutes(fastify: FastifyInstance) {
         }
         throw e;
       }
+    },
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    "/admin/payment-addresses/:id/approve",
+    { preHandler: [requireAdmin("*")] },
+    async (req, reply) => {
+      const admin = (req as any).admin as { adminId: string; role: string; email: string };
+      if (admin.role !== "super_admin") {
+        return reply.status(403).send({ error: "forbidden", message: "仅 super_admin 可批准收款地址" });
+      }
+      const body = approveAddressSchema.safeParse(req.body ?? {});
+      if (!body.success) return reply.status(400).send({ error: "bad_request", details: body.error.issues });
+      const id = req.params.id;
+      const done = await prisma.$transaction(async (tx: any) => {
+        const row: any = await tx.paymentAddress.findUnique({ where: { id } });
+        if (!row) return { notFound: true };
+        if (row.status === "available") return { idempotent: true, row };
+        if (row.status !== "pending_approval") return { conflict: "bad_status", row };
+        if (row.createdBy && row.createdBy === admin.adminId) return { conflict: "self_approval_forbidden" };
+        const verify = await verifyAndFreezePaymentAddressIntegrity(tx, row, "assign");
+        if (!verify.ok) return { conflict: "integrity_failed" };
+        const activationReadyAt = new Date(Date.now() + 10 * 60 * 1000);
+        const updated: any = await tx.paymentAddress.update({
+          where: { id },
+          data: {
+            status: "available",
+            approvedBy: admin.adminId,
+            approvedAt: new Date(),
+            activationReadyAt,
+            lastIntegrityCheckAt: new Date(),
+          },
+        });
+        await tx.adminAuditLog.create({
+          data: {
+            adminId: admin.adminId,
+            action: "payment_address.approve",
+            objectType: "payment_address",
+            objectId: String(id),
+            reason: body.data.reason,
+            ipAddress: (req.ip as string) || null,
+            userAgent: (req.headers["user-agent"] as string) || null,
+            beforeValue: { status: row.status, createdBy: row.createdBy || null },
+            afterValue: { status: updated.status, activationReadyAt: activationReadyAt.toISOString() },
+          },
+        });
+        return { ok: true, row: updated };
+      });
+      if ((done as any).notFound) return reply.status(404).send({ error: "not_found" });
+      if ((done as any).conflict === "self_approval_forbidden") {
+        return reply.status(409).send({ error: "self_approval_forbidden", message: "同一管理员不能申请并批准同一收款地址。" });
+      }
+      if ((done as any).conflict === "bad_status") {
+        return reply.status(409).send({ error: "bad_status", message: "当前地址状态不允许批准。" });
+      }
+      if ((done as any).conflict === "integrity_failed") {
+        return reply.status(409).send({ error: "payment_address_integrity_failed", message: "地址完整性校验失败，已冻结自动入账。" });
+      }
+      return reply.send({
+        ok: true,
+        idempotent: !!(done as any).idempotent,
+        id,
+        status: (done as any).row.status,
+        activationReadyAt: (done as any).row.activationReadyAt ? new Date((done as any).row.activationReadyAt).toISOString() : null,
+      });
     },
   );
 
@@ -1449,7 +1528,12 @@ export default async function orderRoutes(fastify: FastifyInstance) {
         const done = await prisma.$transaction(async (tx: any) => {
           const row: any = await tx.paymentAddress.findUnique({ where: { id } });
           if (!row) return { notFound: true };
+          const verify = await verifyAndFreezePaymentAddressIntegrity(tx, row, "retire");
+          if (!verify.ok) return { conflict: "integrity_failed" };
           if (row.status === "retired") return { idempotent: true, row };
+          if (row.status === "pending_approval") {
+            return { conflict: "pending_approval", detail: "address_still_pending_approval" };
+          }
           let activeOrder: any = null;
           if (row.assignedOrderId) {
             activeOrder = await tx.order.findUnique({ where: { id: row.assignedOrderId } });
@@ -1548,6 +1632,12 @@ export default async function orderRoutes(fastify: FastifyInstance) {
             orderStatus: d?.orderStatus,
             message: d?.message,
           });
+        }
+        if ((done as any).conflict === "integrity_failed") {
+          return reply.status(409).send({ error: "payment_address_integrity_failed", message: "地址完整性校验失败，已冻结自动入账。" });
+        }
+        if ((done as any).conflict === "pending_approval") {
+          return reply.status(409).send({ error: "pending_approval", message: "地址仍处于待批准状态，不能停用或投入使用。" });
         }
         return reply.send({
           ok: true,

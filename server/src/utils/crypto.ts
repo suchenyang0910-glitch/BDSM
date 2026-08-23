@@ -196,5 +196,16 @@ export function collectRequiredSecretProblems(): RequiredSecretResult {
     });
   }
 
+  // (7) 收款地址完整性密钥：生产必须存在且与其他用途密钥物理分离。
+  // 缺失时不允许“降级为跳过校验”，否则地址池篡改防护形同虚设。
+  if (process.env.NODE_ENV === "production") {
+    const v = process.env.PAYMENT_ADDRESS_INTEGRITY_KEY || "";
+    if (!v) missing.push({ name: "PAYMENT_ADDRESS_INTEGRITY_KEY", reason: "missing (dedicated >=32 bytes; payment address integrity guard must fail closed)" });
+    else if (Buffer.byteLength(v, "utf8") < 32) missing.push({ name: "PAYMENT_ADDRESS_INTEGRITY_KEY", reason: `< 32 bytes (got ${Buffer.byteLength(v, "utf8")})` });
+    else if ([process.env.CRYPTO_HMAC_SECRET, process.env.CRYPTO_CHAT_ID_AES_KEY, process.env.JWT_SECRET, process.env.TELEGRAM_INVITE_BOT_KEY].includes(v)) {
+      missing.push({ name: "PAYMENT_ADDRESS_INTEGRITY_KEY", reason: "must be dedicated and must NOT reuse HMAC/AES/JWT/Bot configuration" });
+    }
+  }
+
   return missing.length > 0 ? { ok: false, missing } : { ok: true };
 }

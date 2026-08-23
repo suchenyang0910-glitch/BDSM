@@ -39,10 +39,12 @@ import {
   appendTelegramTagLine,
 } from "../services/seoMetadata.js";
 import { randomBytes, createHash } from "node:crypto";
+import { decryptChatIdAesGcm } from "../utils/crypto.js";
 
 const ContentStatusZ = z.enum(["draft", "pending_review", "published", "archived", "scheduled"]);
 const BannerStatusZ = z.enum(["draft", "active", "inactive", "scheduled", "archived"]);
 const BannerTargetTypeZ = z.enum(["none", "content", "category", "product", "external", "package"]);
+const MAX_FULL_VIDEO_BYTES = 8n * 1024n * 1024n * 1024n;
 
 function adminMeta(req: FastifyRequest) {
   const sess = (req as any).admin as AdminSession;
@@ -159,6 +161,45 @@ function normalizeStoredTelegramTags(input: unknown): string[] {
   return normalizeTelegramHashtagsFromInputs([Array.isArray(input) ? input : []]);
 }
 
+function maskTelegramMessageId(messageId: bigint | number | string | null | undefined): string | null {
+  if (messageId == null) return null;
+  const raw = String(messageId);
+  if (raw.length <= 4) return raw;
+  return `***${raw.slice(-4)}`;
+}
+
+function getAllowedChannelMessageFilter(content: {
+  accessType: AccessTypeBound;
+  packageId?: string | null;
+}) {
+  if (content.accessType === "public") {
+    return { purpose: "free_preview" as const };
+  }
+  if (content.accessType === "membership") {
+    return { purpose: "membership_main" as const };
+  }
+  if (content.accessType === "package") {
+    return { purpose: "package_channel" as const, packageId: content.packageId || null };
+  }
+  return null;
+}
+
+function serializeChannelMessageRow(row: any) {
+  return {
+    id: row.id,
+    managedChannelId: row.managedChannelId,
+    channelLabel: row.managedChannel?.title || row.managedChannel?.username || "受控频道",
+    channelPurpose: row.managedChannel?.purpose || "none",
+    packageId: row.managedChannel?.packageId || null,
+    mediaKind: row.mediaKind,
+    postedAt: row.postedAt ? new Date(row.postedAt).toISOString() : null,
+    associationStatus: row.associationStatus,
+    contentId: row.contentId || null,
+    linkedAt: row.linkedAt ? new Date(row.linkedAt).toISOString() : null,
+    messageIdMasked: maskTelegramMessageId(row.messageId),
+  };
+}
+
 type AccessTypeBound = "public" | "single" | "membership" | "package";
 interface ContentAccessValidationContext {
   prisma: PrismaClient;
@@ -195,7 +236,7 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   ];
   for (const fk of fkChecks) {
     if (!fk.id) continue;
-    const a = await prisma.mediaAsset.findUnique({ where: { id: fk.id }, select: { id: true, status: true, kind: true } });
+    const a = await prisma.mediaAsset.findUnique({ where: { id: fk.id }, select: { id: true, status: true, kind: true, contentLength: true } });
     if (!a) {
       return { ok: false, status: 404, error: `${fk.key}_not_found`, message: `指定的素材不存在（${fk.key}=${fk.id}），请先完成素材上传并校验通过。` };
     }
@@ -205,12 +246,15 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
     if (fk.expectedKind && a.kind !== fk.expectedKind) {
       return { ok: false, status: 409, error: `${fk.key}_kind_mismatch`, message: `素材类型不匹配：${fk.key} 必须是 ${fk.expectedKind}，实际为 ${a.kind}。` };
     }
+    if (fk.key === "fullVideoAssetId" && a.contentLength != null && BigInt(String(a.contentLength)) > MAX_FULL_VIDEO_BYTES) {
+      return { ok: false, status: 400, error: "full_video_too_large", message: "完整视频文件超过 8GB，服务端拒绝保存或发布该素材。" };
+    }
   }
 
   // —— 强业务矩阵校验：accessType × 素材
   if (accessType === "public") {
     if (fullVideoAssetId) {
-      return { ok: false, status: 400, error: "public_forbids_full_video", message: "public（免费预览）类型禁止上传或绑定完整视频；完整视频仅允许在会员/内容包私密频道交付。" };
+      return { ok: false, status: 400, error: "full_video_not_allowed_for_public", message: "public（免费预览）类型禁止上传或绑定完整视频；完整视频仅允许在会员/内容包私密频道交付。" };
     }
     if (!previewAssetId) {
       return { ok: false, status: 400, error: "public_requires_preview_asset", message: "public 类型必须上传并绑定试看视频（previewAssetId，30–60 秒并已加水印）。" };
@@ -469,6 +513,15 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
   });
   const ZPUBLISH_JOBS_QP = z.object({
     limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+  });
+  const ZCHANNEL_MESSAGES_QP = z.object({
+    status: z.enum(["unlinked", "linked"]).optional(),
+    purpose: z.enum(["free_preview", "membership_main", "package_channel"]).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional().default(30),
+  });
+  const ZLINK_CHANNEL_MESSAGE = z.object({
+    channelMessageId: z.string().uuid(),
+    reason: z.string().max(500).optional(),
   });
 
   // —— 免费频道白名单枚举（只暴露 code/label/描述，绝不暴露 chatId）
@@ -1972,6 +2025,247 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           updatedAt: r.updatedAt,
         })),
       });
+    },
+  );
+
+  fastify.get(
+    "/admin/channel-messages",
+    { preHandler: [requireAdmin("content:view")] },
+    async (req: any, reply) => {
+      const qp = ZCHANNEL_MESSAGES_QP.parse(req.query || {});
+      const rows = await (prisma as any).telegramChannelMessage.findMany({
+        where: {
+          associationStatus: qp.status,
+          managedChannel: qp.purpose ? { purpose: qp.purpose } : undefined,
+        },
+        include: {
+          managedChannel: { select: { id: true, title: true, username: true, purpose: true, packageId: true } },
+        },
+        orderBy: [{ postedAt: "desc" }],
+        take: qp.limit,
+      });
+      return reply.send({ items: rows.map((row: any) => serializeChannelMessageRow(row)) });
+    },
+  );
+
+  fastify.get(
+    "/admin/contents/:id/linkable-channel-messages",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const contentId = ZID.parse(req.params.id);
+      const qp = ZCHANNEL_MESSAGES_QP.parse(req.query || {});
+      const content = await prisma.content.findUnique({
+        where: { id: contentId },
+        select: { id: true, accessType: true, packageId: true, title: true },
+      });
+      if (!content) return reply.status(404).send({ error: "not_found", message: "内容不存在" });
+      const filter = getAllowedChannelMessageFilter({ accessType: content.accessType as AccessTypeBound, packageId: content.packageId });
+      if (!filter) {
+        return reply.status(409).send({ error: "channel_message_link_not_supported", message: "当前内容类型不支持频道消息关联。" });
+      }
+      const rows = await (prisma as any).telegramChannelMessage.findMany({
+        where: {
+          associationStatus: qp.status || "unlinked",
+          managedChannel: {
+            purpose: filter.purpose,
+            ...(filter.packageId ? { packageId: filter.packageId } : {}),
+          },
+        },
+        include: {
+          managedChannel: { select: { id: true, title: true, username: true, purpose: true, packageId: true } },
+        },
+        orderBy: [{ postedAt: "desc" }],
+        take: qp.limit,
+      });
+      const currentLink = await (prisma as any).telegramChannelMessage.findUnique({
+        where: { contentId },
+        include: {
+          managedChannel: { select: { id: true, title: true, username: true, purpose: true, packageId: true } },
+        },
+      });
+      return reply.send({
+        contentId,
+        accessType: content.accessType,
+        currentLink: currentLink ? serializeChannelMessageRow(currentLink) : null,
+        items: rows.map((row: any) => serializeChannelMessageRow(row)),
+      });
+    },
+  );
+
+  fastify.post(
+    "/admin/contents/:id/link-channel-message",
+    { preHandler: [requireAdmin("content:publish")] },
+    async (req: any, reply) => {
+      const contentId = ZID.parse(req.params.id);
+      const body = ZLINK_CHANNEL_MESSAGE.parse(req.body || {});
+      const meta = adminMeta(req);
+      const content = await prisma.content.findUnique({
+        where: { id: contentId },
+        select: { id: true, title: true, accessType: true, packageId: true, telegramMessageId: true, telegramSentAt: true, telegramChatFingerprint: true },
+      });
+      if (!content) return reply.status(404).send({ error: "not_found", message: "内容不存在" });
+      const filter = getAllowedChannelMessageFilter({ accessType: content.accessType as AccessTypeBound, packageId: content.packageId });
+      if (!filter) {
+        return reply.status(409).send({ error: "channel_message_link_not_supported", message: "当前内容类型不支持频道消息关联。" });
+      }
+      const rawRow = await (prisma as any).telegramChannelMessage.findUnique({
+        where: { id: body.channelMessageId },
+        include: {
+          managedChannel: {
+            select: { id: true, title: true, username: true, purpose: true, packageId: true, chatIdCiphertextB64: true, deprecatedChatIdBig: true },
+          },
+        },
+      });
+      if (!rawRow) return reply.status(404).send({ error: "channel_message_not_found", message: "频道消息不存在" });
+      if (rawRow.associationStatus !== "unlinked" || rawRow.contentId) {
+        return reply.status(409).send({ error: "channel_message_already_linked", message: "该频道消息已关联，不能重复绑定。" });
+      }
+      if (rawRow.managedChannel?.purpose !== filter.purpose || (filter.packageId && rawRow.managedChannel?.packageId !== filter.packageId)) {
+        return reply.status(409).send({ error: "channel_message_purpose_mismatch", message: "该频道消息与当前内容的访问类型或内容包不匹配。" });
+      }
+      const chatId = rawRow.managedChannel?.chatIdCiphertextB64
+        ? (() => { try { return decryptChatIdAesGcm(rawRow.managedChannel.chatIdCiphertextB64); } catch { return null; } })()
+        : (typeof rawRow.managedChannel?.deprecatedChatIdBig === "bigint" ? rawRow.managedChannel.deprecatedChatIdBig : null);
+      const chatFingerprint = chatId ? chatIdFingerprint(chatId) : null;
+      const linkedAt = new Date();
+      const after = await prisma.$transaction(async (tx: any) => {
+        const existingForContent = await tx.telegramChannelMessage.findUnique({ where: { contentId } });
+        if (existingForContent) {
+          throw Object.assign(new Error("content_already_has_linked_message"), { statusCode: 409, code: "CONTENT_ALREADY_LINKED" });
+        }
+        const current = await tx.telegramChannelMessage.findUnique({ where: { id: body.channelMessageId } });
+        if (!current || current.associationStatus !== "unlinked" || current.contentId) {
+          throw Object.assign(new Error("channel_message_already_linked"), { statusCode: 409 });
+        }
+        await tx.telegramChannelMessage.update({
+          where: { id: body.channelMessageId },
+          data: {
+            associationStatus: "linked",
+            contentId,
+            linkedAt,
+            linkedBy: meta.adminId,
+          },
+        });
+        const updatedContent = await tx.content.update({
+          where: { id: contentId },
+          data: {
+            telegramMessageId: rawRow.messageId,
+            telegramSentAt: rawRow.postedAt,
+            telegramChatFingerprint: chatFingerprint,
+            lastEditorId: meta.adminId,
+          },
+        });
+        await writeAudit(
+          tx,
+          meta,
+          "content.channel_message.link",
+          "content",
+          contentId,
+          stripSensitiveFields({
+            telegramMessageId: content.telegramMessageId,
+            telegramSentAt: content.telegramSentAt,
+            telegramChatFingerprint: content.telegramChatFingerprint,
+          }),
+          stripSensitiveFields({
+            telegramMessageId: rawRow.messageId,
+            telegramSentAt: rawRow.postedAt,
+            telegramChatFingerprint: chatFingerprint,
+            channelMessageId: rawRow.id,
+            channelLabel: rawRow.managedChannel?.title || rawRow.managedChannel?.username || "受控频道",
+          }),
+          body.reason || "关联频道消息到内容",
+        );
+        return updatedContent;
+      }).catch((err: any) => {
+        if (err?.statusCode === 409) return err;
+        throw err;
+      });
+      if (after instanceof Error) {
+        const afterErr = after as Error & { code?: string };
+        return reply.status(409).send({
+          error: afterErr.code === "CONTENT_ALREADY_LINKED" ? "content_already_has_linked_message" : "channel_message_already_linked",
+          message: afterErr.code === "CONTENT_ALREADY_LINKED" ? "当前内容已关联一条频道消息，如需更换请先解除关联。" : "该频道消息已关联，不能重复绑定。",
+        });
+      }
+      return reply.send({
+        ok: true,
+        contentId,
+        messageKind: rawRow.mediaKind,
+        postedAt: rawRow.postedAt ? new Date(rawRow.postedAt).toISOString() : null,
+        channelLabel: rawRow.managedChannel?.title || rawRow.managedChannel?.username || "受控频道",
+        status: "linked",
+        currentLink: serializeChannelMessageRow({
+          ...rawRow,
+          associationStatus: "linked",
+          contentId,
+          linkedAt,
+        }),
+      });
+    },
+  );
+
+  fastify.post(
+    "/admin/contents/:id/unlink-channel-message",
+    { preHandler: [requireAdmin()] },
+    async (req: any, reply) => {
+      const contentId = ZID.parse(req.params.id);
+      const body = ZAUDIT_REASON.parse(req.body || {});
+      const meta = adminMeta(req);
+      if (meta.adminRole !== "super_admin") {
+        return reply.status(403).send({ error: "forbidden", message: "权限不足，需要 super_admin" });
+      }
+      const linked = await (prisma as any).telegramChannelMessage.findUnique({
+        where: { contentId },
+        include: { managedChannel: { select: { id: true, title: true, username: true } } },
+      });
+      if (!linked) {
+        return reply.status(404).send({ error: "channel_message_not_linked", message: "当前内容没有已关联的频道消息。" });
+      }
+      const beforeContent = await prisma.content.findUnique({
+        where: { id: contentId },
+        select: { telegramMessageId: true, telegramSentAt: true, telegramChatFingerprint: true },
+      });
+      await prisma.$transaction(async (tx: any) => {
+        await tx.telegramChannelMessage.update({
+          where: { id: linked.id },
+          data: {
+            associationStatus: "unlinked",
+            contentId: null,
+            linkedAt: null,
+            linkedBy: null,
+          },
+        });
+        await tx.content.update({
+          where: { id: contentId },
+          data: {
+            telegramMessageId: null,
+            telegramSentAt: null,
+            telegramChatFingerprint: null,
+            lastEditorId: meta.adminId,
+          },
+        });
+        await writeAudit(
+          tx,
+          meta,
+          "content.channel_message.unlink",
+          "content",
+          contentId,
+          stripSensitiveFields({
+            channelMessageId: linked.id,
+            telegramMessageId: beforeContent?.telegramMessageId,
+            telegramSentAt: beforeContent?.telegramSentAt,
+            telegramChatFingerprint: beforeContent?.telegramChatFingerprint,
+          }),
+          stripSensitiveFields({
+            channelMessageId: null,
+            telegramMessageId: null,
+            telegramSentAt: null,
+            telegramChatFingerprint: null,
+          }),
+          body.reason || "解除频道消息关联",
+        );
+      });
+      return reply.send({ ok: true, contentId, status: "unlinked" });
     },
   );
 

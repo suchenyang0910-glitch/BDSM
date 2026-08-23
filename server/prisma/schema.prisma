@@ -72,6 +72,7 @@ enum BannerStatus {
 enum BannerTargetType {
   content
   package
+  membership
   category
   external
 }
@@ -163,9 +164,31 @@ enum PaymentTransactionStatus {
 }
 
 enum PaymentAddressStatus {
+  pending_approval
   available
   assigned
   retired
+}
+
+enum AnalyticsPlatform {
+  h5
+  telegram_mini_app
+  server
+  unknown
+}
+
+enum PreferenceType {
+  content_topic
+  content_format
+  discovery_mode
+  notification
+}
+
+enum PreferenceSource {
+  guest_onboarding
+  my_preferences
+  first_browse_prompt
+  migration_confirmed
 }
 
 // === Core Tables ===
@@ -186,6 +209,8 @@ model User {
   supportTickets  SupportTicket[]
   authoredTicketEvents TicketEvent[]
   deviceSessions  H5DeviceSession[]
+  analyticsEvents AnalyticsEvent[]
+  contentPreferences UserContentPreference[]
   mergedFromUsers User[]    @relation("UserMergeTarget")
   mergedTargetUser User?    @relation("UserMergeTarget", fields: [mergedIntoUserId], references: [id], onDelete: SetNull)
 
@@ -222,6 +247,7 @@ model Category {
 
   contents   ContentCategory[]
   banners    Banner[]
+  preferenceSelections UserContentPreference[]
 
   @@index([status, sortOrder])
   @@map("categories")
@@ -349,6 +375,7 @@ model Content {
   previewAsset       MediaAsset?    @relation("ContentPreviewAsset", fields: [previewAssetId], references: [id], onDelete: SetNull)
   fullVideoAsset     MediaAsset?    @relation("ContentFullVideoAsset", fields: [fullVideoAssetId], references: [id], onDelete: SetNull)
   publishJobs        TelegramPublishJob[]
+  linkedChannelMessage TelegramChannelMessage?
 
   @@index([status, accessType])
   @@index([isFeatured, featuredSort])
@@ -373,6 +400,67 @@ model PlatformMetadata {
   updatedBy        String?  @map("updated_by")
 
   @@map("platform_metadata")
+}
+
+model AnalyticsEvent {
+  id               String            @id @default(uuid())
+  occurredAt       DateTime          @map("occurred_at")
+  eventName        String            @map("event_name") @db.VarChar(64)
+  userId           String?           @map("user_id")
+  anonymousIdHmac  String            @map("anonymous_id_hmac") @db.VarChar(64)
+  userIdHmac       String?           @map("user_id_hmac") @db.VarChar(64)
+  sessionIdHmac    String            @map("session_id_hmac") @db.VarChar(64)
+  platform         AnalyticsPlatform @default(unknown)
+  propertiesJson   Json?             @map("properties_json")
+  createdAt        DateTime          @default(now()) @map("created_at")
+
+  user             User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([eventName, occurredAt])
+  @@index([platform, eventName, occurredAt])
+  @@index([sessionIdHmac, occurredAt])
+  @@index([anonymousIdHmac, occurredAt])
+  @@index([userId, occurredAt])
+  @@map("analytics_events")
+}
+
+model AnalyticsDailyAggregate {
+  id                String            @id @default(uuid())
+  statDate          DateTime          @map("stat_date") @db.Date
+  eventName         String            @map("event_name") @db.VarChar(64)
+  platform          AnalyticsPlatform @default(unknown)
+  groupKey          String?           @map("group_key") @db.VarChar(64)
+  groupValue        String?           @map("group_value") @db.VarChar(128)
+  sampleCount       Int               @default(0) @map("sample_count")
+  uniqueSessions    Int               @default(0) @map("unique_sessions")
+  uniqueAnonymous   Int               @default(0) @map("unique_anonymous")
+  uniqueUsers       Int               @default(0) @map("unique_users")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  @@index([statDate, eventName])
+  @@index([platform, statDate])
+  @@index([groupKey, groupValue, statDate])
+  @@map("analytics_daily_aggregates")
+}
+
+model UserContentPreference {
+  id              String           @id @default(uuid())
+  userId          String           @map("user_id")
+  categoryId      String?          @map("category_id")
+  preferenceType  PreferenceType   @map("preference_type")
+  valueKey        String           @map("value_key") @db.VarChar(64)
+  isEnabled       Boolean          @default(true) @map("is_enabled")
+  source          PreferenceSource @default(my_preferences)
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category        Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([userId, preferenceType, isEnabled])
+  @@index([categoryId, preferenceType])
+  @@map("user_content_preferences")
 }
 
 model ContentCategory {
@@ -476,12 +564,21 @@ model PaymentAddress {
   network          String               @default("tron_trc20") @map("network") @db.VarChar(32)
   address          String               @unique @map("address") @db.VarChar(64)
   addressMasked    String               @map("address_masked") @db.VarChar(16)
-  status           PaymentAddressStatus @default(available) @map("status")
+  status           PaymentAddressStatus @default(pending_approval) @map("status")
   assignedOrderId  String?              @unique @map("assigned_order_id")
   assignedAt       DateTime?            @map("assigned_at")
   releaseAt        DateTime?            @map("release_at")
   retiredAt        DateTime?            @map("retired_at")
   retireReason     String?              @map("retire_reason") @db.VarChar(128)
+  createdBy        String?              @map("created_by")
+  approvedBy       String?              @map("approved_by")
+  approvedAt       DateTime?            @map("approved_at")
+  activationReadyAt DateTime?           @map("activation_ready_at")
+  lifecycleVersion Int                  @default(1) @map("lifecycle_version")
+  integrityMac     String?              @map("integrity_mac") @db.VarChar(64)
+  autoCreditFrozenAt DateTime?          @map("auto_credit_frozen_at")
+  autoCreditFreezeReason String?        @map("auto_credit_freeze_reason") @db.VarChar(128)
+  lastIntegrityCheckAt DateTime?        @map("last_integrity_check_at")
   createdAt        DateTime             @default(now()) @map("created_at")
   updatedAt        DateTime             @updatedAt @map("updated_at")
 
@@ -604,6 +701,7 @@ model AdminUser {
   publishJobsAsAdmin TelegramPublishJob[] @relation("PublishJobAdmin")
   publishJobsAsCancelAdmin TelegramPublishJob[] @relation("PublishJobCancelAdmin")
   channelDiscoveryRequests AdminChannelDiscoveryRequest[] @relation("ChannelDiscoverySubmitAdmin")
+  linkedChannelMessages TelegramChannelMessage[] @relation("ChannelMessageLinkAdmin")
 
   @@map("admin_users")
 }
@@ -767,6 +865,7 @@ model AdminManagedChannel {
 
   package             ContentPackage?         @relation(fields: [packageId], references: [id], onDelete: SetNull)
   discoveryRequests   AdminChannelDiscoveryRequest[] @relation("ResolvedManagedChannel")
+  channelMessages     TelegramChannelMessage[]
 
   @@unique([chatIdHmac], map: "admin_managed_channels_chat_id_hmac_key")
   @@unique([packageId], map: "admin_managed_channels_package_id_key")
@@ -831,6 +930,31 @@ model TelegramUpdateLog {
   @@index([botKey, createdAt])
   @@unique([updateId, botKey])
   @@map("telegram_update_logs")
+}
+
+model TelegramChannelMessage {
+  id                   String   @id @default(uuid())
+  managedChannelId     String   @map("managed_channel_id")
+  messageId            BigInt   @map("message_id")
+  mediaKind            String   @map("media_kind") @db.VarChar(32)
+  telegramFileIdCipher String?  @map("telegram_file_id_cipher")
+  previewFileIdCipher  String?  @map("preview_file_id_cipher")
+  captionFingerprint   String?  @map("caption_fingerprint") @db.VarChar(64)
+  postedAt             DateTime @map("posted_at")
+  associationStatus    String   @default("unlinked") @map("association_status") @db.VarChar(32)
+  contentId            String?  @unique @map("content_id")
+  linkedAt             DateTime? @map("linked_at")
+  linkedBy             String?  @map("linked_by")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  managedChannel       AdminManagedChannel @relation(fields: [managedChannelId], references: [id], onDelete: Cascade)
+  content              Content?            @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  linkedByAdmin        AdminUser?          @relation("ChannelMessageLinkAdmin", fields: [linkedBy], references: [id], onDelete: SetNull)
+
+  @@unique([managedChannelId, messageId])
+  @@index([managedChannelId, associationStatus, postedAt])
+  @@index([associationStatus, postedAt])
+  @@map("telegram_channel_messages")
 }
 
 enum MediaAssetKind {

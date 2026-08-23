@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { kickChannelMember, sendDirectMessage, refMembershipMain, maskChatIdSafe, chatIdFingerprint } from "./telegramBot.js";
 import { hmacSha256Hex, userIdIndexKey } from "../utils/crypto.js";
 import { extractPrismaCodeOnly } from "../utils/structuredError.js";
+import { verifyAndFreezePaymentAddressIntegrity } from "./paymentAddressIntegrity.js";
 import { notifyPaymentSuccess } from "./paymentSuccessNotifier.js";
 
 type Tx = any;
@@ -602,8 +603,8 @@ export type UsdtChainEventConfirmResult = {
   entitlements?: any[];
 };
 
-export function rawEventHashForUsdt(source: string, network: string, txHash: string): string {
-  return hmacSha256Hex(`usdt_event:${source}:${network}:${txHash}`);
+export function rawEventHashForUsdt(source: string, network: string, txHash: string, logIndex: number = 0): string {
+  return hmacSha256Hex(`usdt_event:${source}:${network}:${txHash}:${logIndex}`);
 }
 
 export async function confirmUsdtChainEvent(
@@ -612,6 +613,7 @@ export async function confirmUsdtChainEvent(
     source: string;
     network: string;
     txHash: string;
+    logIndex?: number;
     tokenContract: string;
     fromAddress: string;
     toAddress: string;
@@ -646,7 +648,7 @@ export async function confirmUsdtChainEvent(
     return { status: "rejected", idempotent: false, rejectReason: "bad_amount" };
   }
   const confirmations = Number(opts.confirmations || 0);
-  const rawEventHash = rawEventHashForUsdt(opts.source || "default", opts.network, opts.txHash);
+  const rawEventHash = rawEventHashForUsdt(opts.source || "default", opts.network, opts.txHash, opts.logIndex ?? 0);
 
   // 匹配订单
   const candidateOrder: any = await prisma.order.findFirst({
@@ -691,6 +693,40 @@ export async function confirmUsdtChainEvent(
       return { status: "rejected", idempotent: false, errorClass: `tx_${e?.code}`, rejectReason: "db_error" };
     }
     return { status: "rejected", idempotent: false, rejectReason: "no_matching_order_or_amount" };
+  }
+
+  const integrity = await verifyAndFreezePaymentAddressIntegrity(prisma, candidateOrder.usdtPaymentAddress, "confirm");
+  if (!integrity.ok || candidateOrder.usdtPaymentAddress?.status !== "assigned") {
+    try {
+      await prisma.paymentTransaction.create({
+        data: {
+          orderId: candidateOrder.id,
+          provider: "tron",
+          status: "rejected",
+          providerChargeId: opts.txHash,
+          network: opts.network,
+          tokenContract: opts.tokenContract,
+          toAddress: opts.toAddress,
+          fromAddress: opts.fromAddress,
+          amountMinor,
+          currency: "USDT",
+          confirmations,
+          confirmationsTarget,
+          rawEventHash,
+          blockNumber: opts.blockNumber ? BigInt(String(opts.blockNumber)) : null,
+          receivedAt: opts.receivedAt || new Date(),
+          rejectedAt: new Date(),
+          rejectReason: !integrity.ok ? "payment_address_integrity_failed" : "payment_address_not_assigned",
+        },
+      });
+    } catch (e: any) {
+      if (e?.code === "P2002") return { status: "idempotent", idempotent: true };
+    }
+    return {
+      status: "rejected",
+      idempotent: false,
+      rejectReason: !integrity.ok ? "payment_address_integrity_failed" : "payment_address_not_assigned",
+    };
   }
 
   if (candidateOrder.status === "paid") {

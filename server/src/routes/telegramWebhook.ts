@@ -51,6 +51,13 @@ type BotMembershipInfo = {
   canRestrictMembers: boolean;
 };
 
+type ChannelPostMessageInfo = {
+  messageId: bigint;
+  mediaKind: "video" | "photo" | "document" | "text";
+  postedAt: Date;
+  captionFingerprint: string | null;
+};
+
 function extractChatFromUpdate(raw: any): UpdateChatInfo | null {
   const u = raw && typeof raw === "object" ? raw : null;
   if (!u) return null;
@@ -97,6 +104,26 @@ function extractBotMembershipFromUpdate(raw: any): BotMembershipInfo | null {
   };
 }
 
+function extractChannelPostMessage(raw: any): ChannelPostMessageInfo | null {
+  const msg = raw?.channel_post || raw?.edited_channel_post;
+  if (!msg || typeof msg !== "object" || typeof msg.message_id === "undefined") return null;
+  const mediaKind =
+    msg.video ? "video" :
+    Array.isArray(msg.photo) && msg.photo.length > 0 ? "photo" :
+    msg.document ? "document" :
+    "text";
+  const captionSource =
+    typeof msg.caption === "string" && msg.caption.trim()
+      ? msg.caption.trim()
+      : (typeof msg.text === "string" && msg.text.trim() ? msg.text.trim() : null);
+  return {
+    messageId: BigInt(String(msg.message_id)),
+    mediaKind,
+    postedAt: typeof msg.date === "number" ? new Date(msg.date * 1000) : new Date(),
+    captionFingerprint: captionSource ? hmacSha256Hex(`telegram_channel_caption:${captionSource}`) : null,
+  };
+}
+
 export default async function telegramWebhookRoutes(fastify: FastifyInstance) {
   // --- 发布期 Gate / 运维：GET /api/telegram/webhook/status（返回不含敏感字段）
   fastify.get(TELEGRAM_WEBHOOK_CONFIG.fixedPath + "/status", async (_req, reply) => {
@@ -130,6 +157,7 @@ export default async function telegramWebhookRoutes(fastify: FastifyInstance) {
     const updateId = BigInt(String(updateIdRaw));
     const chatInfo = extractChatFromUpdate(body);
     const botMembership = extractBotMembershipFromUpdate(body);
+    const channelPostMessage = extractChannelPostMessage(body);
 
     // ===== Phase 0-4 三段式状态机 =====
     // 【Stage A - 短事务：领取 processing】（绝不包含网络 IO）
@@ -418,6 +446,57 @@ export default async function telegramWebhookRoutes(fastify: FastifyInstance) {
               where: { chatIdHmac },
               data: { discoveryErrorCode: "multiple_pending_private_requests" },
             });
+          }
+        }
+
+        if (channelPostMessage && (chatInfo.event === "channel_post" || chatInfo.event === "edited_channel_post")) {
+          const ingested = await (prisma as any).telegramChannelMessage.upsert({
+            where: {
+              managedChannelId_messageId: {
+                managedChannelId: upsertedChannel.id,
+                messageId: channelPostMessage.messageId,
+              },
+            },
+            create: {
+              managedChannelId: upsertedChannel.id,
+              messageId: channelPostMessage.messageId,
+              mediaKind: channelPostMessage.mediaKind,
+              captionFingerprint: channelPostMessage.captionFingerprint,
+              postedAt: channelPostMessage.postedAt,
+              associationStatus: "unlinked",
+            },
+            update: {
+              mediaKind: channelPostMessage.mediaKind,
+              captionFingerprint: channelPostMessage.captionFingerprint,
+              postedAt: channelPostMessage.postedAt,
+            },
+          });
+          try {
+            const systemAdmin = await prisma.adminUser.findFirst({
+              where: { role: "super_admin", status: "active" },
+              select: { id: true },
+              orderBy: { createdAt: "asc" },
+            });
+            if (systemAdmin?.id) {
+              await prisma.adminAuditLog.create({
+                data: {
+                  adminId: systemAdmin.id,
+                  action: "telegram.channel_message.ingested",
+                  objectType: "telegram_channel_message",
+                  objectId: ingested.id,
+                  beforeValue: null,
+                  afterValue: {
+                    channelChatHmac: chatIdHmac,
+                    messageId: channelPostMessage.messageId.toString(),
+                    mediaKind: channelPostMessage.mediaKind,
+                    associationStatus: ingested.associationStatus,
+                  },
+                  reason: "system:webhook_channel_post",
+                },
+              });
+            }
+          } catch {
+            // 审计失败不影响 webhook 主流程
           }
         }
       }

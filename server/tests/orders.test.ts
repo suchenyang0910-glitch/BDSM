@@ -973,7 +973,14 @@ test("USDT chain-event: confirming(confirmations 不足→ confirming，达标�
   const app = await createTestApp(prisma);
   try {
     const addr = await prisma.paymentAddress.create({
-      data: { network: "tron_trc20", address: "TTestChainEvent0000000000005", addressMasked: "TTe…nt5", status: "available" },
+      data: {
+        network: "tron_trc20",
+        address: "TTestChainEvent0000000000005",
+        addressMasked: "TTe…nt5",
+        status: "assigned",
+        assignedAt: new Date(),
+        releaseAt: new Date(Date.now() + 20 * 60 * 1000),
+      },
     });
     const user = await prisma.user.create({ data: { telegramUserId: 7100000005n, displayName: "chain-event-5" } });
     const product = await prisma.product.upsert({
@@ -996,6 +1003,10 @@ test("USDT chain-event: confirming(confirmations 不足→ confirming，达标�
         status: "pending", expiresAt: new Date(Date.now() + 20 * 60 * 1000),
         usdtPaymentAddressId: addr.id,
       },
+    });
+    await prisma.paymentAddress.update({
+      where: { id: addr.id },
+      data: { assignedOrderId: ord.id },
     });
 
     const txHash = "USDT-TEST-TX-HASH-000000005";

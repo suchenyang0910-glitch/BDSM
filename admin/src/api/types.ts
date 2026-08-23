@@ -339,13 +339,17 @@ export type StartTelegramPublishResp = {
   normalizedTelegramTags: string[];
 };
 
-export type PaymentAddressStatus = "available" | "assigned" | "retired";
+export type PaymentAddressStatus = "pending_approval" | "available" | "assigned" | "retired";
 
 export type PaymentAddressItem = {
   id: string;
   network: string;
   addressMasked: string;
   status: PaymentAddressStatus;
+  approvedAt?: string | null;
+  activationReadyAt?: string | null;
+  autoCreditFrozenAt?: string | null;
+  autoCreditFreezeReason?: string | null;
   assignedOrderId: string | null;
   assignedAt: string | null;
   releaseAt: string | null;
@@ -384,6 +388,14 @@ export type PaymentAddressCreateResp = {
   status: PaymentAddressStatus;
 };
 
+export type PaymentAddressApproveResp = {
+  ok: true;
+  idempotent: boolean;
+  id: string;
+  status: PaymentAddressStatus;
+  activationReadyAt: string | null;
+};
+
 export type PaymentAddressRevealResp = {
   ok: true;
   id: string;
@@ -419,6 +431,7 @@ export type PaymentAddressReleaseExpiredResp = {
 export type UsdtMonitorStatusResp = {
   ok: true;
   counts: {
+    pendingApproval?: number;
     available: number;
     assigned: number;
     retired: number;

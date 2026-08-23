@@ -20,6 +20,7 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import {
+  approveAdminPaymentAddress,
   createAdminPaymentAddress,
   errMsg,
   getUsdtMonitorStatus,
@@ -44,6 +45,7 @@ const VIEW_ROLES: AdminRole[] = ["finance", "super_admin"];
 const REVEAL_ROLES: AdminRole[] = ["super_admin"];
 
 const STATUS_META: Record<PaymentAddressStatus, { label: string; color: string }> = {
+  pending_approval: { label: "待复核", color: "processing" },
   available: { label: "可用", color: "green" },
   assigned: { label: "订单占用", color: "gold" },
   retired: { label: "已停用", color: "default" },
@@ -135,6 +137,9 @@ const PaymentAddressesPage: React.FC = () => {
           <Space direction="vertical" size={2}>
             <Text>{row.assignedOrderId || "未占用"}</Text>
             <Text type="secondary" style={{ fontSize: 12 }}>
+              生效：{row.activationReadyAt ? dayjs(row.activationReadyAt).format("MM-DD HH:mm:ss") : "—"}
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
               分配：{row.assignedAt ? dayjs(row.assignedAt).format("MM-DD HH:mm:ss") : "—"}
             </Text>
             <Text type="secondary" style={{ fontSize: 12 }}>
@@ -178,6 +183,23 @@ const PaymentAddressesPage: React.FC = () => {
                 <Button size="small">查看明文</Button>
               </Popconfirm>
             ) : null}
+            {me?.role === "super_admin" && row.status === "pending_approval" ? (
+              <Popconfirm
+                title="批准该收款地址？"
+                description="批准后至少 10 分钟冷却期，期间不会用于新订单。"
+                onConfirm={async () => {
+                  try {
+                    await approveAdminPaymentAddress(row.id);
+                    message.success("已批准，地址将在冷却期后投入地址池。");
+                    await load();
+                  } catch (err) {
+                    message.error("批准失败：" + errMsg(err, "未知错误"));
+                  }
+                }}
+              >
+                <Button size="small" type="primary">批准</Button>
+              </Popconfirm>
+            ) : null}
             <Button size="small" danger disabled={!canManage} onClick={() => {
               setRetireTarget(row);
               retireForm.setFieldsValue({
@@ -210,6 +232,7 @@ const PaymentAddressesPage: React.FC = () => {
       />
 
       <Space size={16} style={{ display: "flex", marginBottom: 16 }} wrap>
+        <Card><Statistic title="待复核地址数" value={monitor?.counts.pendingApproval ?? 0} /></Card>
         <Card><Statistic title="可用地址数" value={monitor?.counts.available ?? 0} /></Card>
         <Card><Statistic title="占用地址数" value={monitor?.counts.assigned ?? 0} /></Card>
         <Card><Statistic title="已停用地址数" value={monitor?.counts.retired ?? 0} /></Card>
@@ -249,7 +272,7 @@ const PaymentAddressesPage: React.FC = () => {
                 address: values.address,
                 network: "tron_trc20",
               });
-              message.success("收款地址已加入地址池。");
+              message.success("收款地址已提交，等待不同 super_admin 复核。");
               createForm.resetFields();
               await load();
             } catch (err) {
@@ -309,6 +332,7 @@ const PaymentAddressesPage: React.FC = () => {
         >
           <Form.Item name="status" label="状态">
             <Select allowClear style={{ width: 160 }} options={[
+              { value: "pending_approval", label: "待复核" },
               { value: "available", label: "可用" },
               { value: "assigned", label: "订单占用" },
               { value: "retired", label: "已停用" },
