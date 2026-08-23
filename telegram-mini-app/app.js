@@ -565,7 +565,7 @@
       try {
         const win = window.open(jumpUrl, "_blank", "noopener,noreferrer");
         if (!win) throw new Error("popup_blocked");
-      } catch (_openErr: any) {
+      } catch (_openErr) {
         // 弹窗拦截时走 location.href 兜底
         location.href = jumpUrl;
       }
