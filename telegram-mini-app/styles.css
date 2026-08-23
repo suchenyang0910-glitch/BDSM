@@ -857,7 +857,8 @@ h3 {
   background: var(--brand-primary);
 }
 
-.is-hidden {
+.is-hidden,
+[hidden] {
   display: none !important;
 }
 
