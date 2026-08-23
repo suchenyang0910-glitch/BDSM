@@ -11,9 +11,9 @@
     content_unavailable: "该内容暂时不可用。",
     delivery_channel_not_configured: "交付频道尚未配置，请稍后再试。",
     bot_not_configured: "服务端邀请 Bot 尚未配置完成，请联系管理员。",
-    auth_h5_guest_unavailable: "本机账户会话创建失败，请稍后重试。",
+    auth_h5_guest_unavailable: "自动登录创建失败，请稍后重试。",
     auth_h5_session_internal: "会话读取失败，请稍后重试。",
-    auth_h5_guest_internal: "系统暂时无法建立本机账户会话，请稍后重试。",
+    auth_h5_guest_internal: "系统暂时无法建立登录会话，请稍后重试。",
     stars_invoice_service_unavailable: "Stars 发票暂时不可用，请稍后重试。",
     stars_continue_expired: "Stars 续付窗口已过期，请重新下单。",
     single_delivery_not_enabled: "首期不支持单条共享频道交付，请选择会员或内容包。",
@@ -670,10 +670,10 @@
     const isTelegram = session && session.identity === "telegram";
     $("profileTitle").textContent = isTelegram
       ? "当前账户 · " + (session.displayName || "已连接 Telegram")
-      : "本机账户 · " + (session.displayName === "访客用户" ? "同频账户" : (session.displayName || "同频账户"));
+      : (session.displayName || "同频用户");
     $("profileSubtitle").textContent = isTelegram
       ? "已连接 Telegram，可跨设备恢复订单与权益。"
-      : "首次打开已自动创建本机账户；绑定 Telegram 后可跨设备恢复权益。";
+      : "已自动登录；绑定 Telegram 后可跨设备恢复订单与权益。";
 
     const membershipSummary = state.entitlements.data && state.entitlements.data.summary
       ? state.entitlements.data.summary.membership

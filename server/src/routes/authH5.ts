@@ -55,6 +55,14 @@ function randomHexToken(bytes: number): string {
   return randomBytes(bytes).toString("hex");
 }
 
+function randomH5DisplayName(): string {
+  return `同频用户 ${randomBytes(3).toString("hex").toUpperCase()}`;
+}
+
+function isLegacyH5DisplayName(value: string | null | undefined): boolean {
+  return value === "同频账户" || value === "访客用户" || value === "本机账户";
+}
+
 function setDeviceCookie(reply: any, token: string, maxAgeMs: number, secure: boolean) {
   const parts = [
     `${H5_DEVICE_SESSION_COOKIE_NAME}=${token}`,
@@ -204,11 +212,14 @@ export default async function authH5Routes(fastify: FastifyInstance) {
           });
           if (user) {
             const bound = !!user.telegramUserId;
+            const displayName = !bound && isLegacyH5DisplayName(user.displayName)
+              ? (await prisma.user.update({ where: { id: user.id }, data: { displayName: randomH5DisplayName() } })).displayName
+              : user.displayName;
             return reply.status(200).send({
               identity: bound ? "telegram" : "guest",
               userId: user.id,
               telegramBound: bound,
-              displayName: user.displayName,
+              displayName,
               expiresAt: sess.row.expiresAt.toISOString(),
             });
           }
@@ -226,14 +237,14 @@ export default async function authH5Routes(fastify: FastifyInstance) {
           data: {
             telegramUserId: null,
             username: null,
-            displayName: "同频账户",
+            displayName: randomH5DisplayName(),
             photoUrl: null,
             status: "active",
           },
         });
       } catch (e: any) {
         emitSafety({ event: "auth_h5_guest_create_user_failed", errorClass: "db_error", note: `len=${e?.message?.length || 0}` }, e);
-        return reply.status(500).send({ error: "auth_h5_guest_unavailable", userError: "本机账户会话创建失败，请稍后重试。" });
+        return reply.status(500).send({ error: "auth_h5_guest_unavailable", userError: "自动登录创建失败，请稍后重试。" });
       }
 
       try {
@@ -250,7 +261,7 @@ export default async function authH5Routes(fastify: FastifyInstance) {
         });
       } catch (e: any) {
         emitSafety({ event: "auth_h5_guest_session_conflict", errorClass: "db_error", note: `len=${e?.message?.length || 0}` }, e);
-        return reply.status(500).send({ error: "auth_h5_guest_session_conflict", userError: "本机账户会话创建冲突，请刷新重试。" });
+        return reply.status(500).send({ error: "auth_h5_guest_session_conflict", userError: "自动登录创建冲突，请刷新重试。" });
       }
 
       setDeviceCookie(reply, newToken, H5_DEVICE_SESSION_MAX_AGE_MS, SECURE_COOKIE);
@@ -264,7 +275,7 @@ export default async function authH5Routes(fastify: FastifyInstance) {
         identity: "guest",
         userId: anon.id,
         telegramBound: false,
-        displayName: "同频账户",
+        displayName: anon.displayName,
         expiresAt: expiresAt.toISOString(),
       });
     } catch (e: any) {
@@ -312,6 +323,9 @@ export default async function authH5Routes(fastify: FastifyInstance) {
         return reply.status(401).send({ identity: null, telegramBound: false, error: "auth_h5_user_deleted" });
       }
       const bound = !!user.telegramUserId;
+      const displayName = !bound && isLegacyH5DisplayName(user.displayName)
+        ? (await prisma.user.update({ where: { id: user.id }, data: { displayName: randomH5DisplayName() } })).displayName
+        : user.displayName;
       const sfSess = (req.session as any) || {};
       sfSess.userId = finalUserId;
       sfSess.telegramUserId = user.telegramUserId ? String(user.telegramUserId) : null;
@@ -320,7 +334,7 @@ export default async function authH5Routes(fastify: FastifyInstance) {
         identity: bound ? "telegram" : "guest",
         userId: finalUserId,
         telegramBound: bound,
-        displayName: user.displayName,
+        displayName,
         expiresAt: sess.row.expiresAt.toISOString(),
       });
     } catch (e: any) {

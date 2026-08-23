@@ -24,7 +24,7 @@
     h5_login_auth_expired: "登录授权已超过 10 分钟有效窗口。请返回登录页重新发起授权。",
     h5_login_internal_error: "服务端用户登记失败。请稍后重试，或使用 Telegram Mini App 打开本页。",
     h5_login_merge_failed: "匿名订单合并失败。请稍后重试，或使用 Telegram Mini App 打开本页。",
-    h5_login_required_for_payment: "当前页面已支持本机账户创建 USDT 订单；若需跨设备恢复订单与权益，请绑定 Telegram。",
+    h5_login_required_for_payment: "当前页面已自动登录，可直接创建 USDT 订单；若需跨设备恢复订单与权益，请绑定 Telegram。",
     h5_login_required_for_channel_access: "获取 VIP 频道邀请链接前需要先绑定 Telegram 身份，否则无法将你加入目标频道。",
   };
 
@@ -304,7 +304,7 @@
     if (message) {
       message.innerHTML = bound
         ? "订单已确认支付成功，频道邀请已通过 Telegram Bot 私信发送给你。<br/>请在 Telegram 中打开 Bot 邀请进入频道，或返回 Mini App 点击已解锁内容进入。"
-        : "订单已确认支付成功。请先绑定 Telegram，以便把本机账户的权益合并到你的 Telegram 身份并领取私密频道邀请。";
+        : "订单已确认支付成功。请先绑定 Telegram，以便合并权益并领取私密频道邀请。";
     }
     if (button) button.textContent = bound ? "返回 Telegram Mini App" : "绑定 Telegram 后领取频道";
     card.style.display = "block";
@@ -446,7 +446,7 @@
     if (qsOrder) $("orderNo").value = qsOrder;
     if (qsProd) $("productId").value = qsProd;
 
-    // 首屏读取本机账户；首次访问时由服务端创建设备绑定会话。
+    // 首屏自动恢复登录；首次访问时由服务端创建持久会话。
     let established = false;
     try {
       const sess = await api("/api/auth/h5/session", {});
@@ -464,7 +464,7 @@
           established = true;
         }
       } catch (e) {
-        showError("本机账户会话创建失败：" + zhMsg(e));
+        showError("自动登录失败：" + zhMsg(e));
         return;
       }
     }
@@ -484,8 +484,8 @@
       const text = $("userChipText");
       if (chip && text) {
         chip.classList.remove("off");
-        text.textContent = "本机账户 · 绑定 Telegram 可跨设备恢复";
-        chip.title = "当前本机账户可浏览、创建 USDT 待支付订单；绑定 Telegram 后可跨设备恢复订单与权益。";
+        text.textContent = (currentIdentitySession.displayName || "同频用户") + " · 绑定 Telegram 可跨设备恢复";
+        chip.title = "当前账户可浏览、创建 USDT 待支付订单；绑定 Telegram 后可跨设备恢复订单与权益。";
         let bound = false;
         chip.onclick = () => {
           if (bound) return;
@@ -850,7 +850,7 @@
   }
 
   async function handleCreateOrder(productId) {
-    // H5 的本机账户即可创建 USDT 订单；Telegram 绑定仅在用户领取私密频道时需要。
+    // H5 自动登录账户即可创建 USDT 订单；Telegram 绑定仅在用户领取私密频道时需要。
     showView("payDetail");
     const card = $("activatedCard");
     if (card) card.style.display = "none";
