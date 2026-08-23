@@ -40,12 +40,8 @@ async function configuredTargets(): Promise<Target[]> {
     ? { channel: refMembershipMain() }
     : null;
 
-  if (directFreeTargets.length > 0 && directMembershipTarget) {
-    return [...directFreeTargets, directMembershipTarget];
-  }
-
-  // Fallback for the managed-channel deployment model: channel IDs stay
-  // encrypted in the registry and are resolved only inside this server script.
+  // The managed-channel registry is authoritative when present. This prevents
+  // a stale legacy env value from sending a member-only post to the wrong chat.
   const prisma = new PrismaClient();
   try {
     const rows = await prisma.adminManagedChannel.findMany({
@@ -66,8 +62,8 @@ async function configuredTargets(): Promise<Target[]> {
       if (row.purpose === "membership_main" && !managedMembership) managedMembership = target;
       if (row.purpose === "free_preview") managedFree.push(target);
     }
-    const freeTargets = directFreeTargets.length > 0 ? directFreeTargets : managedFree;
-    const membershipTarget = directMembershipTarget ?? managedMembership;
+    const freeTargets = managedFree.length > 0 ? managedFree : directFreeTargets;
+    const membershipTarget = managedMembership ?? directMembershipTarget;
     if (!membershipTarget) throw new Error("membership_channel_not_configured");
     return [...freeTargets, membershipTarget];
   } finally {
