@@ -150,6 +150,13 @@
     return numeric + " " + (currency || "");
   }
 
+  function formatAvailablePrices(item) {
+    const primary = formatPriceMinor(item && item.priceMinor, item && item.priceCurrency);
+    if (!item || item.usdtPriceMinor == null || item.usdtPriceMinor === "") return primary;
+    const usdt = formatPriceMinor(item.usdtPriceMinor, "USDT");
+    return primary + " · " + usdt;
+  }
+
   function formatDate(iso) {
     if (!iso) return "—";
     const date = new Date(iso);
@@ -307,7 +314,7 @@
       node.querySelector(".card-desc").textContent = item.description || "暂无描述";
       node.querySelector(".card-price").textContent = item.accessType === "public"
         ? "公开预览"
-        : formatPriceMinor(item.priceMinor, item.priceCurrency);
+        : formatAvailablePrices(item);
       node.querySelector(".card-access").textContent = getAccessLabel(item);
       node.querySelector(".cover-button").addEventListener("click", function () {
         setHashForDetail(item.id, fromTab);
@@ -475,6 +482,7 @@
           count: 0,
           priceMinor: item.priceMinor,
           priceCurrency: item.priceCurrency,
+          usdtPriceMinor: item.usdtPriceMinor,
           unlocked: false,
           sampleContentId: item.id,
         });
@@ -533,7 +541,7 @@
         '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.title) + '</div>' +
         '<div class="stack-subtitle">共 ' + escapeHtml(String(item.count)) + ' 条内容</div></div>' +
         '<div class="status-badge' + (item.unlocked ? "" : " status-warning") + '">' + escapeHtml(item.unlocked ? "已解锁" : "内容包") + "</div></div>" +
-        '<div class="stack-meta"><span>' + escapeHtml(formatPriceMinor(item.priceMinor, item.priceCurrency)) + '</span><span>' + escapeHtml(item.unlocked ? "可直接进入对应频道" : "购买后解锁该包频道") + "</span></div>" +
+        '<div class="stack-meta"><span>' + escapeHtml(formatAvailablePrices(item)) + '</span><span>' + escapeHtml(item.unlocked ? "可直接进入对应频道" : "购买后解锁该包频道") + "</span></div>" +
         '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + escapeHtml(item.unlocked ? "查看已解锁内容" : "查看内容包") + "</button></div>";
       card.querySelector("button").addEventListener("click", function () {
         setHashForDetail(item.sampleContentId, "membership");
@@ -754,7 +762,8 @@
     if (purchaseHost) {
       if (detail.accessType === "membership") {
         purchaseHost.innerHTML =
-          '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 开通会员，持续获得会员主频道更新。</p>' +
+          '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 开通会员，持续获得会员主频道更新。' +
+          (detail.product && detail.product.usdtPriceMinor ? ' 支持 USDT-TRC20：' + escapeHtml(formatPriceMinor(detail.product.usdtPriceMinor, "USDT")) + '。' : '') + '</p>' +
           (state.env.isTelegram && detail.product && detail.product.usdtPriceMinor
             ? '<button id="detailUsdtButton" class="text-button" type="button">使用 USDT-TRC20 支付</button>'
             : '') + '</div>';
