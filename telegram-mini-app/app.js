@@ -21,7 +21,10 @@
 
   const state = {
     env: {
-      isTelegram: !!tg,
+      // Telegram 会在普通 H5 页面也注入 WebApp SDK 对象，但没有 initData
+      // 就不是可支付的 Mini App 上下文。以 initData 作为唯一判定，避免 H5
+      // 误走 Stars/Popup 分支而无法进入 USDT 支付页。
+      isTelegram: !!(tg && tg.initData),
       hasInitData: !!(tg && tg.initData),
     },
     session: null,
@@ -241,7 +244,7 @@
   }
 
   function showInlineMessage(message) {
-    if (tg && tg.showPopup) {
+    if (state.env.isTelegram && tg && tg.showPopup) {
       tg.showPopup({ title: "提示", message: message, buttons: [{ type: "ok" }] }).catch(function () {});
       return;
     }
