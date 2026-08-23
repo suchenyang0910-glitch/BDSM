@@ -277,7 +277,7 @@ const ContentsPage: React.FC = () => {
   React.useEffect(() => {
     listAdminCategories().then((r) => setCategories(r.data)).catch(() => {});
     listAdminPackages().then((r) => setPackages(r.data)).catch(() => {});
-    listFreeChannels().then((r) => setFreeChannels(r.data)).catch(() => {});
+    listFreeChannels().then((r) => setFreeChannels(Array.isArray(r.items) ? r.items : [])).catch(() => {});
     adminMe().then(setMe).catch(() => {});
   }, []);
 

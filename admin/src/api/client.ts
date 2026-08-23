@@ -190,7 +190,7 @@ export async function unpublishAdminContent(id: string, reason?: string): Promis
   return res.data;
 }
 
-export async function listFreeChannels(): Promise<{ data: FreeChannelOption[] }> {
+export async function listFreeChannels(): Promise<{ items: FreeChannelOption[] }> {
   const res = await http.get("/admin/free-channels");
   return res.data;
 }
