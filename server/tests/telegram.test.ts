@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import { getTelegramBotCredentials, validateTelegramInitData } from "../src/utils/telegram.js";
+import { resolveMiniAppUrl, withMiniAppLaunchButton } from "../src/services/telegramBot.js";
 
 function makeInitData(token: string, authDate: number): string {
   const params = new URLSearchParams({
@@ -47,4 +48,18 @@ test("multiple active Bot credentials are parsed from the controlled server allo
   assert.deepEqual(bots.map((bot) => bot.key), ["primary", "backup"]);
   if (previous === undefined) delete process.env.TELEGRAM_BOTS;
   else process.env.TELEGRAM_BOTS = previous;
+});
+
+test("Bot 私信统一追加受控 Mini App 入口，且不重复覆盖业务按钮", () => {
+  const markup = withMiniAppLaunchButton({
+    inline_keyboard: [[{ text: "复制订单号", copy_text: { text: "INT202608240001" } }]],
+  }, "https://mini.example.com/");
+  assert.deepEqual(markup.inline_keyboard, [
+    [{ text: "复制订单号", copy_text: { text: "INT202608240001" } }],
+    [{ text: "打开同频", web_app: { url: "https://mini.example.com/" } }],
+  ]);
+  const stable = withMiniAppLaunchButton(markup, "https://other.example.com/");
+  assert.equal(stable.inline_keyboard.length, 2, "已有 Mini App 按钮时不得重复追加");
+  assert.equal(stable.inline_keyboard[1]?.[0]?.web_app?.url, "https://mini.example.com/");
+  assert.equal(resolveMiniAppUrl("javascript:alert(1)"), "https://bdsm.linkx.club/");
 });

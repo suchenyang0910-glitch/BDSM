@@ -1,24 +1,16 @@
 import { formatMinorAmountForDisplay } from "../utils/currency.js";
 import { emitSafetyEvent } from "../utils/structuredError.js";
-import { sendDirectMessage, type SendDirectMessageResult } from "./telegramBot.js";
+import { sendDirectMessage, type SendDirectMessageResult, type TelegramInlineKeyboardMarkup } from "./telegramBot.js";
 
 const RECIPIENTS_ENV = "PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS";
 const ADMIN_ORDERS_URL_ENV = "PAYMENT_SUCCESS_NOTIFY_ADMIN_ORDERS_URL";
-
-type PaymentSuccessReplyMarkup = {
-  inline_keyboard: Array<Array<{
-    text: string;
-    url?: string;
-    copy_text?: { text: string };
-  }>>;
-};
 
 type SendDirectMessage = (opts: {
   telegramUserId: bigint | number | string;
   text: string;
   parseMode?: "MarkdownV2" | "HTML" | "Markdown";
   disableWebPagePreview?: boolean;
-  replyMarkup?: PaymentSuccessReplyMarkup;
+  replyMarkup?: TelegramInlineKeyboardMarkup;
 }) => Promise<SendDirectMessageResult>;
 
 export type PaymentSuccessNotification = {
@@ -110,7 +102,7 @@ export function buildPaymentSuccessNotificationText(input: PaymentSuccessNotific
 }
 
 /** 支付成功运营通知的受控快捷操作：复制订单号 / 前往对应后台订单。 */
-export function buildPaymentSuccessNotificationReplyMarkup(input: PaymentSuccessNotification): PaymentSuccessReplyMarkup {
+export function buildPaymentSuccessNotificationReplyMarkup(input: PaymentSuccessNotification): TelegramInlineKeyboardMarkup {
   const orderNo = safeOrderNo(input.orderNo);
   const receivingUsdtAddress = input.paymentMethod === "usdt_trc20"
     ? safeReceivingUsdtAddress(input.receivingUsdtAddress)

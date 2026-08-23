@@ -15,6 +15,7 @@ import { getTelegramBotByKey, type TelegramBotCredential } from "../utils/telegr
 import { chatIdIndexKey, constantTimeEqual } from "../utils/crypto.js";
 
 const API_BASE = "https://api.telegram.org";
+const DEFAULT_MINI_APP_URL = "https://bdsm.linkx.club/";
 
 // ======= ChannelRef（内部引用）体系：路由层只传 ref，不在路由层出现明文 chatId =======
 
@@ -286,19 +287,51 @@ export async function kickChannelMember(opts: KickMemberOptions): Promise<Telegr
   return { stub: false, success: true, channelId, userId };
 }
 
+export type TelegramInlineKeyboardButton = {
+  text: string;
+  url?: string;
+  copy_text?: { text: string };
+  web_app?: { url: string };
+};
+
+export type TelegramInlineKeyboardMarkup = {
+  inline_keyboard: Array<Array<TelegramInlineKeyboardButton>>;
+};
+
+/**
+ * 仅接受服务端配置的 HTTPS Mini App 地址，杜绝在 Bot 消息里注入任意协议或带认证信息的 URL。
+ * PUBLIC_MINI_APP_URL 可用于 Staging；生产默认同频主站。
+ */
+export function resolveMiniAppUrl(raw = process.env.PUBLIC_MINI_APP_URL || DEFAULT_MINI_APP_URL): string {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" || url.username || url.password) throw new Error("mini_app_url_invalid");
+    return url.toString();
+  } catch {
+    return DEFAULT_MINI_APP_URL;
+  }
+}
+
+/** 为每条 Bot 私信补充统一 Mini App 入口；已有 Web App 按钮时不重复追加。 */
+export function withMiniAppLaunchButton(
+  replyMarkup?: TelegramInlineKeyboardMarkup,
+  miniAppUrl = resolveMiniAppUrl(),
+): TelegramInlineKeyboardMarkup {
+  const rows = (replyMarkup?.inline_keyboard || []).map((row) => [...row]);
+  if (rows.some((row) => row.some((button) => !!button.web_app))) {
+    return { inline_keyboard: rows };
+  }
+  rows.push([{ text: "打开同频", web_app: { url: miniAppUrl } }]);
+  return { inline_keyboard: rows };
+}
+
 export type SendDirectMessageOptions = {
   telegramUserId: bigint | number | string;
   text: string;
   parseMode?: "MarkdownV2" | "HTML" | "Markdown";
   disableWebPagePreview?: boolean;
   /** Telegram Bot API InlineKeyboardMarkup；仅用于受控 Bot 私信操作。 */
-  replyMarkup?: {
-    inline_keyboard: Array<Array<{
-      text: string;
-      url?: string;
-      copy_text?: { text: string };
-    }>>;
-  };
+  replyMarkup?: TelegramInlineKeyboardMarkup;
 };
 
 export type SendDirectMessageResult = {
@@ -312,12 +345,13 @@ export type SendDirectMessageResult = {
 export async function sendDirectMessage(opts: SendDirectMessageOptions): Promise<SendDirectMessageResult> {
   const bot = assertInviteBot("send direct message");
   const userId = channelIdString(opts.telegramUserId);
+  const replyMarkup = withMiniAppLaunchButton(opts.replyMarkup);
   const result = await callBotApi<{ message_id: number }>(bot, "sendMessage", {
     chat_id: userId,
     text: opts.text,
     ...(opts.parseMode ? { parse_mode: opts.parseMode } : {}),
     ...(opts.disableWebPagePreview !== undefined ? { disable_web_page_preview: opts.disableWebPagePreview } : {}),
-    ...(opts.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
+    reply_markup: replyMarkup,
   });
   if (!result.ok || !result.result) {
     return { stub: false, success: false, errorMessage: `sendMessage: [${result.error_code}] ${result.description || "unknown"}`, userId };
