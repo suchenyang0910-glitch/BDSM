@@ -754,7 +754,10 @@
     if (purchaseHost) {
       if (detail.accessType === "membership") {
         purchaseHost.innerHTML =
-          '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 开通会员，持续获得会员主频道更新。</p></div>';
+          '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 开通会员，持续获得会员主频道更新。</p>' +
+          (state.env.isTelegram && detail.product && detail.product.usdtPriceMinor
+            ? '<button id="detailUsdtButton" class="text-button" type="button">使用 USDT-TRC20 支付</button>'
+            : '') + '</div>';
       } else if (detail.accessType === "package") {
         purchaseHost.innerHTML =
           '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 解锁所属内容包；2. 若你已经拥有该包权益，可直接前往频道。</p></div>';
@@ -762,6 +765,12 @@
     }
 
     $("detailPrimaryButton").addEventListener("click", primaryAction.handler);
+    const usdtButton = $("detailUsdtButton");
+    if (usdtButton && detail.product) {
+      usdtButton.addEventListener("click", function () {
+        window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id));
+      });
+    }
     $("detailBackButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
     });
@@ -946,11 +955,9 @@
       await createStarsOrderAndPay(detail);
       return;
     }
-    if (!isStarsProduct(detail.product)) {
-      window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id));
-      return;
-    }
-    showInlineMessage("当前商品仅支持 Telegram Stars，请在 Telegram Mini App 内打开后支付。");
+    // H5 always uses USDT-TRC20. In Mini App Stars stays the primary route,
+    // while products without Stars can still use the same lightweight USDT page.
+    window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id));
   }
 
   async function createStarsOrderAndPay(detail) {

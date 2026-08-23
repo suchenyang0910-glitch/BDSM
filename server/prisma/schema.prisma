@@ -313,6 +313,9 @@ model Product {
   title         String
   priceMinor    BigInt        @map("price_minor")
   currency      String        @default("XTR")
+  // 商品主价格用于 Telegram Stars；可选 USDT 价格让同一权益在 H5 / Mini App
+  // 走 TRC-20 支付时无需复制一份商品或改变 Stars 定价。
+  usdtPriceMinor BigInt?      @map("usdt_price_minor")
   durationDays  Int?          @map("duration_days")
   status        ProductStatus @default(active)
   createdAt     DateTime      @default(now()) @map("created_at")

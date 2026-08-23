@@ -56,7 +56,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         take,
         include: {
           categories: { select: { category: { select: { id: true, name: true } } } },
-          product: { select: { id: true, priceMinor: true, currency: true, type: true } },
+          product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
           package: { select: { id: true, title: true } },
         },
       }),
@@ -118,6 +118,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         productId: c.product?.id || c.productId || null,
         priceMinor: c.product?.priceMinor?.toString(),
         priceCurrency: c.product?.currency,
+        usdtPriceMinor: c.product?.usdtPriceMinor?.toString() ?? null,
         publishedAt: c.publishedAt?.toISOString(),
         effectiveSeo: buildEffectiveSeo({
           contentSeoTitle: c.seoTitle,
@@ -156,7 +157,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         include: {
           categories: { select: { category: { select: { id: true, name: true } } } },
           package: { select: { id: true, title: true, coverUrl: true } },
-          product: { select: { id: true, priceMinor: true, currency: true, type: true, durationDays: true } },
+          product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true, durationDays: true } },
         },
       }),
       tryGetPlatformMetadata(),
@@ -222,6 +223,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
             id: content.product.id,
             priceMinor: content.product.priceMinor.toString(),
             currency: content.product.currency,
+            usdtPriceMinor: content.product.usdtPriceMinor?.toString() ?? null,
             type: content.product.type,
             durationDays: content.product.durationDays,
           }

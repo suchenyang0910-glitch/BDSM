@@ -58,6 +58,20 @@ const adminOrdersQuerySchema = z.object({
 
 const STARS_CONTINUE_WINDOW_MS = Math.min(STARS_ORDER_EXPIRES_MS, 30 * 60 * 1000); // 续付窗口（30min，不超过订单本身过期时间）
 
+/**
+ * A product can keep its canonical Stars price while exposing an independent
+ * USDT-TRC20 checkout price. Legacy USDT-only products remain supported.
+ */
+function resolveUsdtPriceMinor(product: { priceMinor: bigint; currency?: string | null; usdtPriceMinor?: bigint | null }): bigint | null {
+  if (product.usdtPriceMinor != null) {
+    const alternative = BigInt(product.usdtPriceMinor.toString());
+    return alternative > 0n ? alternative : null;
+  }
+  if (String(product.currency || "").toUpperCase() !== "USDT") return null;
+  const legacy = BigInt(product.priceMinor.toString());
+  return legacy > 0n ? legacy : null;
+}
+
 function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null }) {
   const out: any = {
     id: o.id,
@@ -70,6 +84,7 @@ function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null }
           title: o.product.title,
           priceMinor: o.product.priceMinor?.toString(),
           currency: o.product.currency,
+          usdtPriceMinor: o.product.usdtPriceMinor?.toString() ?? null,
           durationDays: o.product.durationDays ?? null,
         }
       : null,
@@ -379,15 +394,12 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     if (!productPre || productPre.status !== "active") {
       return reply.status(404).send({ error: "product_not_found", message: "商品不存在或已下架" });
     }
-    if (!productPre.currency || productPre.currency.toUpperCase() !== "USDT") {
+    const baseAmountMinor = resolveUsdtPriceMinor(productPre);
+    if (baseAmountMinor == null) {
       return reply.status(400).send({
-        error: "bad_request",
-        message: `该商品币种 ${productPre.currency || "未知"} 不是 USDT，请使用正确的支付方式`,
+        error: "usdt_price_not_configured",
+        message: "该商品尚未配置 USDT-TRC20 价格，请选择 Telegram Stars 或联系平台运营。",
       });
-    }
-    const baseAmountMinor = BigInt(productPre.priceMinor.toString());
-    if (baseAmountMinor <= 0n) {
-      return reply.status(400).send({ error: "bad_request", message: "商品价格无效（USDT 最小单位必须为正整数，单位 1e-6 USDT）" });
     }
 
     let orderNo = generateOrderNo();
@@ -442,7 +454,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
               userId: uid,
               productId: product.id,
               amountMinor: baseAmountMinor,
-              currency: product.currency!.toUpperCase(),
+              currency: "USDT",
               paymentMethod: "usdt_trc20_external",
               paymentProvider: "tron_trc20_external",
               status: "pending",

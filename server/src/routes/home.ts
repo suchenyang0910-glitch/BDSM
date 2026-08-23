@@ -23,7 +23,7 @@ type RawContentRow = {
   geoKeywords?: string[];
   categories?: Array<{ category: { id: string; name: string } }>;
   package?: { id: string; title: string } | null;
-  product?: { id: string; priceMinor: bigint; currency: string; type: string } | null;
+  product?: { id: string; priceMinor: bigint; currency: string; usdtPriceMinor?: bigint | null; type: string } | null;
 };
 
 export default async function homeRoutes(fastify: FastifyInstance) {
@@ -81,6 +81,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       productId: row.product?.id || row.productId || null,
       priceMinor: row.product?.priceMinor?.toString(),
       priceCurrency: row.product?.currency,
+      usdtPriceMinor: row.product?.usdtPriceMinor?.toString() ?? null,
       publishedAt: row.publishedAt?.toISOString(),
       unlocked: opts.unlocked,
       effectiveSeo: buildEffectiveSeo({
@@ -130,7 +131,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
             where: { id: { in: config.featuredContentIds }, status: "published" },
             include: {
               categories: { select: { category: { select: { id: true, name: true } } } },
-              product: { select: { id: true, priceMinor: true, currency: true, type: true } },
+              product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
               package: { select: { id: true, title: true } },
             },
           })
@@ -162,7 +163,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
         take: 12,
         include: {
           categories: { select: { category: { select: { id: true, name: true } } } },
-          product: { select: { id: true, priceMinor: true, currency: true, type: true } },
+          product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
           package: { select: { id: true, title: true } },
         },
       }),
@@ -172,7 +173,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
         take: 4,
         include: {
           categories: { select: { category: { select: { id: true, name: true } } } },
-          product: { select: { id: true, priceMinor: true, currency: true, type: true } },
+          product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
           package: { select: { id: true, title: true } },
         },
       }),

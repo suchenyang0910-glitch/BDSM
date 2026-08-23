@@ -879,6 +879,46 @@ test("USDT 创单：XTR 商品 400，USDT membership 商品 201（标价非整�
   }
 });
 
+test("USDT 创单：XTR 会员可使用独立 USDT 测试价，Stars 主价格保持不变", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const product = await prisma.product.create({
+      data: {
+        id: "membership_xtr_with_usdt_alt_001",
+        type: "membership",
+        title: "Stars 会员 + USDT 测试价",
+        priceMinor: 150_000_000n,
+        currency: "XTR",
+        usdtPriceMinor: 10_000n, // 0.01 USDT, in 1e-6 minor units
+        durationDays: 30,
+        status: "active",
+      },
+    });
+    await prisma.paymentAddress.create({
+      data: { network: "tron_trc20", address: "TTestXtrAltUsdtAddress0005", addressMasked: "TTe…0005", status: "available" },
+    });
+    const user = await prisma.user.create({ data: { telegramUserId: 7100000805n, displayName: "xtr-usdt-alt-user" } });
+    const cookie = await loginAs(app, user.id);
+
+    const created = await app.inject({
+      method: "POST", url: "/api/orders/usdt", headers: { cookie, "Content-Type": "application/json" },
+      payload: { productId: product.id },
+    });
+    assert.equal(created.statusCode, 201, `配置备用 USDT 价格的 XTR 商品必须可建 USDT 单，got ${created.statusCode}: ${created.body}`);
+    const body = created.json() as any;
+    assert.equal(body.paymentMethod, "usdt_trc20_external");
+    assert.equal(body.usdtPayment.baseAmountMinor, "10000", "USDT 建单必须使用独立 USDT 测试价 0.01");
+    assert.equal(body.currency, "USDT", "订单账务币种必须是 USDT，不能沿用商品主 Stars 币种");
+
+    const stored = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    assert.equal(stored.currency, "XTR", "备用 USDT 定价不能篡改 Stars 主币种");
+    assert.equal(stored.priceMinor, 150_000_000n, "备用 USDT 定价不能篡改 Stars 主价格");
+    assert.equal(stored.usdtPriceMinor, 10_000n, "备用 USDT 定价必须保持精确的 0.01 USDT minor 值");
+  } finally {
+    await app.close();
+  }
+});
+
 // P0-B：路由 503 pool_empty 500 assign_db_error 均不向客户端泄露原始 DB reason / errorClass / 堆栈，只返回通用提示 + DB 层 rejectReason/审计 也脱敏
 test("USDT 创单错误脱敏：pool_empty 503 / assign db_error 500（响应/DB rejectReason/审计表）全链路无原始错误字符串", async () => {
   const app = await createTestApp(prisma);
