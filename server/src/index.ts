@@ -252,6 +252,7 @@ async function main() {
   await app.register(adminPackageRoutes, { prefix: "/api" });
   await app.register(adminUsersAndSupportRoutes, { prefix: "/api" });
   await app.register(adminChannelsRoutes, { prefix: "/api" });
+  await app.register(adminDashboardRoutes, { prefix: "/api" });
   await app.register(authH5Routes, { prefix: "/api" });
 
   try {
