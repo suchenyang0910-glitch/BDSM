@@ -16,6 +16,8 @@ export type PaymentSuccessNotification = {
   amountMinor: bigint | number | string;
   currency: string;
   productTitle?: string | null;
+  /** 仅平台昵称；不得传 Telegram 名、用户名、手机号或收款地址。 */
+  userDisplayName?: string | null;
 };
 
 /**
@@ -45,6 +47,11 @@ function safeProductTitle(value: string | null | undefined): string {
   return normalized ? normalized.slice(0, 48) : "内容权益";
 }
 
+function safePlatformNickname(value: string | null | undefined): string {
+  const normalized = String(value || "").replace(/[\r\n\t]/g, " ").trim();
+  return normalized ? normalized.slice(0, 32) : "同频成员";
+}
+
 export function buildPaymentSuccessNotificationText(input: PaymentSuccessNotification): string {
   const method = input.paymentMethod === "telegram_stars"
     ? "Telegram Stars"
@@ -55,11 +62,12 @@ export function buildPaymentSuccessNotificationText(input: PaymentSuccessNotific
   const unit = String(input.currency || "").toUpperCase() === "XTR" ? "Stars" : String(input.currency || "").toUpperCase();
   return [
     "【同频 · 支付成功】",
+    `用户：${safePlatformNickname(input.userDisplayName)}`,
     `订单：${maskOrderNo(input.orderNo)}`,
     `方式：${method}`,
     `商品：${safeProductTitle(input.productTitle)}`,
     `金额：${amount} ${unit}`.trim(),
-    "权益已完成发放。",
+    "权益：已完成发放。",
   ].join("\n");
 }
 

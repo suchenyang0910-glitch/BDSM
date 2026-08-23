@@ -92,11 +92,14 @@ test("支付成功运营通知：收件人去重、内容脱敏、通知失败�
     amountMinor: 12_340_000n,
     currency: "USDT",
     productTitle: "测试内容\n不应拆成多行",
+    userDisplayName: "月光\n边界",
   });
+  assert.match(message, /用户：月光 边界/);
   assert.match(message, /USDT-TRC20/);
   assert.match(message, /12\.34 USDT/);
   assert.doesNotMatch(message, /INT20260823001234/);
   assert.doesNotMatch(message, /\n不应拆成多行/);
+  assert.match(message, /权益：已完成发放。/);
 
   const previous = process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS;
   process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS = "123456,987654,123456";

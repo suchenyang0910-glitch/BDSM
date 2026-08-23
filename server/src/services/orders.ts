@@ -105,6 +105,7 @@ export async function markOrderPaid(
     include: {
       product: { include: { contentPackage: true, contents: true } },
       entitlements: true,
+      user: { select: { displayName: true } },
     },
   });
   if (!order) {
@@ -509,7 +510,7 @@ export async function deliverStarsSuccessfulPayment(
           paidAt,
           providerOrderId: opts.telegramPaymentChargeId,
         },
-        include: { product: { include: { contentPackage: true, contents: true } } },
+        include: { product: { include: { contentPackage: true, contents: true } }, user: { select: { displayName: true } } },
       });
 
       // 3) 生成权益（与 markOrderPaid 内部权益生成逻辑一致）
@@ -579,6 +580,7 @@ export async function deliverStarsSuccessfulPayment(
       amountMinor: amountGot,
       currency: opts.currency,
       productTitle: result.order.product?.title,
+      userDisplayName: order.user?.displayName,
     });
     return { delivered: true, idempotent: false, orderNo: result.order.orderNo, entitlements: result.entitlements };
   } catch (e: any) {
@@ -928,6 +930,7 @@ export async function confirmUsdtChainEvent(
       amountMinor,
       currency: "USDT",
       productTitle: (result as any).order.product?.title,
+      userDisplayName: (result as any).order.user?.displayName || candidateOrder.user?.displayName,
     });
     return {
       status: "confirmed",

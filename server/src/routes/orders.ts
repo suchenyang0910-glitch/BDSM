@@ -976,6 +976,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
             amountMinor: result.order.amountMinor,
             currency: result.order.currency,
             productTitle: result.order.product?.title,
+            userDisplayName: result.order.user?.displayName,
           });
         }
         return {
