@@ -7,6 +7,7 @@ import {
   getBotChatMember,
   pinChannelMessage,
   refMembershipMain,
+  refRawChatId,
   sendChannelText,
   type ChannelRef,
 } from "../services/telegramBot.js";
@@ -18,11 +19,20 @@ const miniAppUrl = process.env.PUBLIC_MINI_APP_URL || "https://bdsm.linkx.club/"
 const shouldPublish = process.argv.includes("--confirm");
 
 function configuredTargets(): Target[] {
-  const freeTargets = PUBLIC_FREE_CHANNELS.flatMap((entry) => {
+  const declaredFreeTargets = PUBLIC_FREE_CHANNELS.flatMap((entry) => {
     const raw = process.env[entry.envVarName];
     if (!raw || !/^-?\d{6,22}$/.test(raw)) return [];
     return [{ channel: refFreeChannelByCode(entry.code) }];
   });
+  // Current production may use the compact multi-value config instead of the
+  // named free-channel variables. It is valid only as a server-side fallback.
+  const legacyRaw = String(process.env.TELEGRAM_CHANNEL_PUBLIC_IDS || "");
+  const multiValueTargets = legacyRaw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => /^-?\d{6,22}$/.test(value))
+    .map((value) => ({ channel: refRawChatId(BigInt(value)) }));
+  const freeTargets = declaredFreeTargets.length > 0 ? declaredFreeTargets : multiValueTargets;
   const membershipRaw = process.env.TELEGRAM_CHANNEL_MEMBERSHIP ?? process.env.MEMBERSHIP_CHANNEL_ID;
   if (!membershipRaw || !/^-?\d{6,22}$/.test(membershipRaw)) {
     throw new Error("membership_channel_not_configured");
