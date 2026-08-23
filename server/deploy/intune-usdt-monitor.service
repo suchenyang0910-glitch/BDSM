@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=intune
-Group=intune
-WorkingDirectory=/opt/bdsm/server
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/intune/app/server
 EnvironmentFile=/etc/intune/intune.env
 ExecStart=/usr/bin/npm run usdt:monitor
 Restart=always
@@ -16,7 +16,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/bdsm/server
+ReadWritePaths=/opt/intune/app/server
 StandardOutput=journal
 StandardError=journal
 
