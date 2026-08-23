@@ -346,6 +346,8 @@ export type GetChatMemberResult = {
   isMember: boolean;
   isAdministrator: boolean;
   canPostMessages?: boolean;
+  /** Required by Telegram to pin posts in channels. */
+  canEditMessages?: boolean;
   canInviteUsers?: boolean;
   canRestrictMembers?: boolean;
   canPinMessages?: boolean;
@@ -423,6 +425,7 @@ export async function getBotChatMember(chat: ChannelRef | string): Promise<GetCh
     isMember: ["member", "administrator", "creator"].includes(String(m.status || "")),
     isAdministrator: ["administrator", "creator"].includes(String(m.status || "")),
     canPostMessages: m.can_post_messages === true,
+    canEditMessages: m.can_edit_messages === true,
     canInviteUsers: m.can_invite_users === true,
     canRestrictMembers: m.can_restrict_members === true,
     canPinMessages: m.can_pin_messages === true,
@@ -450,7 +453,7 @@ export async function sendChannelText(opts: SendChannelTextOptions): Promise<{ s
   return { success: true, messageId: result.result.message_id };
 }
 
-/** Pins a previously posted channel message. Callers must preflight canPinMessages first. */
+/** Pins a previously posted message after the caller has performed a chat-type-aware permission preflight. */
 export async function pinChannelMessage(opts: { channel: ChannelRef; messageId: number }): Promise<{ success: boolean; errorCode?: number }> {
   const bot = assertInviteBot("pin channel message");
   const chatId = channelIdString(resolveChannelRefToChatId(opts.channel));

@@ -1,10 +1,13 @@
 /**
  * Publish and pin the official Mini App entry point in every configured free
  * channel plus the membership main channel. Default mode is read-only.
- * Pass --confirm only after the Bot has post + pin permissions everywhere.
+ * Pass --confirm only after the Bot has the matching Telegram permission in
+ * every target: channels require can_edit_messages; groups require
+ * can_pin_messages.
  */
 import {
   getBotChatMember,
+  getChat,
   pinChannelMessage,
   refMembershipMain,
   refRawChatId,
@@ -14,8 +17,22 @@ import {
 import { PUBLIC_FREE_CHANNELS, refFreeChannelByCode } from "../services/freeChannels.js";
 import { PrismaClient } from "@prisma/client";
 import { decryptChatIdAesGcm } from "../utils/crypto.js";
+import { fileURLToPath } from "node:url";
 
 type Target = { channel: ChannelRef };
+
+export function isBotReadyToPin(chatType: string, member: {
+  isAdministrator: boolean;
+  canPostMessages?: boolean;
+  canEditMessages?: boolean;
+  canPinMessages?: boolean;
+}): boolean {
+  if (!member.isAdministrator) return false;
+  // Telegram's channel permission model exposes pinning through
+  // can_edit_messages, not can_pin_messages. The latter is for groups.
+  if (chatType === "channel") return member.canPostMessages === true && member.canEditMessages === true;
+  return member.canPinMessages === true;
+}
 
 const miniAppUrl = process.env.PUBLIC_MINI_APP_URL || "https://bdsm.linkx.club/";
 const shouldPublish = process.argv.includes("--confirm");
@@ -92,17 +109,20 @@ async function main() {
     return;
   }
 
-  let members;
+  let targetChecks;
   try {
-    members = await Promise.all(targets.map((target) => getBotChatMember(target.channel)));
+    targetChecks = await Promise.all(targets.map(async (target) => ({
+      chat: await getChat(target.channel),
+      member: await getBotChatMember(target.channel),
+    })));
   } catch {
     console.log(JSON.stringify({ ok: false, action: "preflight", targets: targets.length, reason: "bot_permission_check_failed" }));
     process.exitCode = 1;
     return;
   }
-  const ready = members.every((member) => member.isAdministrator && member.canPostMessages && member.canPinMessages);
+  const ready = targetChecks.every(({ chat, member }) => isBotReadyToPin(chat.type, member));
   if (!ready) {
-    console.log(JSON.stringify({ ok: false, action: "preflight", targets: targets.length, reason: "missing_bot_pin_or_post_permission" }));
+    console.log(JSON.stringify({ ok: false, action: "preflight", targets: targets.length, reason: "missing_bot_publish_or_pin_permission" }));
     process.exitCode = 2;
     return;
   }
@@ -131,7 +151,9 @@ async function main() {
   console.log(JSON.stringify({ ok: true, action: "published_and_pinned", targets: targets.length }));
 }
 
-main().catch(() => {
-  console.log(JSON.stringify({ ok: false, action: "preflight", reason: "unexpected_operation_failure" }));
-  process.exitCode = 1;
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch(() => {
+    console.log(JSON.stringify({ ok: false, action: "preflight", reason: "unexpected_operation_failure" }));
+    process.exitCode = 1;
+  });
+}
