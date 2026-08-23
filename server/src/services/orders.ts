@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { kickChannelMember, sendDirectMessage, refMembershipMain, maskChatIdSafe, chatIdFingerprint } from "./telegramBot.js";
 import { hmacSha256Hex, userIdIndexKey } from "../utils/crypto.js";
 import { extractPrismaCodeOnly } from "../utils/structuredError.js";
+import { notifyPaymentSuccess } from "./paymentSuccessNotifier.js";
 
 type Tx = any;
 
@@ -569,6 +570,14 @@ export async function deliverStarsSuccessfulPayment(
         } catch { /* swallow notify errors */ }
       })().catch(() => {});
     }
+    // 事务已经提交；运营提醒失败绝不影响订单/权益。
+    await notifyPaymentSuccess({
+      orderNo: result.order.orderNo,
+      paymentMethod: "telegram_stars",
+      amountMinor: amountGot,
+      currency: opts.currency,
+      productTitle: result.order.product?.title,
+    });
     return { delivered: true, idempotent: false, orderNo: result.order.orderNo, entitlements: result.entitlements };
   } catch (e: any) {
     const prismaCode = extractPrismaCodeOnly(e);
@@ -875,6 +884,14 @@ export async function confirmUsdtChainEvent(
         } catch { /* ignore */ }
       })().catch(() => {});
     }
+    // 链上确认达标且 DB 事务提交后，再尝试通知运营；失败不影响已发放权益。
+    await notifyPaymentSuccess({
+      orderNo: (result as any).order.orderNo,
+      paymentMethod: "usdt_trc20",
+      amountMinor,
+      currency: "USDT",
+      productTitle: (result as any).order.product?.title,
+    });
     return {
       status: "confirmed",
       idempotent: false,

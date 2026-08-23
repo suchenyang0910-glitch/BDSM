@@ -28,6 +28,7 @@ import {
 import { userIdIndexKey, chatIdIndexKey } from "../utils/crypto.js";
 import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
 import { normalizeStoredXtrAmountToStars } from "../utils/currency.js";
+import { notifyPaymentSuccess } from "../services/paymentSuccessNotifier.js";
 
 const TRON_BASE58_ADDRESS_RE = /^T[A-Za-z0-9]{8,63}$/;
 
@@ -932,6 +933,15 @@ export default async function orderRoutes(fastify: FastifyInstance) {
           ipAddress: (req.ip as string) || null,
           userAgent: (req.headers["user-agent"] as string) || null,
         });
+        if (!result.idempotent) {
+          await notifyPaymentSuccess({
+            orderNo: result.order.orderNo,
+            paymentMethod: "manual",
+            amountMinor: result.order.amountMinor,
+            currency: result.order.currency,
+            productTitle: result.order.product?.title,
+          });
+        }
         return {
           orderNo: result.order.orderNo,
           status: result.order.status,

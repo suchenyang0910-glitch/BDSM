@@ -24,6 +24,11 @@ import usdtInternalRoutes from "../src/routes/usdtInternal.js";
 import { releaseExpiredUsdtAddresses, assignUsdtTrc20Address, generateUsdtUniqueAmountForAddress } from "../src/services/usdtPool.js";
 import { emitSafetyEvent, emitStructuredLog } from "../src/utils/structuredError.js";
 import {
+  buildPaymentSuccessNotificationText,
+  loadPaymentSuccessNotifyRecipients,
+  notifyPaymentSuccess,
+} from "../src/services/paymentSuccessNotifier.js";
+import {
   setupTestHarness,
   teardownTestHarness,
   seedTestData,
@@ -76,6 +81,47 @@ async function loginAs(app: any, userId: string): Promise<string> {
   const res = await app.inject({ method: "POST", url: `/__test/login/${userId}` });
   return cookieFromResponse(res);
 }
+
+test("支付成功运营通知：收件人去重、内容脱敏、通知失败不抛出", async () => {
+  const recipients = loadPaymentSuccessNotifyRecipients("123456, 987654,123456,invalid,-123");
+  assert.deepEqual(recipients, [123456n, 987654n]);
+
+  const message = buildPaymentSuccessNotificationText({
+    orderNo: "INT20260823001234",
+    paymentMethod: "usdt_trc20",
+    amountMinor: 12_340_000n,
+    currency: "USDT",
+    productTitle: "测试内容\n不应拆成多行",
+  });
+  assert.match(message, /USDT-TRC20/);
+  assert.match(message, /12\.34 USDT/);
+  assert.doesNotMatch(message, /INT20260823001234/);
+  assert.doesNotMatch(message, /\n不应拆成多行/);
+
+  const previous = process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS;
+  process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS = "123456,987654,123456";
+  const received: string[] = [];
+  try {
+    const result = await notifyPaymentSuccess({
+      orderNo: "INT20260823001234",
+      paymentMethod: "telegram_stars",
+      amountMinor: 150n,
+      currency: "XTR",
+      productTitle: "会员",
+    }, async ({ telegramUserId }) => {
+      received.push(String(telegramUserId));
+      if (String(telegramUserId) === "987654") throw new Error("telegram unavailable");
+      return { stub: false, success: true, userId: String(telegramUserId), messageId: 1 };
+    });
+    assert.equal(result.configured, true);
+    assert.equal(result.attempted, 2);
+    assert.equal(result.delivered, 1);
+    assert.deepEqual(received, ["123456", "987654"]);
+  } finally {
+    if (previous === undefined) delete process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS;
+    else process.env.PAYMENT_SUCCESS_NOTIFY_TELEGRAM_USER_IDS = previous;
+  }
+});
 
 async function adminLoginAs(app: any, email: string, password: string): Promise<string> {
   const res = await app.inject({
