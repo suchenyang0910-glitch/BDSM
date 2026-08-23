@@ -20,6 +20,23 @@
   box-sizing: border-box;
 }
 
+html {
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+a,
+button,
+input,
+label,
+select,
+textarea,
+summary,
+[role="button"] {
+  touch-action: manipulation;
+}
+
 html,
 body {
   margin: 0;
