@@ -34,6 +34,17 @@
   let currentView = "";
   let currentIdentitySession = null;
 
+  function openChannelAccess(resourceId) {
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/api/resources/" + encodeURIComponent(resourceId) + "/access-link";
+    form.target = "_blank";
+    form.style.display = "none";
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }
+
   function zhMsg(err) {
     const payload = err?.payload || err?.response?.data || {};
     const code =
@@ -743,12 +754,7 @@
         if (!rid) return;
         b.addEventListener("click", () => {
           if (!ensureTelegramBound("h5_login_required_for_channel_access")) return;
-          try {
-            const w = window.open(`/api/resources/${rid}/access-link`, "_blank", "noopener,noreferrer");
-            if (!w) { location.href = `/api/resources/${rid}/access-link`; }
-          } catch (_) {
-            location.href = `/api/resources/${rid}/access-link`;
-          }
+          openChannelAccess(rid);
         });
       });
     } catch (err) {

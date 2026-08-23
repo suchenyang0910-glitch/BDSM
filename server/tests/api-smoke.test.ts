@@ -84,6 +84,14 @@ test("access-link routes enforce POST and authenticated session", async () => {
 
     const wrongMethod = await app.inject({ method: "GET", url: "/api/resources/not-a-real-id/access-link" });
     assert.equal(wrongMethod.statusCode, 405, "GET access-link = 405 method not allowed");
+
+    const browserFormPost = await app.inject({
+      method: "POST",
+      url: "/api/resources/not-a-real-id/access-link",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      payload: "",
+    });
+    assert.equal(browserFormPost.statusCode, 401, "browser form POST must reach auth, not fail with 415");
   } finally {
     await app.close();
   }

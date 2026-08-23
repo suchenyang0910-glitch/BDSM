@@ -22,6 +22,16 @@ import { resolveMembershipChannelRef } from "../services/membershipChannel.js";
 export default async function resourceRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
 
+  // “进入频道”由浏览器原生 POST 表单触发，表单会携带 application/x-www-form-urlencoded。
+  // 本路由不读取表单内容；仅允许它通过解析层进入现有会话/权益校验，避免浏览器点击被 Fastify 在 415 处拦截。
+  if (!fastify.hasContentTypeParser("application/x-www-form-urlencoded")) {
+    fastify.addContentTypeParser(
+      "application/x-www-form-urlencoded",
+      { parseAs: "string" },
+      (_req, _body, done) => done(null, {}),
+    );
+  }
+
   async function handleAccessLink(req: any, reply: any) {
     const uid = req.userId as string | undefined;
     const { id: resourceId } = req.params as { id: string };
