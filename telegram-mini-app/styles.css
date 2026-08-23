@@ -118,6 +118,21 @@ h3 {
   margin-bottom: 16px;
 }
 
+.app-header.is-home {
+  align-items: center;
+  min-height: 48px;
+  margin-bottom: 10px;
+}
+
+.app-header.is-home .header-main {
+  align-items: center;
+}
+
+.app-header.is-home h1 {
+  font-size: 23px;
+  letter-spacing: -0.04em;
+}
+
 .header-main {
   align-items: flex-start;
   min-width: 0;
@@ -259,6 +274,26 @@ h3 {
   margin-top: 16px;
 }
 
+#homeView .section-block {
+  margin-top: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+#homeView .section-head {
+  margin-bottom: 10px;
+}
+
+#homeView .section-head h3 {
+  font-size: 16px;
+}
+
+.home-banner-section {
+  margin: 2px -16px 0;
+}
+
 .section-head {
   align-items: center;
   justify-content: space-between;
@@ -291,15 +326,29 @@ h3 {
 }
 
 .banner-rail {
-  display: grid;
+  display: flex;
   gap: 12px;
+  overflow-x: auto;
+  padding: 0 16px 4px;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+.banner-rail::-webkit-scrollbar {
+  display: none;
 }
 
 .banner-card {
   position: relative;
+  flex: 0 0 min(86vw, 500px);
   overflow: hidden;
-  min-height: 176px;
+  min-height: 0;
+  aspect-ratio: 16 / 9;
   padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  scroll-snap-align: start;
   background:
     linear-gradient(140deg, rgba(166, 107, 255, 0.3), rgba(38, 34, 54, 0.92)),
     var(--bg-elevated);
@@ -310,14 +359,22 @@ h3 {
   background-position: center;
 }
 
-.banner-card p {
-  margin-top: 10px;
-  max-width: 260px;
+.banner-card h3 {
+  max-width: 78%;
+  font-size: 20px;
+  line-height: 1.2;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.3);
 }
 
-.banner-card .ghost-button {
-  margin-top: 14px;
-  background: rgba(255, 255, 255, 0.1);
+.banner-action {
+  width: fit-content;
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-weight: 800;
+  pointer-events: none;
 }
 
 .content-grid,
@@ -390,7 +447,7 @@ h3 {
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  min-height: 170px;
+  min-height: 128px;
 }
 
 .card-tag {
@@ -421,6 +478,37 @@ h3 {
 
 .card-action {
   margin-top: auto;
+}
+
+#homeView .content-card {
+  border-radius: 14px;
+}
+
+#homeView .card-body {
+  min-height: 92px;
+  gap: 5px;
+  padding: 9px 10px 10px;
+}
+
+#homeView .card-desc,
+#homeView .card-price {
+  display: none;
+}
+
+#homeView .card-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 14px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+#homeView .card-meta {
+  font-size: 11px;
+}
+
+#homeView .card-action {
+  display: none;
 }
 
 .search-box {
@@ -731,7 +819,6 @@ h3 {
 }
 
 @media (max-width: 560px) {
-  .content-grid,
   .topic-grid,
   .info-grid {
     grid-template-columns: 1fr;

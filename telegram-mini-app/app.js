@@ -333,11 +333,9 @@
         card.style.backgroundImage = "linear-gradient(140deg, rgba(166, 107, 255, 0.3), rgba(38, 34, 54, 0.92)), url('" + String(banner.imageUrl).replace(/'/g, "%27") + "')";
       }
       card.innerHTML =
-        '<p class="eyebrow">' + escapeHtml(banner.eyebrow || "BANNER") + '</p>' +
         '<h3>' + escapeHtml(banner.title || "") + '</h3>' +
-        '<p>' + escapeHtml(banner.description || "") + '</p>' +
-        '<button class="ghost-button" type="button">' + escapeHtml(banner.actionLabel || "查看详情") + '</button>';
-      card.querySelector("button").addEventListener("click", function () {
+        '<button class="banner-action" type="button">' + escapeHtml(banner.actionLabel || "查看") + '</button>';
+      card.addEventListener("click", function () {
         handleBannerAction(banner);
       });
       host.appendChild(card);
@@ -412,7 +410,6 @@
       $("homeLatestGrid").innerHTML = createSkeletonCards(4);
       return;
     }
-    $("homeBrandHint").textContent = state.home.brandHint || "真实表达，在理解与边界中被看见";
     renderBannerList();
     renderFeaturedCard();
     renderRecentList();
@@ -985,7 +982,7 @@
     state.route = routeState;
     const isDetail = routeState.view === "detail";
     const titleMap = {
-      home: ["同频点播", "今天看什么"],
+      home: ["同频", ""],
       library: ["片库", "搜索、分类与筛选"],
       membership: ["会员", "会员主频道与内容包"],
       me: ["我的", "资产、订单、频道入口与绑定"],
@@ -993,8 +990,11 @@
 
     $("backButton").hidden = !isDetail;
     $("bottomNav").classList.toggle("is-hidden", isDetail);
+    $("appHeader").classList.toggle("is-home", !isDetail && routeState.tab === "home");
     $("headerTitle").textContent = isDetail ? "视频详情" : titleMap[routeState.tab][0];
     $("headerSubtitle").textContent = isDetail ? "查看权益与购买方式" : titleMap[routeState.tab][1];
+    $("headerSubtitle").hidden = !isDetail && routeState.tab === "home";
+    $("headerEyebrow").hidden = !isDetail && routeState.tab === "home";
 
     ["home", "library", "membership", "me"].forEach(function (tab) {
       $(tab + "View").classList.toggle("is-hidden", isDetail || routeState.tab !== tab);

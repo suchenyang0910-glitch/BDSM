@@ -12,20 +12,20 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="" />
     <title>同频 · 精选点播</title>
-    <link rel="stylesheet" href="./styles.css?v=20260823-vod-2" />
+    <link rel="stylesheet" href="./styles.css?v=20260823-home-visual-1" />
     <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
     <script id="videoObjectJsonLd" type="application/ld+json"></script>
   </head>
   <body>
     <div class="app-shell">
-      <header class="app-header">
+      <header id="appHeader" class="app-header">
         <div class="header-main">
           <button id="backButton" class="icon-button" type="button" aria-label="返回" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
           </button>
           <div class="header-copy">
-            <p class="eyebrow">INTUNE VOD</p>
-            <h1 id="headerTitle">同频点播</h1>
+            <p id="headerEyebrow" class="eyebrow">INTUNE VOD</p>
+            <h1 id="headerTitle">同频</h1>
             <p id="headerSubtitle" class="header-subtitle">视频点播目录、会员权益与 Telegram 频道交付</p>
           </div>
         </div>
@@ -50,56 +50,34 @@
 
       <main id="appMain" class="app-main">
         <section id="homeView" class="tab-view">
-          <div class="brand-hint-card">
-            <p id="homeBrandHint" class="brand-hint">真实表达，在理解与边界中被看见</p>
-          </div>
-
-          <section class="section-block">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">BANNER</p>
-                <h3>首页运营入口</h3>
-              </div>
-            </div>
+          <section class="home-banner-section">
             <div id="homeBannerList" class="banner-rail"></div>
           </section>
 
-          <section class="section-block">
+          <section class="section-block home-featured-section">
             <div class="section-head">
-              <div>
-                <p class="eyebrow">TODAY</p>
-                <h3>今日精选</h3>
-              </div>
+              <h3>今日精选</h3>
             </div>
             <div id="homeFeaturedCard"></div>
           </section>
 
           <section id="homeRecentSection" class="section-block is-hidden">
             <div class="section-head">
-              <div>
-                <p class="eyebrow">RECENT</p>
-                <h3>继续浏览</h3>
-              </div>
+              <h3>继续浏览</h3>
             </div>
             <div id="homeRecentList" class="stack-list"></div>
           </section>
 
           <section class="section-block">
             <div class="section-head">
-              <div>
-                <p class="eyebrow">TOPICS</p>
-                <h3>本周主题</h3>
-              </div>
+              <h3>主题</h3>
             </div>
             <div id="homeThemesList" class="topic-grid"></div>
           </section>
 
           <section class="section-block">
             <div class="section-head">
-              <div>
-                <p class="eyebrow">LATEST</p>
-                <h3>最新上架</h3>
-              </div>
+              <h3>最新</h3>
               <button id="jumpLibraryButton" class="text-button" type="button">查看全部</button>
             </div>
             <div id="homeLatestGrid" class="content-grid"></div>
@@ -270,6 +248,6 @@
       </article>
     </template>
 
-    <script src="./app.js?v=20260823-vod-3"></script>
+    <script src="./app.js?v=20260823-home-visual-1"></script>
   </body>
 </html>
