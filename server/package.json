@@ -7,11 +7,12 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "usdt:monitor": "tsx src/workers/usdtTrc20Monitor.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 tests/telegram.test.ts tests/api-smoke.test.ts tests/entitlements.test.ts tests/orders.test.ts tests/admin-permissions.test.ts tests/smoke-sprint2.test.ts tests/s1-content-access.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 tests/telegram.test.ts tests/api-smoke.test.ts tests/entitlements.test.ts tests/orders.test.ts tests/admin-permissions.test.ts tests/smoke-sprint2.test.ts tests/s1-content-access.test.ts tests/usdt-monitor.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

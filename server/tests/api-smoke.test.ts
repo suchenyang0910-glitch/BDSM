@@ -42,18 +42,27 @@ test("catalog APIs return seeded home, category and content data", async () => {
   try {
     const home = await app.inject({ method: "GET", url: "/api/home" });
     assert.equal(home.statusCode, 200, home.body);
-    const homeBody = home.json() as { banners: unknown[]; categories: unknown[]; contents: unknown[] };
+    const homeBody = home.json() as { banners: unknown[]; categories: unknown[]; contents: any[]; seo?: any; robots?: string };
     assert.ok(homeBody.banners.length > 0, "home banners should be seeded");
     assert.ok(homeBody.categories.length > 0, "home categories should be seeded");
     assert.ok(homeBody.contents.length > 0, "home contents should be seeded");
+    assert.equal(homeBody.robots, "noindex,nofollow", "home should stay noindex by default");
+    assert.equal(homeBody.seo?.title, "同频平台默认 SEO 标题", "home should inherit platform SEO title");
+    assert.ok(Array.isArray(homeBody.contents[0]?.effectiveSeo?.keywords), "content list should expose effectiveSeo");
 
     const contents = await app.inject({ method: "GET", url: "/api/contents?pageSize=5" });
     assert.equal(contents.statusCode, 200, contents.body);
-    assert.ok((contents.json() as { items: unknown[] }).items.length > 0, "contents paged should have seed data");
+    const listBody = contents.json() as { items: any[] };
+    assert.ok(listBody.items.length > 0, "contents paged should have seed data");
+    assert.ok(listBody.items.every((item) => item.effectiveSeo && typeof item.effectiveSeo === "object"), "list items should include effectiveSeo");
 
     const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentMembership}` });
     assert.equal(detail.statusCode, 200, detail.body);
-    assert.equal((detail.json() as any).id, TEST_KNOWN_IDS.contentMembership, "content detail id match");
+    const detailBody = detail.json() as any;
+    assert.equal(detailBody.id, TEST_KNOWN_IDS.contentMembership, "content detail id match");
+    assert.equal(detailBody.robots, "noindex,nofollow", "content detail should stay noindex by default");
+    assert.equal(detailBody.effectiveSeo?.description, "会员内容 SEO 描述", "detail should prefer content SEO override");
+    assert.equal(detailBody.videoObjectJsonLd?.["@type"], "VideoObject", "detail should expose VideoObject JSON-LD");
   } finally {
     await app.close();
   }

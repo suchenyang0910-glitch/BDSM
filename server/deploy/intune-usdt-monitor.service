@@ -1,0 +1,24 @@
+[Unit]
+Description=InTune USDT TRC20 monitor worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=intune
+Group=intune
+WorkingDirectory=/opt/bdsm/server
+EnvironmentFile=/etc/intune/intune.env
+ExecStart=/usr/bin/npm run usdt:monitor
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/bdsm/server
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

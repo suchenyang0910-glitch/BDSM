@@ -1,8 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import { formatDuration } from "../utils/telegram.js";
+import { buildEffectiveSeo } from "../services/seoMetadata.js";
 
 export default async function homeRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
+
+  async function tryGetPlatformMetadata() {
+    try {
+      return await prisma.platformMetadata.findUnique({ where: { id: "default" } });
+    } catch {
+      return null;
+    }
+  }
 
   fastify.get("/health", async (_req, reply) => {
     reply.send({ ok: true, ts: new Date().toISOString() });
@@ -22,7 +31,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       return ids.map((id) => m.get(id)).filter(Boolean) as T[];
     };
 
-    const [rawBanners, pubCategories, rawRec, rawFeat] = await Promise.all([
+    const [rawBanners, pubCategories, rawRec, rawFeat, platformMetadata] = await Promise.all([
       cfg.bannerIds?.length
         ? prisma.banner.findMany({
             where: { id: { in: cfg.bannerIds } },
@@ -66,6 +75,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
             },
           })
         : Promise.resolve([] as any[]),
+      tryGetPlatformMetadata(),
     ]);
 
     const banners = (cfg.bannerIds?.length ? orderIdx(cfg.bannerIds, rawBanners) : rawBanners).filter((b: any) => {
@@ -120,6 +130,18 @@ export default async function homeRoutes(fastify: FastifyInstance) {
         priceMinor: c.product?.priceMinor?.toString(),
         priceCurrency: c.product?.currency,
         publishedAt: c.publishedAt?.toISOString(),
+        effectiveSeo: buildEffectiveSeo({
+          contentSeoTitle: c.seoTitle,
+          contentSeoDescription: c.seoDescription,
+          contentSeoKeywords: c.seoKeywords,
+          contentGeoKeywords: c.geoKeywords,
+          fallbackTitle: c.title,
+          fallbackDescription: c.description,
+          platformSeoTitle: platformMetadata?.seoTitle,
+          platformSeoDescription: platformMetadata?.seoDescription,
+          platformSeoKeywords: platformMetadata?.seoKeywords,
+          platformGeoKeywords: platformMetadata?.geoKeywords,
+        }),
       };
     });
 
@@ -208,6 +230,15 @@ export default async function homeRoutes(fastify: FastifyInstance) {
         entitlementCount: userEntitlements.size,
         hasMembership,
       },
+      seo: buildEffectiveSeo({
+        fallbackTitle: "同频点播",
+        fallbackDescription: "Telegram Mini App 与 H5 混合内容目录。",
+        platformSeoTitle: platformMetadata?.seoTitle,
+        platformSeoDescription: platformMetadata?.seoDescription,
+        platformSeoKeywords: platformMetadata?.seoKeywords,
+        platformGeoKeywords: platformMetadata?.geoKeywords,
+      }),
+      robots: "noindex,nofollow",
     };
   });
 }

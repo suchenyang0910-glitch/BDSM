@@ -49,6 +49,7 @@ import {
 import { resolvePackageChannelId } from "./channelCrypto.js";
 
 import { headObject, streamObjectForRead, requireObjectStorageEnv } from "./objectStorage.js";
+import { appendTelegramTagLine, normalizeTelegramHashtagsFromInputs } from "./seoMetadata.js";
 
 // ====================== 常量配置 ======================
 const DEFAULT_QUEUE_NAME = "telegram-publish-default";
@@ -319,10 +320,24 @@ export async function processPublishJob(
   }
 
   // Step 3: 组装 caption（public_free_preview 才走模板；其余纯无 caption 或未来扩展）
+  const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([
+    Array.isArray((job as any).telegramTagsJson) ? (job as any).telegramTagsJson : [],
+  ]);
   const isPreviewKind = job.channelKind === "public_free_preview" && asset.kind === "preview_video";
   let captionBundle: { caption?: string; parseMode?: "HTML" } = {};
-  if (isPreviewKind && job.content) {
-    captionBundle = buildPreviewVideoCaption(job.content);
+  if (typeof job.captionText === "string" && job.captionText.trim()) {
+    captionBundle = {
+      caption: appendTelegramTagLine(job.captionText, normalizedTelegramTags),
+      parseMode: job.parseMode === "HTML" ? "HTML" : undefined,
+    };
+  } else if (isPreviewKind && job.content) {
+    const previewBundle = buildPreviewVideoCaption(job.content);
+    captionBundle = {
+      caption: appendTelegramTagLine(previewBundle.caption, normalizedTelegramTags),
+      parseMode: previewBundle.parseMode,
+    };
+  } else if (normalizedTelegramTags.length > 0) {
+    captionBundle = { caption: normalizedTelegramTags.join(" ") };
   }
 
   // Step 4: 流式读对象存储 → 组装 multipart payload → 调 sendMediaFromStorage

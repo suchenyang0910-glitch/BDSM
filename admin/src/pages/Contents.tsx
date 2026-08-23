@@ -54,6 +54,7 @@ import http, {
   adminMe,
   listFreeChannels,
   registerTelegramPublishContent,
+  startAdminTelegramPublish,
   errMsg,
 } from "../api/client";
 import type {
@@ -135,8 +136,8 @@ type InitMediaUploadResp = {
   expectedHttpHeaders: Record<string, string>;
 };
 type CompleteMediaUploadReq = { ok: boolean; reportedLength?: number | null; etag?: string | null; errorNote?: string | null };
-type StartTelegramPublishReq = { channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">; reason?: string };
-type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }> };
+type StartTelegramPublishReq = { channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">; telegramTags?: string[]; reason?: string };
+type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }>; normalizedTelegramTags?: string[] };
 
 export async function initMediaUpload(req: InitMediaUploadReq): Promise<InitMediaUploadResp> {
   const res = await http.post("/admin/media/init-upload", req, { timeout: 20_000 });
@@ -151,8 +152,7 @@ export async function getMediaAsset(id: string): Promise<{ ok: true; mediaAsset:
   return res.data;
 }
 export async function startTelegramPublish(contentId: string, req: StartTelegramPublishReq): Promise<StartTelegramPublishResp> {
-  const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/start-telegram-publish`, req, { timeout: 40_000 });
-  return res.data;
+  return startAdminTelegramPublish(contentId, req as any);
 }
 export async function listTelegramPublishJobs(contentId: string): Promise<{ ok: true; items: TelegramPublishJobItem[] }> {
   const res = await http.get(`/admin/contents/${encodeURIComponent(contentId)}/publish-jobs`);
@@ -441,6 +441,9 @@ const ContentsPage: React.FC = () => {
       isFeatured: false,
       isNewArrival: false,
       tags: [],
+      seoKeywords: [],
+      geoKeywords: [],
+      telegramTags: [],
       categoryIds: [],
       freeChannelCode: freeChannels[0]?.code ?? null,
     });
@@ -462,6 +465,10 @@ const ContentsPage: React.FC = () => {
     form.setFieldsValue({
       title: row.title,
       description: row.description,
+      seoTitle: row.seoTitle,
+      seoDescription: row.seoDescription,
+      seoKeywords: row.seoKeywords || [],
+      geoKeywords: row.geoKeywords || [],
       coverUrl: row.coverUrl,
       thumbnailUrl: row.thumbnailUrl,
       previewUrl: row.previewUrl,
@@ -480,6 +487,7 @@ const ContentsPage: React.FC = () => {
       productId: row.productId,
       packageId: row.packageId,
       freeChannelCode: row.freeChannelCode,
+      telegramTags: [],
     });
     // 拉取素材 FK 关联（若服务端返回了 coverAsset/previewAsset/fullVideoAsset，后续 getAdminContent 可能补充；这里先简单只拿已存在 FK，若已建 assetId，则刷新状态）
     const rawAny = row as any;
@@ -582,6 +590,8 @@ const ContentsPage: React.FC = () => {
       const payload: any = {
         ...values,
         tags: values.tags || [],
+        seoKeywords: values.seoKeywords || [],
+        geoKeywords: values.geoKeywords || [],
         categoryIds: values.categoryIds || [],
         recommendStartsAt: values.recommendStartsAt ? values.recommendStartsAt.toISOString() : null,
         recommendEndsAt: values.recommendEndsAt ? values.recommendEndsAt.toISOString() : null,
@@ -1140,6 +1150,45 @@ const ContentsPage: React.FC = () => {
                   <Form.Item name="tags" label="标签">
                     <Select mode="tags" placeholder="输入标签后回车" />
                   </Form.Item>
+                  <Card
+                    size="small"
+                    title="SEO / GEO（可选，未填则继承平台设置）"
+                    style={{ marginBottom: 24 }}
+                  >
+                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="这里仅维护搜索展示元信息与生成式搜索主题词。GEO 只用于主题表达，不采集用户地理位置；且 SEO/GEO 关键词不会自动泄露为 Telegram 标签。"
+                      />
+                      <Form.Item name="seoTitle" label="SEO 标题">
+                        <Input maxLength={120} placeholder="未填则继承平台默认 SEO 标题；再未填则回落到内容标题" />
+                      </Form.Item>
+                      <Form.Item name="seoDescription" label="SEO 描述">
+                        <TextArea rows={3} maxLength={300} placeholder="未填则继承平台默认 SEO 描述；再未填则回落到内容描述" />
+                      </Form.Item>
+                      <Form.Item name="seoKeywords" label="SEO 关键词">
+                        <Select mode="tags" placeholder="输入 SEO 关键词后回车，未填则继承平台默认关键词" />
+                      </Form.Item>
+                      <Form.Item name="geoKeywords" label="GEO 主题词">
+                        <Select mode="tags" placeholder="输入生成式搜索主题词后回车，未填则继承平台默认主题词" />
+                      </Form.Item>
+                      {!!editing?.effectiveSeo && (
+                        <Alert
+                          type="success"
+                          showIcon
+                          message={`当前生效标题：${editing.effectiveSeo.title || "—"}`}
+                          description={
+                            <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
+                              <span>描述来源：{editing.effectiveSeo.source.description}</span>
+                              <span>关键词：{(editing.effectiveSeo.keywords || []).join(" / ") || "—"}</span>
+                              <span>GEO：{(editing.effectiveSeo.geoKeywords || []).join(" / ") || "—"}</span>
+                            </Space>
+                          }
+                        />
+                      )}
+                    </Space>
+                  </Card>
                   <Space size={16} style={{ width: "100%" }} align="start">
                     <Form.Item name="isRecommended" label="推荐位" valuePropName="checked" style={{ marginBottom: 0 }}>
                       <Switch />
@@ -1444,6 +1493,14 @@ const ContentsPage: React.FC = () => {
                             icon={<InfoCircleOutlined />}
                             message="频道 chatId 完全由服务端控制，前端仅能选择「渠道类型」；运营绝对不能直接提交 chatId，也无法在 UI 看到明文 chatId。"
                           />
+                          <Form.Item
+                            name="telegramTags"
+                            label="Telegram 标签（可选，仅用于发布 caption）"
+                            style={{ marginBottom: 0 }}
+                            extra="服务端会自动清洗、去重、限长，并与内容标签合并生成 #标签1 #标签2。SEO/GEO 关键词不会自动进入这里。"
+                          >
+                            <Select mode="tags" placeholder="例如：夜间, calm_mode" />
+                          </Form.Item>
                           <Checkbox.Group
                             value={channelKinds}
                             onChange={(v) => setChannelKinds(v as TelegramPublishJobItem["channelKind"][])}
@@ -1537,11 +1594,13 @@ const ContentsPage: React.FC = () => {
                                 if (!editing?.id) return;
                                 setStartPublishing(true);
                                 try {
+                                  const rawTelegramTags = form.getFieldValue("telegramTags") || [];
                                   const r = await startTelegramPublish(editing.id, {
                                     channelKinds,
+                                    telegramTags: rawTelegramTags,
                                     reason: `运营点击发布：${channelKinds.join("+")}`,
                                   });
-                                  message.success(`已入队 ${r.jobs.length} 条 Bot 发送任务（异步执行，约每 8 秒刷新一次进度）`);
+                                  message.success(`已入队 ${r.jobs.length} 条 Bot 发送任务${r.normalizedTelegramTags?.length ? ` · 标签：${r.normalizedTelegramTags.join(" ")}` : ""}`);
                                   refreshPublishJobs(editing.id);
                                 } catch (e) {
                                   message.error(errMsg(e, "入队失败"));

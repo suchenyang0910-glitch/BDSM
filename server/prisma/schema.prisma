@@ -307,6 +307,10 @@ model Content {
   thumbnailUrl       String?        @map("thumbnail_url")
   description        String?
   tags               String[]       @default([])
+  seoTitle           String?        @map("seo_title") @db.VarChar(120)
+  seoDescription     String?        @map("seo_description") @db.VarChar(300)
+  seoKeywords        String[]       @default([]) @map("seo_keywords")
+  geoKeywords        String[]       @default([]) @map("geo_keywords")
   previewUrl         String?        @map("preview_url")
   durationSeconds    Int?           @map("duration_seconds")
   accessType         AccessType     @default(single) @map("access_type")
@@ -357,6 +361,18 @@ model Content {
   @@index([previewAssetId])
   @@index([fullVideoAssetId])
   @@map("contents")
+}
+
+model PlatformMetadata {
+  id               String   @id @default("default")
+  seoTitle         String?  @map("seo_title") @db.VarChar(120)
+  seoDescription   String?  @map("seo_description") @db.VarChar(300)
+  seoKeywords      String[] @default([]) @map("seo_keywords")
+  geoKeywords      String[] @default([]) @map("geo_keywords")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  updatedBy        String?  @map("updated_by")
+
+  @@map("platform_metadata")
 }
 
 model ContentCategory {
@@ -470,10 +486,46 @@ model PaymentAddress {
   updatedAt        DateTime             @updatedAt @map("updated_at")
 
   assignedOrders   Order[]
+  monitorCursor    UsdtMonitorCursor?
 
   @@index([network, status])
   @@index([status, releaseAt])
   @@map("payment_addresses")
+}
+
+model UsdtMonitorCursor {
+  addressId              String        @id @map("address_id")
+  lastBlockTimestamp     DateTime?     @map("last_block_timestamp")
+  lastTxHashFingerprint  String?       @map("last_tx_hash_fingerprint") @db.VarChar(64)
+  lastSuccessAt          DateTime?     @map("last_success_at")
+  lastErrorClass         String?       @map("last_error_class") @db.VarChar(64)
+  consecutiveFailures    Int           @default(0) @map("consecutive_failures")
+  createdAt              DateTime      @default(now()) @map("created_at")
+  updatedAt              DateTime      @updatedAt @map("updated_at")
+
+  paymentAddress         PaymentAddress @relation(fields: [addressId], references: [id], onDelete: Cascade)
+
+  @@index([lastSuccessAt])
+  @@index([consecutiveFailures, updatedAt])
+  @@map("usdt_monitor_cursors")
+}
+
+model UsdtMonitorRuntimeState {
+  workerName             String    @id @map("worker_name") @db.VarChar(64)
+  lastCycleAt            DateTime? @map("last_cycle_at")
+  lastSuccessAt          DateTime? @map("last_success_at")
+  lastBlockNumber        BigInt?   @map("last_block_number")
+  lastScannedAddressCount Int      @default(0) @map("last_scanned_address_count")
+  lastDiscoveredTxCount  Int       @default(0) @map("last_discovered_tx_count")
+  lastConfirmedCount     Int       @default(0) @map("last_confirmed_count")
+  lastRejectedCount      Int       @default(0) @map("last_rejected_count")
+  consecutiveFailures    Int       @default(0) @map("consecutive_failures")
+  lastErrorClass         String?   @map("last_error_class") @db.VarChar(64)
+  lastProviderStatus     String?   @map("last_provider_status") @db.VarChar(32)
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  @@map("usdt_monitor_runtime_states")
 }
 
 model Entitlement {
@@ -879,6 +931,7 @@ model TelegramPublishJob {
   telegramFileUniqueId  String?                      @map("telegram_file_unique_id") @db.VarChar(256)
   captionText           String?                      @map("caption_text") @db.Text
   parseMode             String?                      @map("parse_mode") @db.VarChar(32)
+  telegramTagsJson      Json?                        @map("telegram_tags_json")
   sendOptionsJson       Json?                        @map("send_options_json")
   attempt               Int                          @default(0) @map("attempt")
   maxAttempts           Int                          @default(3) @map("max_attempts")

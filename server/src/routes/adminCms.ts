@@ -32,6 +32,12 @@ import {
   getPublishQueueHandle,
   buildPreviewVideoCaption,
 } from "../services/telegramPublisher.js";
+import {
+  normalizeKeywordList,
+  buildEffectiveSeo,
+  normalizeTelegramHashtagsFromInputs,
+  appendTelegramTagLine,
+} from "../services/seoMetadata.js";
 import { randomBytes, createHash } from "node:crypto";
 
 const ContentStatusZ = z.enum(["draft", "pending_review", "published", "archived", "scheduled"]);
@@ -93,6 +99,64 @@ function stripSensitiveFields(v: any): any {
     for (const k of Object.keys(copy)) copy[k] = stripSensitiveFields(copy[k]);
   }
   return copy;
+}
+
+function normalizeSeoPayload(payload: {
+  seoTitle?: string | null;
+  seoDescription?: string | null;
+  seoKeywords?: unknown;
+  geoKeywords?: unknown;
+}) {
+  const seoTitle = String(payload.seoTitle || "").trim().slice(0, 120) || null;
+  const seoDescription = String(payload.seoDescription || "").trim().slice(0, 300) || null;
+  return {
+    seoTitle,
+    seoDescription,
+    seoKeywords: normalizeKeywordList(payload.seoKeywords),
+    geoKeywords: normalizeKeywordList(payload.geoKeywords),
+  };
+}
+
+async function getPlatformMetadataRow(prisma: PrismaClient) {
+  const row = await prisma.platformMetadata.upsert({
+    where: { id: "default" },
+    update: {},
+    create: { id: "default" },
+  });
+  return row;
+}
+
+function serializePlatformMetadata(row: any) {
+  return {
+    id: row.id,
+    seoTitle: row.seoTitle || null,
+    seoDescription: row.seoDescription || null,
+    seoKeywords: Array.isArray(row.seoKeywords) ? row.seoKeywords : [],
+    geoKeywords: Array.isArray(row.geoKeywords) ? row.geoKeywords : [],
+    updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+    updatedBy: row.updatedBy || null,
+  };
+}
+
+function attachEffectiveSeo<T extends Record<string, any>>(row: T, platform: any): T & { effectiveSeo: ReturnType<typeof buildEffectiveSeo> } {
+  return Object.assign({}, row, {
+    effectiveSeo: buildEffectiveSeo({
+      contentSeoTitle: row.seoTitle,
+      contentSeoDescription: row.seoDescription,
+      contentSeoKeywords: row.seoKeywords,
+      contentGeoKeywords: row.geoKeywords,
+      fallbackTitle: row.title,
+      fallbackDescription: row.description,
+      platformSeoTitle: platform?.seoTitle,
+      platformSeoDescription: platform?.seoDescription,
+      platformSeoKeywords: platform?.seoKeywords,
+      platformGeoKeywords: platform?.geoKeywords,
+    }),
+  });
+}
+
+function normalizeStoredTelegramTags(input: unknown): string[] {
+  return normalizeTelegramHashtagsFromInputs([Array.isArray(input) ? input : []]);
 }
 
 type AccessTypeBound = "public" | "single" | "membership" | "package";
@@ -288,12 +352,57 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
   // ===========================================================================
   // CONTENTS (Step 1 BE-R1)
   // ===========================================================================
+  fastify.get(
+    "/admin/platform-metadata",
+    { preHandler: [requireAdmin("settings:view")] },
+    async (_req: any, reply) => {
+      const row = await getPlatformMetadataRow(prisma);
+      return reply.send(serializePlatformMetadata(row));
+    },
+  );
+
+  fastify.put(
+    "/admin/platform-metadata",
+    { preHandler: [requireAdmin("settings:manage")] },
+    async (req: any, reply) => {
+      const body = ZPLATFORM_METADATA.parse(req.body || {});
+      const meta = adminMeta(req);
+      const before = await getPlatformMetadataRow(prisma);
+      const normalized = normalizeSeoPayload(body);
+      const after = await prisma.platformMetadata.update({
+        where: { id: "default" },
+        data: {
+          seoTitle: normalized.seoTitle,
+          seoDescription: normalized.seoDescription,
+          seoKeywords: normalized.seoKeywords,
+          geoKeywords: normalized.geoKeywords,
+          updatedBy: meta.adminId,
+        },
+      });
+      await writeAudit(
+        prisma,
+        meta,
+        "platform_metadata.update",
+        "platform_metadata",
+        "default",
+        serializePlatformMetadata(before),
+        serializePlatformMetadata(after),
+        body.reason || null,
+      );
+      return reply.send({ ok: true, platformMetadata: serializePlatformMetadata(after) });
+    },
+  );
+
   const ZCONTENT_CREATE = z.object({
     title: z.string().trim().min(1).max(200),
     coverUrl: z.string().trim().url().max(500).optional().nullable(),
     thumbnailUrl: z.string().trim().url().max(500).optional().nullable(),
     description: z.string().max(2000).optional().nullable(),
     tags: z.array(z.string().max(50)).optional().default([]),
+    seoTitle: z.string().trim().max(120).optional().nullable(),
+    seoDescription: z.string().trim().max(300).optional().nullable(),
+    seoKeywords: z.array(z.string().max(40)).optional().default([]),
+    geoKeywords: z.array(z.string().max(40)).optional().default([]),
     previewUrl: z.string().trim().max(500).optional().nullable(),
     durationSeconds: z.number().int().min(0).optional().nullable(),
     accessType: z.enum(["public", "single", "membership", "package"]).optional().default("single"),
@@ -348,6 +457,14 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     channelKinds: z.array(
       z.enum(["public_free_preview", "membership_full", "package_full"])
     ).min(1).max(6),
+    telegramTags: z.array(z.string().max(64)).optional().default([]),
+    reason: z.string().max(500).optional(),
+  });
+  const ZPLATFORM_METADATA = z.object({
+    seoTitle: z.string().trim().max(120).optional().nullable(),
+    seoDescription: z.string().trim().max(300).optional().nullable(),
+    seoKeywords: z.array(z.string().max(40)).optional().default([]),
+    geoKeywords: z.array(z.string().max(40)).optional().default([]),
     reason: z.string().max(500).optional(),
   });
   const ZPUBLISH_JOBS_QP = z.object({
@@ -384,7 +501,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           { description: { contains: qp.q.trim(), mode: "insensitive" } },
         ];
       }
-      const [total, rows] = await prisma.$transaction([
+      const [total, rows, platform] = await Promise.all([
         prisma.content.count({ where }),
         prisma.content.findMany({
           where,
@@ -398,13 +515,14 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           take: qp.limit,
           orderBy: [{ sortOrder: "desc" }, { isFeatured: "desc" }, { isRecommended: "desc" }, { updatedAt: "desc" }],
         }),
+        getPlatformMetadataRow(prisma),
       ]);
       return reply.send(serialize({
         total, page: qp.page, limit: qp.limit,
-        data: rows.map((c: any) => ({
+        data: rows.map((c: any) => attachEffectiveSeo({
           ...c,
           categories: c.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
-        })),
+        }, platform)),
       }));
     },
   );
@@ -414,43 +532,46 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     { preHandler: [requireAdmin("content:view")] },
     async (req: any, reply) => {
       const id = ZID.parse(req.params.id);
-      const row = await prisma.content.findUnique({
-        where: { id },
-        include: {
-          categories: { orderBy: { displayOrder: "asc" }, include: { category: true } },
-          product: true,
-          package: true,
-          lastEditor: { select: { id: true, email: true, displayName: true } },
-          coverAsset: {
-            select: {
-              id: true, kind: true, status: true, originalFilename: true, mimeType: true,
-              storagePublicUrl: true, contentLength: true, widthPixels: true, heightPixels: true,
-              lastVerifiedAt: true, createdAt: true,
+      const [row, platform] = await Promise.all([
+        prisma.content.findUnique({
+          where: { id },
+          include: {
+            categories: { orderBy: { displayOrder: "asc" }, include: { category: true } },
+            product: true,
+            package: true,
+            lastEditor: { select: { id: true, email: true, displayName: true } },
+            coverAsset: {
+              select: {
+                id: true, kind: true, status: true, originalFilename: true, mimeType: true,
+                storagePublicUrl: true, contentLength: true, widthPixels: true, heightPixels: true,
+                lastVerifiedAt: true, createdAt: true,
+              },
+            },
+            previewAsset: {
+              select: {
+                id: true, kind: true, status: true, originalFilename: true, mimeType: true,
+                storagePublicUrl: true, contentLength: true, durationSeconds: true,
+                widthPixels: true, heightPixels: true, hasWatermark: true,
+                lastVerifiedAt: true, createdAt: true,
+              },
+            },
+            fullVideoAsset: {
+              select: {
+                id: true, kind: true, status: true, originalFilename: true, mimeType: true,
+                contentLength: true, durationSeconds: true,
+                widthPixels: true, heightPixels: true,
+                lastVerifiedAt: true, createdAt: true,
+              },
             },
           },
-          previewAsset: {
-            select: {
-              id: true, kind: true, status: true, originalFilename: true, mimeType: true,
-              storagePublicUrl: true, contentLength: true, durationSeconds: true,
-              widthPixels: true, heightPixels: true, hasWatermark: true,
-              lastVerifiedAt: true, createdAt: true,
-            },
-          },
-          fullVideoAsset: {
-            select: {
-              id: true, kind: true, status: true, originalFilename: true, mimeType: true,
-              contentLength: true, durationSeconds: true,
-              widthPixels: true, heightPixels: true,
-              lastVerifiedAt: true, createdAt: true,
-            },
-          },
-        },
-      });
+        }),
+        getPlatformMetadataRow(prisma),
+      ]);
       if (!row) return reply.status(404).send({ error: "not_found" });
-      return reply.send(serialize({
+      return reply.send(serialize(attachEffectiveSeo({
         ...row,
         categories: row.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
-      }));
+      }, platform)));
     },
   );
 
@@ -475,6 +596,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       }
       const { reason, categoryIds, ...payload } = body;
       const parseDates = (d: any) => (d ? new Date(d) : null);
+      const normalizedSeo = normalizeSeoPayload(payload);
 
       // 根据 3 FK 查对应 MediaAsset.storagePublicUrl / durationSeconds，回填冗余列（方便不 JOIN 时直接用）
       const assetFk: Array<string | null> = [payload.coverAssetId ?? null, payload.previewAssetId ?? null, payload.fullVideoAssetId ?? null];
@@ -498,6 +620,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         thumbnailUrl: payload.thumbnailUrl ?? null,
         description: payload.description ?? null,
         tags: payload.tags ?? [],
+        seoTitle: normalizedSeo.seoTitle,
+        seoDescription: normalizedSeo.seoDescription,
+        seoKeywords: normalizedSeo.seoKeywords,
+        geoKeywords: normalizedSeo.geoKeywords,
         previewUrl: (payload.previewUrl != null ? payload.previewUrl : redundantPreviewUrl) ?? null,
         durationSeconds: payload.durationSeconds ?? redundantDuration ?? null,
         accessType: payload.accessType,
@@ -626,6 +752,23 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         if (assetRedundancies.coverUrl !== undefined && payload.coverUrl === undefined) data.coverUrl = assetRedundancies.coverUrl;
         if (assetRedundancies.previewUrl !== undefined && payload.previewUrl === undefined) data.previewUrl = assetRedundancies.previewUrl;
         if (assetRedundancies.durationSeconds !== undefined && payload.durationSeconds === undefined) data.durationSeconds = assetRedundancies.durationSeconds;
+      }
+      const seoTouched =
+        payload.seoTitle !== undefined ||
+        payload.seoDescription !== undefined ||
+        payload.seoKeywords !== undefined ||
+        payload.geoKeywords !== undefined;
+      if (seoTouched) {
+        const normalizedSeo = normalizeSeoPayload({
+          seoTitle: payload.seoTitle !== undefined ? payload.seoTitle : before.seoTitle,
+          seoDescription: payload.seoDescription !== undefined ? payload.seoDescription : before.seoDescription,
+          seoKeywords: payload.seoKeywords !== undefined ? payload.seoKeywords : before.seoKeywords,
+          geoKeywords: payload.geoKeywords !== undefined ? payload.geoKeywords : before.geoKeywords,
+        });
+        if (payload.seoTitle !== undefined) data.seoTitle = normalizedSeo.seoTitle;
+        if (payload.seoDescription !== undefined) data.seoDescription = normalizedSeo.seoDescription;
+        if (payload.seoKeywords !== undefined) data.seoKeywords = normalizedSeo.seoKeywords;
+        if (payload.geoKeywords !== undefined) data.geoKeywords = normalizedSeo.geoKeywords;
       }
 
       const result = await prisma.$transaction(async (tx: any) => {
@@ -1714,6 +1857,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         }
       }
       if (resolvedPlans.length === 0) return reply.status(400).send({ error: "publish_plan_empty", message: "没有任何合法的发布计划；请检查 accessType 与目标频道类型是否匹配。" });
+      const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([content.tags, body.telegramTags]);
       // 4. 事务内：批量创建 TelegramPublishJob + auditLog
       const queueHandle = getPublishQueueHandle();
       const createdJobs = await prisma.$transaction(async (tx: any) => {
@@ -1726,7 +1870,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           let captionBundle: { captionText?: string | null; parseMode?: string | null } = {};
           if (plan.channelKindDb === "public_free_preview") {
             const { caption, parseMode } = buildPreviewVideoCaption(content);
-            captionBundle = { captionText: caption, parseMode };
+            captionBundle = { captionText: appendTelegramTagLine(caption, normalizedTelegramTags), parseMode };
+          } else if (normalizedTelegramTags.length > 0) {
+            captionBundle = { captionText: normalizedTelegramTags.join(" "), parseMode: null };
           }
           const job = await tx.telegramPublishJob.create({
             data: {
@@ -1741,6 +1887,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
               botKey: "primary",
               captionText: captionBundle.captionText ?? null,
               parseMode: captionBundle.parseMode ?? null,
+              telegramTagsJson: normalizedTelegramTags,
             },
           });
           jobs.push(job);
@@ -1769,6 +1916,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           targetFreeChannelCode: j.targetFreeChannelCode,
           createdAt: j.createdAt,
         })),
+        normalizedTelegramTags,
       });
     },
   );
@@ -1795,7 +1943,12 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           id: r.id,
           contentId: r.contentId,
           packageId: r.packageId,
-          mediaAsset: r.mediaAsset,
+          mediaAsset: r.mediaAsset
+            ? {
+                ...r.mediaAsset,
+                contentLength: r.mediaAsset.contentLength != null ? String(r.mediaAsset.contentLength) : null,
+              }
+            : null,
           admin: r.admin,
           cancelledByAdmin: r.cancelledByAdmin,
           channelKind: r.channelKind,
@@ -1812,6 +1965,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           telegramMessageId: r.telegramMessageId ? String(r.telegramMessageId) : null,
           telegramMethod: r.telegramMethod,
           parseMode: r.parseMode,
+          telegramTags: normalizeStoredTelegramTags(r.telegramTagsJson),
           sentAt: r.sentAt,
           cancelledAt: r.cancelledAt,
           createdAt: r.createdAt,

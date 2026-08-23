@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import crypto from "node:crypto";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import session from "@fastify/session";
@@ -66,6 +67,28 @@ test.after(async () => {
   await teardownTestHarness(prisma);
 });
 
+async function seedReadyMediaAsset(
+  prismaClient: any,
+  input: { id: string; kind: "cover_image" | "preview_video" | "full_video"; ownerAdminId?: string | null; filename?: string }
+) {
+  return prismaClient.mediaAsset.create({
+    data: {
+      id: input.id,
+      kind: input.kind,
+      status: "ready",
+      ownerAdminId: input.ownerAdminId ?? null,
+      originalFilename: input.filename || `${input.kind}.mp4`,
+      mimeType: input.kind === "cover_image" ? "image/jpeg" : "video/mp4",
+      contentLength: BigInt(1024),
+      storageBucket: "test-bucket",
+      storageRegion: "test-region",
+      storageKey: `${input.id}.bin`,
+      storagePublicUrl: `https://example.com/${input.id}.bin`,
+      durationSeconds: input.kind === "cover_image" ? null : 60,
+    },
+  });
+}
+
 test("越权2：customer_service 直接发放权益 entitlement:grant 必须 403", async () => {
   const app = await createApp(prisma);
   try {
@@ -86,6 +109,110 @@ test("越权2：customer_service 直接发放权益 entitlement:grant 必须 403
     });
     assert.ok(grantResp.statusCode === 403 || grantResp.statusCode === 404,
       `CS grant entitlement must be 403 (or route 404 if removed), got ${grantResp.statusCode}: ${grantResp.body}`);
+  } finally {
+    await app.close();
+  }
+});
+
+test("平台 SEO 设置遵循读写权限：operator 可读，auditor 可读，editor 不可写，super_admin 可更新", async () => {
+  const app = await createApp(prisma);
+  try {
+    const opCookie = await loginAdmin(app, "operator");
+    const audCookie = await loginAdmin(app, "auditor");
+    const editorCookie = await loginAdmin(app, "editor");
+    const superCookie = await loginAdmin(app, "superAdmin");
+
+    const opRead = await app.inject({ method: "GET", url: "/api/admin/platform-metadata", headers: { cookie: opCookie } });
+    assert.equal(opRead.statusCode, 200, opRead.body);
+    assert.equal((opRead.json() as any).seoTitle, "同频平台默认 SEO 标题");
+
+    const audRead = await app.inject({ method: "GET", url: "/api/admin/platform-metadata", headers: { cookie: audCookie } });
+    assert.equal(audRead.statusCode, 200, audRead.body);
+
+    const editorWrite = await app.inject({
+      method: "PUT",
+      url: "/api/admin/platform-metadata",
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { seoTitle: "editor should fail" },
+    });
+    assert.equal(editorWrite.statusCode, 403, editorWrite.body);
+
+    const superWrite = await app.inject({
+      method: "PUT",
+      url: "/api/admin/platform-metadata",
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        seoTitle: "新的平台 SEO 标题",
+        seoDescription: "新的平台 SEO 描述",
+        seoKeywords: ["平台词", "平台词", "  搜索词  "],
+        geoKeywords: ["主题A", "主题A"],
+        reason: "测试更新平台 SEO",
+      },
+    });
+    assert.equal(superWrite.statusCode, 200, superWrite.body);
+    const updated = (superWrite.json() as any).platformMetadata;
+    assert.deepEqual(updated.seoKeywords, ["平台词", "搜索词"]);
+    assert.deepEqual(updated.geoKeywords, ["主题A"]);
+  } finally {
+    await app.close();
+  }
+});
+
+test("start-telegram-publish 规范化标签、落库存储且不泄露 SEO/GEO 关键词", async () => {
+  const app = await createApp(prisma);
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const editor = await prisma.adminUser.findUnique({ where: { email: TEST_CREDENTIALS.editor.email } });
+    assert.ok(editor, "editor seed should exist");
+    const contentId = crypto.randomUUID();
+
+    const mediaAsset = await seedReadyMediaAsset(prisma, {
+      id: crypto.randomUUID(),
+      kind: "full_video",
+      ownerAdminId: editor!.id,
+      filename: "membership-full.mp4",
+    });
+
+    await prisma.content.create({
+      data: {
+        id: contentId,
+        title: "SEO Telegram 标签测试",
+        description: "用于测试标签清洗与隔离",
+        accessType: "membership",
+        status: "draft",
+        tags: ["睡眠"],
+        seoKeywords: ["不应泄露", "默认词"],
+        fullVideoAssetId: mediaAsset.id,
+      },
+    });
+
+    const startResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${contentId}/start-telegram-publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        channelKinds: ["membership_full"],
+        telegramTags: [" #睡眠 ", "夜间", "#夜间", "calm-mode", "默认词"],
+        reason: "测试 Telegram 标签规范化",
+      },
+    });
+    assert.equal(startResp.statusCode, 201, startResp.body);
+    const startBody = startResp.json() as any;
+    assert.deepEqual(
+      startBody.normalizedTelegramTags,
+      ["#睡眠", "#夜间", "#calmmode", "#默认词"],
+      "should normalize, dedupe and clip telegram tags only from content tags + telegramTags",
+    );
+
+    const jobsResp = await app.inject({
+      method: "GET",
+      url: `/api/admin/contents/${contentId}/publish-jobs`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(jobsResp.statusCode, 200, jobsResp.body);
+    const firstJob = (jobsResp.json() as any).items[0];
+    assert.deepEqual(firstJob.telegramTags, ["#睡眠", "#夜间", "#calmmode", "#默认词"]);
+    assert.ok(!String(firstJob.captionText || "").includes("不应泄露"), "SEO/GEO keywords must not leak into caption");
   } finally {
     await app.close();
   }
@@ -323,4 +450,37 @@ test("越权P3-4：非 super_admin 调 reveal-id（POST /admin/channels/:chatId/
     });
     assert.equal(r.statusCode, 403, `P3-4 CS reveal-id MUST 403，实际=${r.statusCode} body=${r.body}`);
   } finally { await app.close(); }
+});
+
+test("频道登记请求列表绝不回传私密邀请链接明文", async () => {
+  const app = await createApp(prisma);
+  try {
+    const superCookie = await loginAdmin(app, "superAdmin");
+    const submitResp = await app.inject({
+      method: "POST",
+      url: "/api/admin/channels/discovery-requests",
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        channelLink: "https://t.me/+PrivateInviteSecret123",
+        purpose: "membership_main",
+        reason: "测试私密邀请链接脱敏",
+      },
+    });
+    assert.equal(submitResp.statusCode, 201, submitResp.body);
+
+    const listResp = await app.inject({
+      method: "GET",
+      url: "/api/admin/channels/discovery-requests",
+      headers: { cookie: superCookie },
+    });
+    assert.equal(listResp.statusCode, 200, listResp.body);
+    const items = (listResp.json() as any).items || [];
+    const row = items.find((item: any) => item.linkType === "private_invite");
+    assert.ok(row, "must contain private invite discovery row");
+    assert.equal(row.submittedLink, "私密邀请已提交");
+    assert.equal(row.normalizedLink, null);
+    assert.ok(!JSON.stringify(row).includes("PrivateInviteSecret123"), "private invite token must never be exposed");
+  } finally {
+    await app.close();
+  }
 });

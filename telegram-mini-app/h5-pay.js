@@ -24,7 +24,7 @@
     h5_login_auth_expired: "登录授权已超过 10 分钟有效窗口。请返回登录页重新发起授权。",
     h5_login_internal_error: "服务端用户登记失败。请稍后重试，或使用 Telegram Mini App 打开本页。",
     h5_login_merge_failed: "匿名订单合并失败。请稍后重试，或使用 Telegram Mini App 打开本页。",
-    h5_login_required_for_payment: "该操作需要先绑定 Telegram 身份（防止换设备/清浏览器后无法找回订单与 VIP 频道权益）。请完成登录后重试。",
+    h5_login_required_for_payment: "当前页面已支持访客会话下创建 USDT 订单；若需跨设备恢复订单与权益，请先绑定 Telegram。",
     h5_login_required_for_channel_access: "获取 VIP 频道邀请链接前需要先绑定 Telegram 身份，否则无法将你加入目标频道。",
   };
 
@@ -32,7 +32,7 @@
 
   const VIEW_MAP = ["unauth", "orders", "entitlements", "channels", "payDetail", "error"];
   let currentView = "";
-  let currentIdentitySession: null | { identity: "guest" | "telegram"; userId: string; telegramBound: boolean; displayName?: string } = null;
+  let currentIdentitySession = null;
 
   function zhMsg(err) {
     const payload = err?.payload || err?.response?.data || {};
@@ -56,13 +56,14 @@
     return `${whole.toString()}.${fracStr}`;
   }
 
-  function minorToDecimalXtr(minorStr) {
+  function normalizeXtrMinor(minorStr) {
     const n = BigInt(minorStr || "0");
-    const d = 1_000_000_000n;
-    const whole = n / d;
-    const frac = n % d;
-    const fracStr = frac.toString().padStart(9, "0");
-    return `${whole.toString()}.${fracStr}`;
+    if (n > 0n && n >= 1_000_000n && n % 1_000_000n === 0n) return n / 1_000_000n;
+    return n;
+  }
+
+  function minorToDecimalXtr(minorStr) {
+    return normalizeXtrMinor(minorStr).toString();
   }
 
   function api(url, options) {
@@ -430,7 +431,7 @@
       if (chip && text) {
         chip.classList.remove("off");
         text.textContent = "访客模式 · 点击登录绑定 Telegram";
-        chip.title = "当前为访客模式（可浏览、创建 USDT 待支付订单）；支付前或获取 VIP 邀请前会要求绑定 Telegram，避免权益丢失。";
+        chip.title = "当前为访客模式（可浏览、创建 USDT 待支付订单）；绑定 Telegram 后可跨设备恢复订单与权益。";
         let bound = false;
         chip.onclick = () => {
           if (bound) return;
@@ -440,7 +441,7 @@
       }
     }
 
-    const logoutBtn = document.getElementById("logoutBtn") as HTMLElement | null;
+    const logoutBtn = document.getElementById("logoutBtn");
     if (logoutBtn) {
       logoutBtn.style.display = currentIdentitySession?.telegramBound ? "" : "none";
       logoutBtn.onclick = async () => {
@@ -465,10 +466,10 @@
     ]);
   }
 
-  function ensureTelegramBound(userErrorKey: string): boolean {
+  function ensureTelegramBound(userErrorKey) {
     if (currentIdentitySession?.telegramBound) return true;
     const returnTo = encodeURIComponent(location.pathname + location.search + location.hash);
-    const errText = H5_ERROR_ZH[userErrorKey as keyof typeof H5_ERROR_ZH] || "需要先绑定 Telegram 身份。";
+    const errText = H5_ERROR_ZH[userErrorKey] || "需要先绑定 Telegram 身份。";
     try { sessionStorage.setItem("h5_pending_action_reason", userErrorKey + "|" + errText); } catch (_) {}
     window.location.assign(`/login.html?redirect=${returnTo}`);
     return false;
@@ -675,9 +676,9 @@
         `;
       }).join("");
       box.querySelectorAll('button[data-act="get-access"]').forEach((b) => {
-        const rid = (b as HTMLElement).dataset.rid || "";
+        const rid = b.dataset.rid || "";
         if (!rid) return;
-        (b as HTMLElement).addEventListener("click", () => {
+        b.addEventListener("click", () => {
           if (!ensureTelegramBound("h5_login_required_for_channel_access")) return;
           try {
             const w = window.open(`/api/resources/${rid}/access-link`, "_blank", "noopener,noreferrer");
@@ -693,7 +694,6 @@
   }
 
   async function handleContinueStars(orderNo) {
-    if (!ensureTelegramBound("h5_login_required_for_payment")) return;
     showView("payDetail");
     const card = $("activatedCard");
     if (card) card.style.display = "none";

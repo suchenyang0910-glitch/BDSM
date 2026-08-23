@@ -24,7 +24,6 @@ import {
   SafetyCertificateOutlined,
   SendOutlined,
   PlusOutlined,
-  LinkOutlined,
   ExclamationCircleFilled,
 } from "@ant-design/icons";
 import type { ColumnsType, TablePaginationConfig } from "antd/es/table";
@@ -70,6 +69,20 @@ const RESOURCE_TYPE_LABEL: Record<ResourceType, string> = {
   package: "内容包权益",
   membership_channel: "会员频道权益",
 };
+
+function normalizeXtrMinor(value: string | number | null | undefined): bigint {
+  const raw = BigInt(String(value ?? "0"));
+  if (raw > 0n && raw >= 1_000_000n && raw % 1_000_000n === 0n) return raw / 1_000_000n;
+  return raw;
+}
+
+function formatAmountDisplay(value: string | null | undefined, currency?: string | null): string {
+  const code = String(currency || "").toUpperCase();
+  if (!value) return "—";
+  if (code === "XTR") return `${normalizeXtrMinor(value).toString()} Stars`;
+  if (code === "USDT") return `${(Number(value) / 1_000_000).toFixed(6).replace(/\.?0+$/, "")} USDT`;
+  return `${value} ${currency || ""}`.trim();
+}
 
 const REMOVAL_STATUS_META: Record<EntitlementRemovalStatus, { label: string; color: string }> = {
   none: { label: "未进入撤权", color: "default" },
@@ -179,9 +192,9 @@ const EntitlementsPage: React.FC = () => {
     try {
       const r = await adminResendEntitlementInvite(e.id, "客服补发频道邀请（权益详情）");
       antdMsg.success(
-        r.invite.inviteLink
-          ? `已生成新邀请：${r.invite.inviteLink}（到期 ${dayjs(r.invite.expiresAt).format("MM-DD HH:mm")}）`
-          : "已写入邀请链接",
+        r.invite?.expiresAt
+          ? `已生成新的私密邀请，并通过受控渠道发送（到期 ${dayjs(r.invite.expiresAt).format("MM-DD HH:mm")}）`
+          : "已生成新的私密邀请，并通过受控渠道发送",
       );
       const latest = await getAdminEntitlement(e.id);
       setDetail(latest);
@@ -268,7 +281,7 @@ const EntitlementsPage: React.FC = () => {
       antdMsg.success(
         "已直接发放权益 " +
           (r.telegramInvite && !(r.telegramInvite as any).error
-            ? `，已生成频道邀请：${(r.telegramInvite as any).inviteLink}`
+            ? "，频道邀请已通过受控渠道发送"
             : (r.telegramInvite as any)?.error
             ? `，但频道邀请失败：${(r.telegramInvite as any).error}`
             : ""),
@@ -350,7 +363,7 @@ const EntitlementsPage: React.FC = () => {
               <Tag color={r.sourceOrder.status === "paid" ? "green" : "default"}>{r.sourceOrder.status}</Tag>
               {r.sourceOrder.amountMinor ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  {r.sourceOrder.amountMinor} XTR
+                  {formatAmountDisplay(r.sourceOrder.amountMinor, r.sourceOrder.currency)}
                 </Text>
               ) : null}
             </Space>
@@ -419,11 +432,9 @@ const EntitlementsPage: React.FC = () => {
             </Text>
           ) : r.channelInvite ? (
             <Space direction="vertical" size={2}>
-              {r.channelInvite.inviteLink ? (
-                <a href={r.channelInvite.inviteLink} target="_blank" rel="noreferrer">
-                  <LinkOutlined /> 打开链接
-                </a>
-              ) : null}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                私密邀请仅通过 Telegram 私信或 302 跳转交付，不在后台明文展示。
+              </Text>
               {r.channelInvite.expiresAt ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   到期 {dayjs(r.channelInvite.expiresAt).format("MM-DD HH:mm")}
@@ -680,7 +691,7 @@ const EntitlementsPage: React.FC = () => {
                     <Text code copyable>{detail.sourceOrder.orderNo}</Text>
                     <Tag>{detail.sourceOrder.status}</Tag>
                     {detail.sourceOrder.amountMinor ? (
-                      <Text type="secondary">{detail.sourceOrder.amountMinor} XTR ({detail.sourceOrder.currency || "未知币种"})</Text>
+                      <Text type="secondary">{formatAmountDisplay(detail.sourceOrder.amountMinor, detail.sourceOrder.currency)}（{detail.sourceOrder.currency || "未知币种"}）</Text>
                     ) : null}
                   </Space>
                 ) : <Tag>无订单（客服直授 / 补偿 / 邀请赠送等）</Tag>}
@@ -688,11 +699,9 @@ const EntitlementsPage: React.FC = () => {
               <Descriptions.Item label="最新频道邀请">
                 {detail.channelInvite ? (
                   <Space direction="vertical" size={2}>
-                    {detail.channelInvite.inviteLink ? (
-                      <a href={detail.channelInvite.inviteLink} target="_blank" rel="noreferrer">
-                        <LinkOutlined /> 打开邀请链接
-                      </a>
-                    ) : null}
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      私密邀请不会在后台明文展示；如需补发，请使用上方「补发邀请」并通过 Telegram 受控渠道交付。
+                    </Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       到期：{detail.channelInvite.expiresAt ? dayjs(detail.channelInvite.expiresAt).format("YYYY-MM-DD HH:mm") : "不限时"}
                       {detail.channelInvite.usedAt ? `；已使用 ${dayjs(detail.channelInvite.usedAt).format("YYYY-MM-DD HH:mm")}` : "；未使用"}

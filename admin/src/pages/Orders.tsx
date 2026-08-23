@@ -79,6 +79,20 @@ const CANCEL_ROLES: AdminRole[] = ["super_admin", "operator"];
 const REFUND_ROLES: AdminRole[] = ["super_admin", "finance"];
 const RESEND_INVITE_ROLES: AdminRole[] = ["super_admin", "customer_service"];
 
+function normalizeXtrMinor(value: string | number | null | undefined): bigint {
+  const raw = BigInt(String(value ?? "0"));
+  if (raw > 0n && raw >= 1_000_000n && raw % 1_000_000n === 0n) return raw / 1_000_000n;
+  return raw;
+}
+
+function formatAmountDisplay(value: string | null | undefined, currency?: string | null): string {
+  const code = String(currency || "").toUpperCase();
+  if (!value) return "—";
+  if (code === "XTR") return `${normalizeXtrMinor(value).toString()} Stars`;
+  if (code === "USDT") return `${(Number(value) / 1_000_000).toFixed(6).replace(/\.?0+$/, "")} USDT`;
+  return `${value} ${currency || ""}`.trim();
+}
+
 const CANCELLABLE_STATUSES: OrderStatus[] = ["pending", "processing", "expired", "failed"];
 const REFUNDABLE_STATUSES: OrderStatus[] = ["paid"];
 
@@ -313,9 +327,9 @@ const OrdersPage: React.FC = () => {
     try {
       const r = await adminResendEntitlementInvite(e.id, "订单详情 · 行内补发邀请（客服操作）");
       antdMsg.success(
-        r.invite.inviteLink
-          ? `已重新生成邀请：${r.invite.inviteLink}（到期 ${dayjs(r.invite.expiresAt).format("MM-DD HH:mm")}）`
-          : "已写入新邀请链接",
+        r.invite?.expiresAt
+          ? `已重新生成私密邀请，并通过受控渠道发送（到期 ${dayjs(r.invite.expiresAt).format("MM-DD HH:mm")}）`
+          : "已重新生成私密邀请，并通过受控渠道发送",
       );
       if (detail && detail.orderNo) {
         const latest = await getAdminOrder(detail.orderNo);
@@ -431,7 +445,7 @@ const OrdersPage: React.FC = () => {
         ),
       },
       {
-        title: "金额（XTR minor）",
+        title: "金额",
         dataIndex: "amountMinor",
         key: "amount",
         width: 150,
@@ -439,9 +453,9 @@ const OrdersPage: React.FC = () => {
         sorter: (a, b) => Number(a.amountMinor) - Number(b.amountMinor),
         render: (v: string, r) => (
           <div>
-            <div style={{ fontWeight: 600 }}>{v}</div>
+            <div style={{ fontWeight: 600 }}>{formatAmountDisplay(v, r.currency)}</div>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              约 ≈ {(Number(v) / 1_000_000_000).toFixed(2)} Telegram Stars
+              原始值：{v}
             </Text>
             {r.currency ? (
               <div>
@@ -695,7 +709,7 @@ const OrdersPage: React.FC = () => {
                 ）
               </Descriptions.Item>
               <Descriptions.Item label="金额">
-                <b>{markPaidModal.order.amountMinor}</b> XTR minor{" "}
+                <b>{formatAmountDisplay(markPaidModal.order.amountMinor, markPaidModal.order.currency)}</b>{" "}
                 <Text type="secondary">（{markPaidModal.order.currency}）</Text>
               </Descriptions.Item>
               <Descriptions.Item label="当前状态">
@@ -837,7 +851,7 @@ const OrdersPage: React.FC = () => {
               </Descriptions.Item>
               <Descriptions.Item label="商品 / 金额">
                 {refundModal.order.product?.title || "-"} ·{" "}
-                <b>{refundModal.order.amountMinor} XTR minor</b>（{refundModal.order.currency}）
+                <b>{formatAmountDisplay(refundModal.order.amountMinor, refundModal.order.currency)}</b>（{refundModal.order.currency}）
               </Descriptions.Item>
               <Descriptions.Item label="当前状态">
                 <Tag color={ORDER_STATUS_META[refundModal.order.status].color}>
@@ -994,10 +1008,9 @@ const OrdersPage: React.FC = () => {
                 </div>
               </Descriptions.Item>
               <Descriptions.Item label="金额">
-                <div style={{ fontSize: 16, fontWeight: 700 }}>{detail.amountMinor} XTR minor</div>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>{formatAmountDisplay(detail.amountMinor, detail.currency)}</div>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  约 ≈ {(Number(detail.amountMinor) / 1_000_000_000).toFixed(6)} Telegram Stars（
-                  {detail.currency}）
+                  订单原始金额：{detail.amountMinor}（{detail.currency}）
                 </Text>
               </Descriptions.Item>
             </Descriptions>

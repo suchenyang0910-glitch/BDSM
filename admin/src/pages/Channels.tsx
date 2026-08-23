@@ -354,9 +354,11 @@ const ChannelsPage: React.FC = () => {
         render: (value: string, row) => (
           <Space direction="vertical" size={2}>
             <Text>{value}</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {row.normalizedLink || "未归一化"}
-            </Text>
+            {row.normalizedLink ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {row.normalizedLink}
+              </Text>
+            ) : null}
           </Space>
         ),
       },

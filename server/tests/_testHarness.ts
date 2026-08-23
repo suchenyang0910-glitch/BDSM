@@ -234,11 +234,101 @@ export async function ensureManagedChannelsTable(prisma: PrismaClient): Promise<
   }
 }
 
+export async function ensureUsdtMonitorTables(prisma: PrismaClient): Promise<void> {
+  try {
+    await (prisma as any).usdtMonitorRuntimeState.count();
+  } catch {
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "usdt_monitor_runtime_states" (
+        "worker_name" VARCHAR(64) NOT NULL PRIMARY KEY,
+        "last_cycle_at" TIMESTAMPTZ,
+        "last_success_at" TIMESTAMPTZ,
+        "last_block_number" BIGINT,
+        "last_scanned_address_count" INTEGER NOT NULL DEFAULT 0,
+        "last_discovered_tx_count" INTEGER NOT NULL DEFAULT 0,
+        "last_confirmed_count" INTEGER NOT NULL DEFAULT 0,
+        "last_rejected_count" INTEGER NOT NULL DEFAULT 0,
+        "consecutive_failures" INTEGER NOT NULL DEFAULT 0,
+        "last_error_class" VARCHAR(64),
+        "last_provider_status" VARCHAR(32),
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );`,
+    );
+  }
+  try {
+    await (prisma as any).usdtMonitorCursor.count();
+  } catch {
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "usdt_monitor_cursors" (
+        "address_id" TEXT NOT NULL PRIMARY KEY,
+        "last_block_timestamp" TIMESTAMPTZ,
+        "last_tx_hash_fingerprint" VARCHAR(64),
+        "last_success_at" TIMESTAMPTZ,
+        "last_error_class" VARCHAR(64),
+        "consecutive_failures" INTEGER NOT NULL DEFAULT 0,
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "usdt_monitor_cursors_address_id_fkey"
+          FOREIGN KEY ("address_id") REFERENCES "payment_addresses"("id")
+          ON DELETE CASCADE ON UPDATE CASCADE
+      );`,
+    );
+  }
+}
+
+export async function ensurePlatformMetadataTable(prisma: PrismaClient): Promise<void> {
+  try {
+    await (prisma as any).platformMetadata.findUnique({ where: { id: "default" } });
+  } catch {
+    await prisma.$executeRawUnsafe(
+      `CREATE TABLE IF NOT EXISTS "platform_metadata" (
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "seo_title" VARCHAR(120),
+        "seo_description" VARCHAR(300),
+        "seo_keywords" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+        "geo_keywords" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updated_by" TEXT
+      );`,
+    );
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "platform_metadata" ("id") VALUES ('default')
+       ON CONFLICT ("id") DO NOTHING;`,
+    );
+  }
+}
+
+export async function ensureSeoMetadataColumns(prisma: PrismaClient): Promise<void> {
+  try {
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "contents"
+         ADD COLUMN IF NOT EXISTS "seo_title" VARCHAR(120),
+         ADD COLUMN IF NOT EXISTS "seo_description" VARCHAR(300),
+         ADD COLUMN IF NOT EXISTS "seo_keywords" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+         ADD COLUMN IF NOT EXISTS "geo_keywords" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];`,
+    );
+  } catch {
+    /* ignore */
+  }
+  try {
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "telegram_publish_jobs"
+         ADD COLUMN IF NOT EXISTS "telegram_tags_json" JSONB;`,
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function wipeTestDatabase(prisma: PrismaClient): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const migrateFolder = path.join(__dirname, "..", "prisma", "migrations");
   try { await ensureMigrationsApplied(prisma, migrateFolder); } catch { /* ignore */ }
   await ensureManagedChannelsTable(prisma);
+  await ensureUsdtMonitorTables(prisma);
+  await ensurePlatformMetadataTable(prisma);
+  await ensureSeoMetadataColumns(prisma);
   for (const table of ALL_TABLES_ORDERED) {
     try {
       await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE;`);
@@ -338,6 +428,23 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
     },
   });
 
+  await (prisma as any).platformMetadata.upsert({
+    where: { id: "default" },
+    update: {
+      seoTitle: "同频平台默认 SEO 标题",
+      seoDescription: "同频平台默认 SEO 描述",
+      seoKeywords: ["默认词", "会员", "内容目录"],
+      geoKeywords: ["生成式搜索", "主题词"],
+    },
+    create: {
+      id: "default",
+      seoTitle: "同频平台默认 SEO 标题",
+      seoDescription: "同频平台默认 SEO 描述",
+      seoKeywords: ["默认词", "会员", "内容目录"],
+      geoKeywords: ["生成式搜索", "主题词"],
+    },
+  });
+
   const [topicPub, topic1, topic2, topicDraft] = await Promise.all([
     prisma.content.create({
       data: {
@@ -346,6 +453,8 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         accessType: "public",
         status: "published",
         durationSeconds: 300,
+        seoKeywords: ["免费视频", "冥想入门"],
+        geoKeywords: ["正念主题"],
         isRecommended: true,
         isNewArrival: true,
         featuredSort: 1,
@@ -361,6 +470,7 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         accessType: "package",
         status: "published",
         durationSeconds: 600,
+        seoTitle: "打包内容 SEO 标题",
         packageId: contentPackage.id,
         isFeatured: true,
         featuredSort: 2,
@@ -375,6 +485,7 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         accessType: "membership",
         status: "published",
         durationSeconds: 1200,
+        seoDescription: "会员内容 SEO 描述",
         isRecommended: true,
         featuredSort: 3,
         tags: ["睡眠"],

@@ -19,6 +19,7 @@ import {
   rawEventHashForUsdt,
 } from "../src/services/orders.js";
 import { hmacSha256Hex, userIdIndexKey } from "../src/utils/crypto.js";
+import { normalizeStoredXtrAmountToStars } from "../src/utils/currency.js";
 import usdtInternalRoutes from "../src/routes/usdtInternal.js";
 import { releaseExpiredUsdtAddresses, assignUsdtTrc20Address, generateUsdtUniqueAmountForAddress } from "../src/services/usdtPool.js";
 import { emitSafetyEvent, emitStructuredLog } from "../src/utils/structuredError.js";
@@ -334,11 +335,18 @@ test("Stars 创单：POST /api/orders/stars 校验 XTR/金额/返回 invoiceLink
       assert.equal(body.paymentMethod, "telegram_stars");
       assert.ok(body.expiresAt, "必须返回 expiresAt");
       assert.ok(body.invoice, "必须返回 invoice 对象");
-      assert.ok(["createInvoiceLink", "sendInvoice"].includes(body.invoice.via), "via 必须是 createInvoiceLink/sendInvoice");
+      assert.equal(body.created.amountMinor, "150", "legacy XTR test price must be normalized to integer Stars");
+      assert.equal(body.invoice.via, "createInvoiceLink", "Stars 发票必须走 createInvoiceLink");
     }
   } finally {
     await app.close();
   }
+});
+
+test("XTR 价格归一化：兼容 legacy 1e6 存储，同时保留整数 Stars", () => {
+  assert.equal(normalizeStoredXtrAmountToStars(150_000_000n), 150n);
+  assert.equal(normalizeStoredXtrAmountToStars(299n), 299n);
+  assert.equal(normalizeStoredXtrAmountToStars(0n), 0n);
 });
 
 test("Stars payload 工具函数：starsPaymentPayloadForOrder → parseStarsPayloadPlain 往返", async () => {
@@ -373,13 +381,14 @@ test("Stars webhook pre_checkout_query：状态错误必须 answerPreCheckoutQue
     // 造一个 cancelled 订单
     const product = await prisma.product.findUnique({ where: { id: TEST_KNOWN_IDS.singleProductKey } });
     const orderNo = "INT" + Date.now().toString().slice(-12) + "PCQ";
+    const starsAmount = normalizeStoredXtrAmountToStars(product!.priceMinor.toString());
     const { payloadPlain, payloadHmac } = starsPaymentPayloadForOrder({
-      orderNo, userId: user.id, amountMinor: BigInt(product!.priceMinor.toString()),
+      orderNo, userId: user.id, amountMinor: starsAmount,
     });
     await prisma.order.create({
       data: {
         orderNo, userId: user.id, productId: product!.id,
-        amountMinor: BigInt(product!.priceMinor.toString()),
+        amountMinor: starsAmount,
         currency: "XTR", paymentMethod: "telegram_stars", paymentProvider: "telegram_stars",
         paymentPayloadHmac: payloadHmac,
         telegramUserIdHmac: userIdIndexKey(tgid),
@@ -401,7 +410,7 @@ test("Stars webhook pre_checkout_query：状态错误必须 answerPreCheckoutQue
           id: pcqId,
           from: { id: Number(tgid), is_bot: false, first_name: "Tester", language_code: "zh" },
           currency: "XTR",
-          total_amount: Number(product!.priceMinor.toString()),
+          total_amount: Number(starsAmount),
           invoice_payload: payloadPlain,
         },
       },
@@ -429,7 +438,7 @@ test("Stars successful_payment：同 update_id + charge_id 连续投递，delive
     });
     const product = await prisma.product.findUnique({ where: { id: TEST_KNOWN_IDS.membershipProductKey } });
     const orderNo = "INT" + Date.now().toString().slice(-12) + "SP1";
-    const amountMinor = BigInt(product!.priceMinor.toString());
+    const amountMinor = normalizeStoredXtrAmountToStars(product!.priceMinor.toString());
     const { payloadPlain, payloadHmac } = starsPaymentPayloadForOrder({ orderNo, userId: user.id, amountMinor });
     await prisma.order.create({
       data: {
@@ -491,7 +500,7 @@ test("Stars successful_payment：payload HMAC 被篡改（金额改小）→ 必
   });
   const product = await prisma.product.findUnique({ where: { id: TEST_KNOWN_IDS.packageProductKey } });
   const orderNo = "INT" + Date.now().toString().slice(-12) + "TMP";
-  const amountOriginal = BigInt(product!.priceMinor.toString());
+  const amountOriginal = normalizeStoredXtrAmountToStars(product!.priceMinor.toString());
 
   // 订单按原价
   const { payloadPlain, payloadHmac } = starsPaymentPayloadForOrder({ orderNo, userId: user.id, amountMinor: amountOriginal });
@@ -538,7 +547,7 @@ test("Stars 退款：finance /admin/orders/:no/refund-stars 顺序 (mock API ok)
     const product = await prisma.product.findUnique({ where: { id: TEST_KNOWN_IDS.packageProductKey } });
     const orderNo = "INT" + Date.now().toString().slice(-12) + "REF";
     const chargeId = "CHG_TEST_REFUND_" + Math.random().toString(36).slice(2, 12);
-    const amountMinor = BigInt(product!.priceMinor.toString());
+    const amountMinor = normalizeStoredXtrAmountToStars(product!.priceMinor.toString());
 
     // 先手动插一个 paid 订单 + confirmed 交易行（模拟 successful_payment 已走完）
     const order = await prisma.order.create({

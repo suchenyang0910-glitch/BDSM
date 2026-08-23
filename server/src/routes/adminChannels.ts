@@ -228,10 +228,11 @@ function mapManagedChannelRow(r: any) {
 }
 
 function mapDiscoveryRow(r: any) {
+  const isPrivateInvite = r.linkType === "private_invite";
   return {
     id: r.id,
-    submittedLink: r.submittedLink,
-    normalizedLink: r.normalizedLink ?? null,
+    submittedLink: isPrivateInvite ? "私密邀请已提交" : r.submittedLink,
+    normalizedLink: isPrivateInvite ? null : (r.normalizedLink ?? null),
     linkType: r.linkType,
     status: r.status,
     requestedPurpose: r.requestedPurpose,

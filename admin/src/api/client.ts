@@ -13,6 +13,15 @@ import type {
   CategoryItem,
   CreateCategoryInput,
   UpdateCategoryInput,
+  PaymentAddressListFilter,
+  PaymentAddressListResp,
+  PaymentAddressCreateInput,
+  PaymentAddressCreateResp,
+  PaymentAddressRevealResp,
+  PaymentAddressRetireInput,
+  PaymentAddressRetireResp,
+  PaymentAddressReleaseExpiredResp,
+  UsdtMonitorStatusResp,
   BannerItem,
   CreateBannerInput,
   UpdateBannerInput,
@@ -48,10 +57,13 @@ import type {
   AdminPackageItem,
   AdminDashboardSummary,
   FreeChannelOption,
+  PlatformMetadata,
   PublishVideoInput,
   PublishVideoResult,
   RegisterTelegramPublishInput,
   RegisterTelegramPublishResult,
+  StartTelegramPublishInput,
+  StartTelegramPublishResp,
 } from "./types";
 
 const http = axios.create({
@@ -147,6 +159,47 @@ export async function getAdminOrderAuditLogs(orderNo: string): Promise<{ items: 
   return res.data;
 }
 
+export async function listAdminPaymentAddresses(
+  q: PaymentAddressListFilter = {},
+): Promise<PaymentAddressListResp> {
+  const params: Record<string, any> = {};
+  for (const k of Object.keys(q) as (keyof PaymentAddressListFilter)[]) {
+    if (q[k] !== undefined && q[k] !== null && q[k] !== "") params[k] = q[k];
+  }
+  const res = await http.get("/admin/payment-addresses", { params });
+  return res.data;
+}
+
+export async function getUsdtMonitorStatus(): Promise<UsdtMonitorStatusResp> {
+  const res = await http.get("/admin/payment-addresses/monitor-status");
+  return res.data;
+}
+
+export async function createAdminPaymentAddress(
+  input: PaymentAddressCreateInput,
+): Promise<PaymentAddressCreateResp> {
+  const res = await http.post("/admin/payment-addresses", input);
+  return res.data;
+}
+
+export async function revealAdminPaymentAddress(id: string): Promise<PaymentAddressRevealResp> {
+  const res = await http.post(`/admin/payment-addresses/${encodeURIComponent(id)}/reveal`);
+  return res.data;
+}
+
+export async function retireAdminPaymentAddress(
+  id: string,
+  input: PaymentAddressRetireInput,
+): Promise<PaymentAddressRetireResp> {
+  const res = await http.post(`/admin/payment-addresses/${encodeURIComponent(id)}/retire`, input);
+  return res.data;
+}
+
+export async function releaseExpiredAdminPaymentAddresses(): Promise<PaymentAddressReleaseExpiredResp> {
+  const res = await http.post("/admin/payment-addresses/_release-expired-now");
+  return res.data;
+}
+
 // ==========================================================================
 // CMS: Contents
 // ==========================================================================
@@ -208,6 +261,30 @@ export async function registerTelegramPublishContent(
   input: RegisterTelegramPublishInput,
 ): Promise<RegisterTelegramPublishResult> {
   const res = await http.post(`/admin/contents/${encodeURIComponent(id)}/register-telegram-publish`, input);
+  return res.data;
+}
+
+export async function getAdminPlatformMetadata(): Promise<PlatformMetadata> {
+  const res = await http.get("/admin/platform-metadata");
+  return res.data;
+}
+
+export async function updateAdminPlatformMetadata(input: {
+  seoTitle?: string | null;
+  seoDescription?: string | null;
+  seoKeywords?: string[];
+  geoKeywords?: string[];
+  reason?: string;
+}): Promise<{ ok: true; platformMetadata: PlatformMetadata }> {
+  const res = await http.put("/admin/platform-metadata", input);
+  return res.data;
+}
+
+export async function startAdminTelegramPublish(
+  id: string,
+  input: StartTelegramPublishInput,
+): Promise<StartTelegramPublishResp> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(id)}/start-telegram-publish`, input, { timeout: 40_000 });
   return res.data;
 }
 

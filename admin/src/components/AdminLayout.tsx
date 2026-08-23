@@ -38,6 +38,7 @@ const PAGE_TITLE_BY_PATH: Record<string, string> = {
   "/dashboard": "运营概览 · 数据看板",
   "/orders": "订单与权益 · 订单管理",
   "/entitlements": "订单与权益 · 权益管理",
+  "/payment-addresses": "订单与权益 · USDT 收款地址",
   "/users": "订单与权益 · 用户检索",
   "/tickets": "订单与权益 · 客服工单",
   "/contents": "内容管理 · 视频内容",
@@ -45,6 +46,7 @@ const PAGE_TITLE_BY_PATH: Record<string, string> = {
   "/banners": "内容管理 · Banner 运营位",
   "/homepage": "内容管理 · 首页配置",
   "/channels": "系统设置 · Bot 频道管理",
+  "/platform-metadata": "系统设置 · 平台 SEO / GEO",
 };
 
 const AdminLayout: React.FC = () => {
@@ -62,16 +64,18 @@ const AdminLayout: React.FC = () => {
     if (p.startsWith("/homepage")) return "/homepage";
     if (p.startsWith("/orders")) return "/orders";
     if (p.startsWith("/entitlements")) return "/entitlements";
+    if (p.startsWith("/payment-addresses")) return "/payment-addresses";
     if (p.startsWith("/users")) return "/users";
     if (p.startsWith("/tickets")) return "/tickets";
     if (p.startsWith("/channels")) return "/channels";
+    if (p.startsWith("/platform-metadata")) return "/platform-metadata";
     return "/dashboard";
   })();
   const openKeys = (() => {
     const p = location.pathname;
     const keys: string[] = ["orders"];
     if (["/contents", "/categories", "/banners", "/homepage"].some((k) => p.startsWith(k))) keys.push("content");
-    if (["/channels"].some((k) => p.startsWith(k))) keys.push("settings");
+    if (["/channels", "/platform-metadata"].some((k) => p.startsWith(k))) keys.push("settings");
     return keys;
   })();
   const pageTitle = PAGE_TITLE_BY_PATH[selectedKey] || "订单管理";
@@ -146,6 +150,7 @@ const AdminLayout: React.FC = () => {
               children: [
                 { key: "/orders", icon: <ShoppingOutlined />, label: "订单管理" },
                 { key: "/entitlements", icon: <SafetyCertificateOutlined />, label: "权益管理" },
+                { key: "/payment-addresses", icon: <ApiOutlined />, label: "USDT 收款地址" },
                 { key: "/users", icon: <TeamOutlined />, label: "用户检索" },
                 { key: "/tickets", icon: <MessageOutlined />, label: "客服工单" },
               ],
@@ -156,6 +161,7 @@ const AdminLayout: React.FC = () => {
               label: "系统设置",
               children: [
                 { key: "/channels", icon: <ApiOutlined />, label: "Bot 频道管理" },
+                { key: "/platform-metadata", icon: <TagsOutlined />, label: "平台 SEO / GEO" },
               ],
             },
           ]}

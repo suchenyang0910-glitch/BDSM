@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireAdmin } from "./admin.js";
 import type { PrismaClient } from "@prisma/client";
+import { formatMinorAmountForDisplay } from "../utils/currency.js";
 
 function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
@@ -12,16 +13,6 @@ function addDays(d: Date, days: number) {
   const r = new Date(d);
   r.setDate(r.getDate() + days);
   return r;
-}
-
-function minorToDisplayStr(v: bigint | number | null, currency: string = "XTR"): string {
-  if (v == null) return "0";
-  const n = typeof v === "bigint" ? v : BigInt(v);
-  const divisor = currency === "USDT" ? BigInt(1_000_000) : BigInt(1_000_000_000);
-  const whole = n / divisor;
-  const frac = n % divisor;
-  const fracStr = frac.toString().padStart(currency === "USDT" ? 6 : 9, "0").replace(/0+$/, "");
-  return fracStr ? `${whole.toString()}.${fracStr}` : whole.toString();
 }
 
 export default async function adminDashboardRoutes(fastify: FastifyInstance) {
@@ -64,7 +55,7 @@ export default async function adminDashboardRoutes(fastify: FastifyInstance) {
         Object.entries(gmvByMethod).map(([k, v]) => [
           k,
           {
-            amountDisplay: minorToDisplayStr(v.amountMinor, v.currency === "USDT" ? "USDT" : "XTR"),
+            amountDisplay: formatMinorAmountForDisplay(v.amountMinor, v.currency === "USDT" ? "USDT" : "XTR"),
             amountMinor: v.amountMinor.toString(),
             count: v.count,
             currency: v.currency,

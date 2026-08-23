@@ -3,164 +3,230 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#13111c" />
+    <meta name="theme-color" content="#12111A" />
+    <meta name="description" content="同频内容目录与权益入口" />
+    <meta name="keywords" content="" />
+    <meta name="robots" content="noindex,nofollow" />
+    <meta property="og:title" content="同频 · 精选点播" />
+    <meta property="og:description" content="同频内容目录与权益入口" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="" />
     <title>同频 · 精选点播</title>
     <link rel="stylesheet" href="./styles.css" />
     <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+    <script id="videoObjectJsonLd" type="application/ld+json"></script>
   </head>
   <body>
-    <main class="app-shell">
-      <header class="topbar">
-        <div class="topbar-left">
-          <button id="backButton" class="icon-button back-button" type="button" aria-label="返回" style="display:none">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="header-main">
+          <button id="backButton" class="icon-button" type="button" aria-label="返回" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
           </button>
-          <div>
-            <p class="eyebrow">INTUNE · MEMBER LIBRARY</p>
-            <h1 id="pageTitle">同频点播</h1>
+          <div class="header-copy">
+            <p class="eyebrow">INTUNE MEMBER LIBRARY</p>
+            <h1 id="headerTitle">同频点播</h1>
+            <p id="headerSubtitle" class="header-subtitle">正在建立安全会话…</p>
           </div>
         </div>
-        <button id="profileButton" class="profile" type="button" aria-label="我的">
-          <span id="profileInitial">访</span>
+        <button id="sessionChip" class="session-chip" type="button" aria-label="账户信息">
+          <span id="sessionChipIcon" class="session-chip-icon">访</span>
+          <span id="sessionChipText">访客模式</span>
         </button>
       </header>
 
-      <section id="homeView" class="view">
-        <section class="notice" aria-label="访问说明">
-          <span class="notice-dot"></span>
-          <p>仅限已完成年龄声明的成员访问</p>
-        </section>
-
-        <section class="member-card" id="memberCard">
-          <div>
-            <p class="member-label">当前会员状态</p>
-            <strong id="membershipStatus">正在核验…</strong>
-            <p id="membershipHint">正在向同频服务器确认你的访问权限</p>
-          </div>
-          <div class="member-actions">
-            <button id="openOrdersButton" class="subtle-button" type="button">我的订单</button>
-            <button id="openEntitlementsButton" class="subtle-button" type="button">我的权益</button>
-            <button id="refreshButton" class="subtle-button" type="button">刷新</button>
-          </div>
-        </section>
-
-        <section id="bannerList" class="banner-list" aria-label="运营推荐位"></section>
-
-        <nav id="categoryList" class="category-list" aria-label="内容分类"></nav>
-
-        <section class="section-heading">
-          <div>
-            <p class="eyebrow">CURATED</p>
-            <h2 id="sectionTitle">推荐内容</h2>
-          </div>
-          <span id="contentCount">0 项</span>
-        </section>
-
-        <section id="videoList" class="video-list" aria-live="polite"></section>
-
-        <section class="community-rule">
-          <strong>同频社区公约</strong>
-          <p>尊重、边界、自愿与隐私，是进入每一次连接的前提。</p>
-        </section>
-      </section>
-
-      <section id="contentDetailView" class="view" style="display:none" data-view="content">
-        <article id="contentDetail" class="detail-article"></article>
-      </section>
-
-      <section id="ordersView" class="view" style="display:none" data-view="orders">
-        <div class="orders-toolbar">
-          <div class="segment" id="ordersStatusSegment" role="tablist">
-            <button type="button" class="seg-item active" data-status="">全部</button>
-            <button type="button" class="seg-item" data-status="pending">待支付</button>
-            <button type="button" class="seg-item" data-status="paid">已支付</button>
-            <button type="button" class="seg-item" data-status="refunded">已退款</button>
-          </div>
+      <section id="globalError" class="global-banner is-hidden" aria-live="polite">
+        <div>
+          <strong id="globalErrorTitle">暂时无法建立会话</strong>
+          <p id="globalErrorMessage">请检查网络后重试。</p>
         </div>
-        <section id="ordersList" class="orders-list"></section>
-        <div style="text-align:center; margin-top: 16px">
-          <button id="loadMoreOrdersButton" class="subtle-button" type="button" style="display:none">加载更多</button>
-        </div>
+        <button id="retryBootstrapButton" class="ghost-button" type="button">重试</button>
       </section>
 
-      <section id="entitlementsView" class="view" style="display:none" data-view="entitlements">
-        <div id="entitlementsSummary" class="entitlements-summary"></div>
-        <div id="entitlementsMemberships" class="entitlements-block"></div>
-        <div id="entitlementsPackages" class="entitlements-block"></div>
-        <div id="entitlementsContents" class="entitlements-block"></div>
-      </section>
-    </main>
+      <main id="appMain" class="app-main">
+        <section id="homeView" class="tab-view">
+          <div class="panel-card hero-card">
+            <div class="hero-copy">
+              <p class="eyebrow">PRIVATE · RELIABLE · MOBILE</p>
+              <h2 id="heroTitle">在 Telegram 与 H5 之间无缝继续浏览</h2>
+              <p id="heroDescription">首页、发现、会员、订单、我的五栏体验正在同步你的真实目录与会话状态。</p>
+            </div>
+            <div class="hero-actions">
+              <button id="homePrimaryAction" class="primary-button" type="button">浏览发现</button>
+              <button id="homeSecondaryAction" class="ghost-button" type="button">查看我的</button>
+            </div>
+          </div>
 
-    <dialog id="accountDialog" class="dialog">
-      <button id="closeDialog" class="close" type="button" aria-label="关闭">×</button>
-      <p class="eyebrow">YOUR ACCOUNT</p>
-      <h2 id="accountName">访客</h2>
-      <dl>
-        <div><dt>Telegram ID</dt><dd id="accountId">未获取</dd></div>
-        <div><dt>权限状态</dt><dd id="accountAccess">核验中</dd></div>
-      </dl>
-      <div class="dialog-actions">
-        <button id="navOrdersButton" type="button" class="primary-ghost">查看我的订单</button>
-        <button id="navEntitlementsButton" type="button" class="primary-ghost">查看我的权益</button>
-      </div>
-      <p class="dialog-tip">同频仅保存提供服务所需的最少账户信息。不会从 Mini App 自动获取手机号。</p>
-    </dialog>
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">RECOMMENDED</p>
+                <h3>运营推荐</h3>
+              </div>
+            </div>
+            <div id="homeBannerList" class="banner-rail"></div>
+          </section>
 
-    <dialog id="createOrderDialog" class="dialog">
-      <button id="closeOrderDialog" class="close" type="button" aria-label="关闭">×</button>
-      <p class="eyebrow">CREATE ORDER</p>
-      <h3 id="coTitle">确认创建订单</h3>
-      <div class="order-preview" id="coPreview"></div>
-      <div class="warning-box">
-        <p>当前为人工收款阶段，创建订单后订单号将保存为<strong>待支付</strong>。</p>
-        <p>请联系同频客服或运营完成转账，提供以下订单号，运营确认到账后将自动为你解锁对应权益：</p>
-        <div id="coOrderNo" class="order-no-box" style="display:none"></div>
-      </div>
-      <div class="dialog-actions">
-        <button id="coCancel" type="button" class="primary-ghost">取消</button>
-        <button id="coConfirm" type="button" class="primary-solid">创建订单并生成订单号</button>
-      </div>
-    </dialog>
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">FOR YOU</p>
+                <h3>推荐内容</h3>
+              </div>
+              <button id="jumpDiscoverButton" class="text-button" type="button">查看全部</button>
+            </div>
+            <div id="homeRecommendedGrid" class="content-grid"></div>
+          </section>
 
-    <template id="videoTemplate">
-      <article class="video-card">
-        <div class="cover"><span class="play-mark">▶</span><span class="duration"></span></div>
-        <div class="video-copy">
-          <p class="tag"></p>
-          <h3></h3>
-          <p class="description"></p>
-          <button class="open-button" type="button"></button>
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">UNLOCKED</p>
+                <h3>已解锁 / 可直接访问</h3>
+              </div>
+            </div>
+            <div id="homeUnlockedGrid" class="content-grid"></div>
+          </section>
+        </section>
+
+        <section id="discoverView" class="tab-view is-hidden">
+          <div class="toolbar-card">
+            <label class="search-box" for="discoverSearchInput">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+              <input id="discoverSearchInput" type="search" placeholder="搜索标题或描述" autocomplete="off" />
+            </label>
+            <div id="discoverCategoryList" class="chip-row"></div>
+          </div>
+          <div id="discoverState" class="inline-state"></div>
+          <div id="discoverGrid" class="content-grid"></div>
+        </section>
+
+        <section id="membershipView" class="tab-view is-hidden">
+          <div class="panel-card membership-summary">
+            <div>
+              <p class="eyebrow">MEMBERSHIP</p>
+              <h2 id="membershipHeadline">会员与内容包入口</h2>
+              <p id="membershipCopy" class="muted-copy">根据当前会话和设备环境展示可购买与已生效的权益入口。</p>
+            </div>
+            <div id="membershipStatusBadge" class="status-badge">加载中</div>
+          </div>
+          <div id="membershipGrid" class="content-grid"></div>
+        </section>
+
+        <section id="ordersView" class="tab-view is-hidden">
+          <div class="toolbar-card">
+            <div id="ordersStatusSegment" class="segment" role="tablist" aria-label="订单状态筛选">
+              <button type="button" class="segment-button is-active" data-status="">全部</button>
+              <button type="button" class="segment-button" data-status="pending">待支付</button>
+              <button type="button" class="segment-button" data-status="paid">已支付</button>
+              <button type="button" class="segment-button" data-status="expired">已失效</button>
+            </div>
+          </div>
+          <div id="ordersList" class="stack-list"></div>
+        </section>
+
+        <section id="meView" class="tab-view is-hidden">
+          <div class="panel-card profile-card">
+            <div>
+              <p class="eyebrow">MY ACCOUNT</p>
+              <h2 id="profileTitle">访客模式</h2>
+              <p id="profileSubtitle" class="muted-copy">已自动保存本设备订单；绑定 Telegram 后可跨设备恢复权益。</p>
+            </div>
+            <div class="profile-actions">
+              <button id="bindTelegramButton" class="primary-button" type="button">绑定 Telegram</button>
+              <button id="logoutButton" class="ghost-button" type="button">退出本设备</button>
+            </div>
+          </div>
+
+          <div class="info-grid">
+            <article class="info-card">
+              <p class="info-label">会员状态</p>
+              <strong id="meMembershipText">加载中</strong>
+              <p id="meMembershipHint" class="muted-copy">正在读取权益摘要…</p>
+            </article>
+            <article class="info-card">
+              <p class="info-label">订单摘要</p>
+              <strong id="meOrdersText">加载中</strong>
+              <p id="meOrdersHint" class="muted-copy">待支付与历史订单会显示在这里。</p>
+            </article>
+          </div>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">ENTITLEMENTS</p>
+                <h3>我的权益</h3>
+              </div>
+            </div>
+            <div id="meEntitlementsList" class="stack-list"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">CHANNELS</p>
+                <h3>我的频道入口</h3>
+              </div>
+            </div>
+            <div id="meChannelsList" class="stack-list"></div>
+          </section>
+        </section>
+
+        <section id="detailView" class="tab-view is-hidden">
+          <article id="detailContent" class="detail-shell"></article>
+        </section>
+      </main>
+
+      <nav id="bottomNav" class="bottom-nav" aria-label="底部导航">
+        <button class="nav-item is-active" data-tab="home" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5L12 5l8 6.5V20a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z"></path></svg>
+          <span>首页</span>
+        </button>
+        <button class="nav-item" data-tab="discover" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+          <span>发现</span>
+        </button>
+        <button class="nav-item" data-tab="membership" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19V9.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2V19"></path><path d="M9 7V5a3 3 0 0 1 6 0v2"></path><path d="M8 12h8"></path></svg>
+          <span>会员</span>
+        </button>
+        <button class="nav-item" data-tab="orders" type="button">
+          <span class="nav-indicator"></span>
+          <span id="ordersBadge" class="nav-badge is-hidden">0</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10l2 3v13H5V7z"></path><path d="M9 9h6"></path><path d="M9 13h6"></path></svg>
+          <span>订单</span>
+        </button>
+        <button class="nav-item" data-tab="me" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M5 20a7 7 0 0 1 14 0"></path></svg>
+          <span>我的</span>
+        </button>
+      </nav>
+    </div>
+
+    <template id="contentCardTemplate">
+      <article class="content-card">
+        <button class="cover-button" type="button">
+          <div class="card-cover">
+            <span class="cover-duration"></span>
+          </div>
+        </button>
+        <div class="card-body">
+          <p class="card-tag"></p>
+          <h3 class="card-title"></h3>
+          <p class="card-desc"></p>
+          <div class="card-meta">
+            <span class="card-price"></span>
+            <span class="card-access"></span>
+          </div>
+          <button class="card-action primary-button" type="button"></button>
         </div>
       </article>
     </template>
 
-    <template id="orderTemplate">
-      <article class="order-card">
-        <header class="order-header">
-          <div>
-            <p class="order-no-label">订单号</p>
-            <h4 class="order-no" style="margin:0"></h4>
-          </div>
-          <div class="order-status"></div>
-        </header>
-        <div class="order-body">
-          <div class="order-cover" aria-hidden="true"></div>
-          <div class="order-copy">
-            <h5 class="product-title" style="margin:0"></h5>
-            <p class="product-meta" style="margin:4px 0 0"></p>
-          </div>
-          <div class="order-amount">
-            <div class="amount"></div>
-            <p class="amount-sub"></p>
-          </div>
-        </div>
-        <footer class="order-footer">
-          <div class="order-time"></div>
-          <div class="order-cta"></div>
-        </footer>
-      </article>
-    </template>
-
-    <script src="./app.js?v=20260823-1"></script>
+    <script src="./app.js?v=20260823-2"></script>
   </body>
 </html>

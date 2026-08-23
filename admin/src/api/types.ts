@@ -166,6 +166,29 @@ export type EditorBrief = {
   displayName?: string;
 };
 
+export type EffectiveSeo = {
+  title: string | null;
+  description: string | null;
+  keywords: string[];
+  geoKeywords: string[];
+  source: {
+    title: "content" | "platform" | "none";
+    description: "content" | "platform" | "none";
+    keywords: "content" | "platform" | "none";
+    geoKeywords: "content" | "platform" | "none";
+  };
+};
+
+export type PlatformMetadata = {
+  id: string;
+  seoTitle: string | null;
+  seoDescription: string | null;
+  seoKeywords: string[];
+  geoKeywords: string[];
+  updatedAt: string | null;
+  updatedBy: string | null;
+};
+
 export type ContentItem = {
   id: string;
   title: string;
@@ -173,6 +196,11 @@ export type ContentItem = {
   thumbnailUrl: string | null;
   description: string | null;
   tags: string[];
+  seoTitle?: string | null;
+  seoDescription?: string | null;
+  seoKeywords?: string[];
+  geoKeywords?: string[];
+  effectiveSeo?: EffectiveSeo;
   previewUrl: string | null;
   durationSeconds: number | null;
   accessType: "public" | "single" | "membership" | "package";
@@ -226,6 +254,10 @@ export type CreateContentInput = {
   description?: string | null;
   tags?: string[];
   previewUrl?: string | null;
+  seoTitle?: string | null;
+  seoDescription?: string | null;
+  seoKeywords?: string[];
+  geoKeywords?: string[];
   durationSeconds?: number | null;
   accessType?: "public" | "single" | "membership" | "package";
   isRecommended?: boolean;
@@ -286,6 +318,127 @@ export type PublishVideoResult = {
 };
 
 export type RegisterTelegramPublishResult = PublishVideoResult;
+
+export type StartTelegramPublishInput = {
+  channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">;
+  telegramTags?: string[];
+  reason?: string;
+};
+
+export type StartTelegramPublishResp = {
+  ok: true;
+  jobs: Array<{
+    id: string;
+    channelKind: string;
+    status: string;
+    jobToken: string;
+    mediaAssetId: string | null;
+    targetFreeChannelCode: string | null;
+    createdAt: string;
+  }>;
+  normalizedTelegramTags: string[];
+};
+
+export type PaymentAddressStatus = "available" | "assigned" | "retired";
+
+export type PaymentAddressItem = {
+  id: string;
+  network: string;
+  addressMasked: string;
+  status: PaymentAddressStatus;
+  assignedOrderId: string | null;
+  assignedAt: string | null;
+  releaseAt: string | null;
+  retiredAt: string | null;
+  retireReason: string | null;
+  createdAt: string;
+};
+
+export type PaymentAddressListFilter = {
+  page?: number;
+  pageSize?: number;
+  status?: PaymentAddressStatus;
+  network?: string;
+  addressKeyword?: string;
+};
+
+export type PaymentAddressListResp = Pagination<PaymentAddressItem> & {
+  summary: {
+    countsByStatusNetwork: Array<{
+      status: PaymentAddressStatus;
+      network: string;
+      count: number;
+    }>;
+  };
+};
+
+export type PaymentAddressCreateInput = {
+  address: string;
+  network?: "tron_trc20";
+};
+
+export type PaymentAddressCreateResp = {
+  ok: true;
+  id: string;
+  addressMasked: string;
+  status: PaymentAddressStatus;
+};
+
+export type PaymentAddressRevealResp = {
+  ok: true;
+  id: string;
+  network: string;
+  address: string;
+  addressMasked: string;
+  status: PaymentAddressStatus;
+  warning: string;
+};
+
+export type PaymentAddressRetireInput = {
+  reason: string;
+  forceReleaseAssigned?: boolean;
+  forceCancelActiveOrder?: boolean;
+};
+
+export type PaymentAddressRetireResp = {
+  ok: true;
+  idempotent: boolean;
+  id: string;
+  status: PaymentAddressStatus;
+  retiredAt: string | null;
+  releasedAssigned: boolean;
+  cancelledActiveOrderNo: string | null;
+};
+
+export type PaymentAddressReleaseExpiredResp = {
+  ok: true;
+  released: number;
+  errors: number;
+};
+
+export type UsdtMonitorStatusResp = {
+  ok: true;
+  counts: {
+    available: number;
+    assigned: number;
+    retired: number;
+  };
+  availableLow: boolean;
+  monitor: {
+    workerName: string;
+    status: "normal" | "delayed" | "unavailable";
+    lastCycleAt: string | null;
+    lastSuccessAt: string | null;
+    lastBlockNumber: string | null;
+    lastScannedAddressCount: number;
+    lastDiscoveredTxCount: number;
+    lastConfirmedCount: number;
+    lastRejectedCount: number;
+    consecutiveFailures: number;
+    lastErrorClass: string | null;
+    lastProviderStatus: string | null;
+  };
+};
 
 export type CategoryItem = {
   id: string;

@@ -27,6 +27,9 @@ import {
 } from "../services/usdtPool.js";
 import { userIdIndexKey, chatIdIndexKey } from "../utils/crypto.js";
 import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
+import { normalizeStoredXtrAmountToStars } from "../utils/currency.js";
+
+const TRON_BASE58_ADDRESS_RE = /^T[A-Za-z0-9]{8,63}$/;
 
 const createOrderSchema = z.object({
   productId: z.string().min(1),
@@ -215,8 +218,11 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     if (!product.currency || product.currency.toUpperCase() !== "XTR") {
       return reply.status(400).send({ error: "bad_request", message: `该商品币种 ${product.currency || "未知"} 不是 XTR (Telegram Stars)，请使用正确的支付方式` });
     }
-    const amountMinor = BigInt(product.priceMinor.toString());
-    if (amountMinor <= 0n) return reply.status(400).send({ error: "bad_request", message: "商品价格无效（XTR 最小单位必须为正整数）" });
+    const productPriceStored = BigInt(product.priceMinor.toString());
+    const amountMinor = normalizeStoredXtrAmountToStars(productPriceStored);
+    if (amountMinor <= 0n) {
+      return reply.status(400).send({ error: "bad_request", message: "商品价格无效（Telegram Stars 金额必须为正整数）" });
+    }
 
     // 查当前用户的 telegramUserId 用于可选 DM（失败时回退到 Mini App Invoice Link）
     const userRow = await prisma.user.findUnique({ where: { id: uid }, select: { telegramUserId: true } });
@@ -769,7 +775,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     let useVia: "createInvoiceLink" | null = order.telegramStarsInvoiceVia === "createInvoiceLink" ? "createInvoiceLink" : null;
     if (!useInvoiceLink.startsWith("https://t.me/")) {
       const product = order.product as any;
-      const amtMinor = String(order.amountMinor || "0");
+      const amtMinor = normalizeStoredXtrAmountToStars(order.amountMinor || "0").toString();
       const ttlTitle = product?.title?.slice?.(0, 128) || "InTune 数字内容";
       const payloadPlain = (order as any).telegramStarsPayload || `${order.orderNo}:${amtMinor}:${uid}`;
       const pricesArr = [{ label: (product?.title || "数字内容").slice(0, 60), amount: Number(amtMinor) }];
@@ -1216,6 +1222,66 @@ export default async function orderRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get(
+    "/admin/payment-addresses/monitor-status",
+    { preHandler: [requireAdmin("finance.view")] },
+    async (_req, reply) => {
+      const [grouped, runtime] = await Promise.all([
+        prisma.paymentAddress.groupBy({
+          by: ["status"],
+          _count: { id: true },
+        }),
+        prisma.usdtMonitorRuntimeState.findUnique({
+          where: { workerName: "usdt_trc20_monitor_v1" },
+        }),
+      ]);
+
+      const counts = {
+        available: 0,
+        assigned: 0,
+        retired: 0,
+      };
+      for (const row of grouped as any[]) {
+        if (row.status === "available") counts.available = row._count.id;
+        if (row.status === "assigned") counts.assigned = row._count.id;
+        if (row.status === "retired") counts.retired = row._count.id;
+      }
+
+      const lastSuccessMs = runtime?.lastSuccessAt ? new Date(runtime.lastSuccessAt).getTime() : 0;
+      const ageMs = lastSuccessMs > 0 ? Date.now() - lastSuccessMs : Number.POSITIVE_INFINITY;
+      let status: "normal" | "delayed" | "unavailable" = "unavailable";
+      if (runtime?.consecutiveFailures && runtime.consecutiveFailures >= 3) {
+        status = "unavailable";
+      } else if (Number.isFinite(ageMs) && ageMs <= 90_000) {
+        status = "normal";
+      } else if (Number.isFinite(ageMs) && ageMs <= 2 * 60_000) {
+        status = "delayed";
+      } else if (runtime?.lastSuccessAt) {
+        status = "unavailable";
+      }
+
+      return reply.send({
+        ok: true,
+        counts,
+        availableLow: counts.available < 3,
+        monitor: {
+          workerName: runtime?.workerName ?? "usdt_trc20_monitor_v1",
+          status,
+          lastCycleAt: runtime?.lastCycleAt ? new Date(runtime.lastCycleAt).toISOString() : null,
+          lastSuccessAt: runtime?.lastSuccessAt ? new Date(runtime.lastSuccessAt).toISOString() : null,
+          lastBlockNumber: runtime?.lastBlockNumber != null ? runtime.lastBlockNumber.toString() : null,
+          lastScannedAddressCount: runtime?.lastScannedAddressCount ?? 0,
+          lastDiscoveredTxCount: runtime?.lastDiscoveredTxCount ?? 0,
+          lastConfirmedCount: runtime?.lastConfirmedCount ?? 0,
+          lastRejectedCount: runtime?.lastRejectedCount ?? 0,
+          consecutiveFailures: runtime?.consecutiveFailures ?? 0,
+          lastErrorClass: runtime?.lastErrorClass ?? null,
+          lastProviderStatus: runtime?.lastProviderStatus ?? null,
+        },
+      });
+    },
+  );
+
+  fastify.get(
     "/admin/payment-addresses",
     { preHandler: [requireAdmin("finance.view")] },
     async (req, reply) => {
@@ -1322,8 +1388,8 @@ export default async function orderRoutes(fastify: FastifyInstance) {
       if (!body.success) return reply.status(400).send({ error: "bad_request", details: body.error.issues });
       const { address, network } = body.data;
       const trimmed = address.trim();
-      if (network === "tron_trc20" && !trimmed.startsWith("T")) {
-        return reply.status(400).send({ error: "bad_request", message: "TRON 地址必须以 T 开头" });
+      if (network === "tron_trc20" && !TRON_BASE58_ADDRESS_RE.test(trimmed)) {
+        return reply.status(400).send({ error: "bad_request", message: "仅支持 T 开头的 TRON Base58 收款地址，请勿填写私钥、助记词或其他链地址。" });
       }
       try {
         const row = await prisma.$transaction(async (tx: any) => {

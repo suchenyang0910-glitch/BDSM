@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { formatDuration } from "../utils/telegram.js";
+import { buildEffectiveSeo, buildVideoObjectJsonLd } from "../services/seoMetadata.js";
 
 const contentsQuerySchema = z.object({
   categoryId: z.string().optional(),
@@ -12,6 +13,20 @@ const contentsQuerySchema = z.object({
 
 export default async function contentRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
+
+  async function tryGetPlatformMetadata() {
+    try {
+      return await prisma.platformMetadata.findUnique({ where: { id: "default" } });
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveBaseUrl(req: any) {
+    const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
+    const host = String(req.headers.host || "bdsm.linkx.club");
+    return `${proto}://${host}`;
+  }
 
   fastify.get("/contents", async (req) => {
     const query = contentsQuerySchema.parse(req.query as any);
@@ -32,7 +47,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     const skip = (query.page - 1) * query.pageSize;
     const take = query.pageSize;
 
-    const [total, rows] = await Promise.all([
+    const [total, rows, platformMetadata] = await Promise.all([
       prisma.content.count({ where }),
       prisma.content.findMany({
         where,
@@ -44,6 +59,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
           product: { select: { priceMinor: true, currency: true, type: true } },
         },
       }),
+      tryGetPlatformMetadata(),
     ]);
 
     let userEntitlements: Set<string> = new Set();
@@ -98,6 +114,18 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         priceMinor: c.product?.priceMinor?.toString(),
         priceCurrency: c.product?.currency,
         publishedAt: c.publishedAt?.toISOString(),
+        effectiveSeo: buildEffectiveSeo({
+          contentSeoTitle: c.seoTitle,
+          contentSeoDescription: c.seoDescription,
+          contentSeoKeywords: c.seoKeywords,
+          contentGeoKeywords: c.geoKeywords,
+          fallbackTitle: c.title,
+          fallbackDescription: c.description,
+          platformSeoTitle: platformMetadata?.seoTitle,
+          platformSeoDescription: platformMetadata?.seoDescription,
+          platformSeoKeywords: platformMetadata?.seoKeywords,
+          platformGeoKeywords: platformMetadata?.geoKeywords,
+        }),
       };
     });
 
@@ -117,14 +145,17 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     const uid = (req as any).userId as string | undefined;
     const now = new Date();
 
-    const content = await prisma.content.findUnique({
-      where: { id },
-      include: {
-        categories: { select: { category: { select: { id: true, name: true } } } },
-        package: { select: { id: true, title: true, coverUrl: true } },
-        product: { select: { id: true, priceMinor: true, currency: true, type: true, durationDays: true } },
-      },
-    });
+    const [content, platformMetadata] = await Promise.all([
+      prisma.content.findUnique({
+        where: { id },
+        include: {
+          categories: { select: { category: { select: { id: true, name: true } } } },
+          package: { select: { id: true, title: true, coverUrl: true } },
+          product: { select: { id: true, priceMinor: true, currency: true, type: true, durationDays: true } },
+        },
+      }),
+      tryGetPlatformMetadata(),
+    ]);
 
     if (!content) return reply.status(404).send({ error: "not_found" });
     if (content.status !== "published") {
@@ -156,6 +187,19 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     if (content.isRecommended) tags.push("推荐");
     if (content.isNewArrival) tags.push("新上架");
 
+    const effectiveSeo = buildEffectiveSeo({
+      contentSeoTitle: content.seoTitle,
+      contentSeoDescription: content.seoDescription,
+      contentSeoKeywords: content.seoKeywords,
+      contentGeoKeywords: content.geoKeywords,
+      fallbackTitle: content.title,
+      fallbackDescription: content.description,
+      platformSeoTitle: platformMetadata?.seoTitle,
+      platformSeoDescription: platformMetadata?.seoDescription,
+      platformSeoKeywords: platformMetadata?.seoKeywords,
+      platformGeoKeywords: platformMetadata?.geoKeywords,
+    });
+    const pageUrl = `${resolveBaseUrl(req)}/#view=content&id=${encodeURIComponent(content.id)}`;
     return {
       id: content.id,
       title: content.title,
@@ -179,6 +223,17 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       unlocked,
       ownedBy,
       publishedAt: content.publishedAt?.toISOString(),
+      effectiveSeo,
+      robots: "noindex,nofollow",
+      videoObjectJsonLd: buildVideoObjectJsonLd({
+        title: effectiveSeo.title || content.title,
+        description: effectiveSeo.description || content.description || "",
+        thumbnailUrl: content.coverUrl,
+        previewUrl: content.previewUrl,
+        uploadDate: content.publishedAt?.toISOString() || null,
+        durationSeconds: content.durationSeconds,
+        pageUrl,
+      }),
     };
   });
 }

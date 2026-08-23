@@ -1,1196 +1,1051 @@
-/*
- * Mini App（Telegram WebView） - 原生 HTML/JS，hash 路由 4 视图：
- *   home (默认) ｜ orders （我的订单）｜ entitlements（我的权益）｜ content/:id（内容详情 + 购买/解锁 CTA）
- * 身份由服务端 session 校验；权限必须由后端 unlocked 字段决定，前端只渲染。
- */
-
 (function () {
   "use strict";
 
-  const telegram = window.Telegram?.WebApp;
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 
-  /** @typedef {'home'|'content'|'orders'|'entitlements'} ViewName */
+  const CLIENT_ERRORS = {
+    unauthorized: "请先完成会话建立后再继续。",
+    forbidden: "你当前没有对应权益，请先完成购买。",
+    method_not_allowed: "当前入口只允许 POST 交付，页面已按新方式修复。",
+    content_unavailable: "该内容暂时不可用。",
+    delivery_channel_not_configured: "交付频道尚未配置，请稍后再试。",
+    bot_not_configured: "服务端邀请 Bot 尚未配置完成，请联系管理员。",
+    auth_h5_guest_unavailable: "访客会话创建失败，请稍后重试。",
+    auth_h5_session_internal: "会话读取失败，请稍后重试。",
+    auth_h5_guest_internal: "系统暂时无法建立访客会话，请稍后重试。",
+    stars_invoice_service_unavailable: "Stars 发票暂时不可用，请稍后重试。",
+    stars_continue_expired: "Stars 续付窗口已过期，请重新下单。",
+    single_delivery_not_enabled: "首期不支持单条共享频道交付，请选择会员或内容包。",
+  };
 
   const state = {
-    user: null,
-    /** @type {'checking'|'active'|'expired'|'none'} */
-    access: "checking",
-    videos: [],
-    banners: [],
-    categories: [],
-    activeCategory: "all",
-    orderPage: { page: 1, pageSize: 20, status: "", total: 0, items: [], loaded: false },
-    view: /** @type {ViewName} */ ("home"),
-    viewParams: /** @type {Record<string,string>} */ ({}),
+    env: {
+      isTelegram: !!tg,
+      hasInitData: !!(tg && tg.initData),
+    },
+    session: null,
+    booting: false,
+    bootError: null,
+    home: null,
+    discover: {
+      loading: false,
+      loaded: false,
+      items: [],
+      pagination: null,
+      categoryId: "all",
+      search: "",
+    },
+    detailCache: {},
+    detailLoading: false,
+    orders: {
+      loading: false,
+      items: [],
+      status: "",
+      pagination: null,
+    },
+    entitlements: {
+      loading: false,
+      loaded: false,
+      data: null,
+    },
+    channels: {
+      loading: false,
+      loaded: false,
+      items: [],
+    },
+    route: {
+      tab: "home",
+      view: "tab",
+      id: "",
+      fromTab: "home",
+    },
   };
 
-  /* ================= 工具函数 ================= */
-
-  function escapeHtml(value = "") {
-    return String(value).replace(/[&<>'"]/g, (ch) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "'": "&#039;",
-      '"': "&quot;",
-    }[ch]));
+  function $(id) {
+    return document.getElementById(id);
   }
 
-  function formatDate(iso, withTime = true) {
-    if (!iso) return "-";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    const pad = (n) => String(n).padStart(2, "0");
-    const base = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    if (!withTime) return base;
-    return `${base} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }
-
-  function formatDurationSeconds(sec = 0) {
-    const s = Number(sec) || 0;
-    if (s <= 0) return "-";
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const ss = s % 60;
-    const pad = (n) => String(n).padStart(2, "0");
-    return h > 0 ? `${h}:${pad(m)}:${pad(ss)}` : `${pad(m)}:${pad(ss)}`;
-  }
-
-  function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
-
-  /* ================= 错误码中文映射（Mini App 仅走 Stars） ================= */
-  const CLIENT_ERROR_ZH = {
-    unauthorized: "请重新在 Telegram Mini App 内打开以完成登录",
-    forbidden: "你暂无对应权限，请先完成有效支付订单",
-    single_delivery_not_enabled: "单条内容购买首期暂不开放，共享收费频道无法做到只开放一条内容。请选择会员或内容包。",
-    delivery_channel_not_configured: "当前内容所属交付频道尚未配置，请稍后再试或联系运营。",
-    channel_missing: "当前内容尚未配置访问通道，请前往公开频道预览或联系客服。",
-    package_id_required: "内容配置异常（缺少绑定的内容包），请联系运营修复。",
-    package_not_ready: "当前内容包尚未完成发布或关联产品不可购买，请稍后再试。",
-    pool_empty: "当前系统支付资源占用已满，请稍后重试或联系客服。",
-    usdt_address_pool_exhausted: "当前没有可用的支付地址，请稍后重试。",
-    usdt_assign_failed: "支付地址分配失败，请稍后重试。",
-    payment_expired: "支付窗口已过期，请重新创建订单。",
-    bad_order_status_pending: "订单尚未完成支付，请完成支付后重试。",
-    bad_order_status_processing: "订单正在处理中，请稍候片刻再试。",
-    bad_order_status_expired: "订单已过期，请重新创建。",
-    bad_order_status_cancelled: "订单已取消。",
-    bad_order_status_failed: "订单支付失败，请重新下单。",
-    bad_order_status_refunded: "该订单已退款，如需重新访问请再次下单。",
-    content_unavailable: "内容已下架或未上架。",
-    not_found: "内容或订单不存在。",
-    bad_request: "请求参数不正确，请刷新页面后重试。",
-    conflict: "操作冲突，请稍候重试。",
-    db_error: "服务暂不可用，请稍后重试。",
-    stars_invoice_service_unavailable: "Stars 发票服务暂时不可用（Bot 未配置或 API 失败），请稍后重试或联系运营。",
-    stars_continue_not_found: "未找到该订单（可能已被删除或订单号错误）。",
-    stars_continue_not_owner: "该订单不是你的，无法续付（可在 Mini App 中发起新单）。",
-    stars_continue_not_stars: "该订单不是 Telegram Stars 支付，不能使用 Stars 续付（可使用 USDT 通道）。",
-    stars_continue_not_pending: "该订单已不处于待支付状态，请重新创建订单。",
-    stars_continue_expired: "Stars 续付窗口（30 分钟）已过，请重新创建订单。",
-    stars_continue_no_invoice: "该旧单未保存发票链接（可能是旧版本创建），请重新创建订单。",
-  };
-
-  function zhMessage(err) {
-    const p = err?.payload || {};
-    const code = p.error || p.code || p.userError || p.errorClass || "";
-    if (code && CLIENT_ERROR_ZH[code]) return CLIENT_ERROR_ZH[code];
-    const raw = p.userMessage || p.message || p.error || err?.message || "";
-    if (!raw) return "请稍后重试或联系客服。";
-    return raw;
-  }
-
-  function copyText(text) {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function showAlert(msg) {
-    if (telegram?.showAlert) telegram.showAlert(msg);
-    else window.alert(msg);
-  }
-
-  function showConfirmDialog(message, primaryLabel, primaryAction, secondaryLabel, secondaryAction, cancelAction) {
-    if (telegram?.showPopup) {
-      telegram.showPopup({
-        title: "选择操作",
-        message,
-        buttons: [
-          { id: "primary", text: primaryLabel, type: "ok" },
-          { id: "secondary", text: secondaryLabel, type: "default" },
-          { id: "cancel", type: "cancel" },
-        ],
-      }).then((btn) => {
-        if (btn === "primary") primaryAction();
-        else if (btn === "secondary") secondaryAction();
-        else cancelAction();
-      }).catch(() => cancelAction());
-      return;
-    }
-    const got = window.confirm(message + "\n\n确定 = " + primaryLabel + "\n取消 = " + secondaryLabel);
-    if (got) primaryAction();
-    else {
-      const again = window.confirm("是否取消本次支付？\n\n确定 = 取消\n取消 = " + secondaryLabel);
-      if (again) cancelAction();
-      else secondaryAction();
-    }
-  }
-
-  function showToast(msg) {
-    if (telegram?.showPopup) {
-      telegram.showPopup({ title: "提示", message: msg, buttons: [{ type: "ok" }] }).catch(() => {});
-      return;
-    }
-    showAlert(msg);
-  }
-
-  function apiCall(url, options = {}) {
-    return fetch(url, {
-      credentials: "include",
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
-    }).then(async (res) => {
-      let payload = null;
-      try { payload = await res.json(); } catch (_) { payload = null; }
-      if (!res.ok) {
-        const message = payload?.message || payload?.error || `HTTP ${res.status}`;
-        const err = new Error(message);
-        err.status = res.status;
-        err.payload = payload;
-        throw err;
-      }
-      return payload;
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
     });
+  }
+
+  function ensureMetaTag(selector, attrs) {
+    let el = document.head.querySelector(selector);
+    if (!el) {
+      el = document.createElement("meta");
+      Object.keys(attrs).forEach(function (key) {
+        el.setAttribute(key, attrs[key]);
+      });
+      document.head.appendChild(el);
+    }
+    return el;
+  }
+
+  function setMetaContent(selector, attrs, value) {
+    const el = ensureMetaTag(selector, attrs);
+    el.setAttribute("content", String(value || ""));
+  }
+
+  function updatePageSeo(seo) {
+    const fallbackTitle = "同频 · 精选点播";
+    const fallbackDescription = "同频内容目录与权益入口";
+    const title = seo && seo.title ? seo.title : fallbackTitle;
+    const description = seo && seo.description ? seo.description : fallbackDescription;
+    const keywords = seo && Array.isArray(seo.keywords) ? seo.keywords.join(",") : "";
+    document.title = title;
+    setMetaContent('meta[name="description"]', { name: "description" }, description);
+    setMetaContent('meta[name="keywords"]', { name: "keywords" }, keywords);
+    setMetaContent('meta[name="robots"]', { name: "robots" }, "noindex,nofollow");
+    setMetaContent('meta[property="og:title"]', { property: "og:title" }, title);
+    setMetaContent('meta[property="og:description"]', { property: "og:description" }, description);
+  }
+
+  function updateOgImage(imageUrl) {
+    setMetaContent('meta[property="og:image"]', { property: "og:image" }, imageUrl || "");
+  }
+
+  function updateJsonLd(jsonLd) {
+    const el = $("videoObjectJsonLd");
+    if (!el) return;
+    el.textContent = jsonLd ? JSON.stringify(jsonLd) : "";
+  }
+
+  function apiText(err) {
+    const payload = err && err.payload ? err.payload : {};
+    const code = payload.userError || payload.error || payload.errorClass || "";
+    if (code && CLIENT_ERRORS[code]) return CLIENT_ERRORS[code];
+    return payload.message || err.message || "请稍后重试。";
+  }
+
+  function isStarsProduct(product) {
+    return product && String(product.currency || "").toUpperCase() === "XTR";
+  }
+
+  function formatDate(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    const pad = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  function formatDateShort(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return String(iso);
+    const pad = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+
+  function normalizeXtrMinor(minor) {
+    try {
+      var n = BigInt(minor == null || minor === "" ? "0" : String(minor));
+      if (n > 0n && n >= 1000000n && n % 1000000n === 0n) return n / 1000000n;
+      return n;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function formatPriceMinor(minor, currency) {
+    if (minor == null || minor === "") return "未配置价格";
+    if (String(currency || "").toUpperCase() === "XTR") {
+      const starsMinor = normalizeXtrMinor(minor);
+      if (starsMinor == null) return String(minor) + " " + (currency || "");
+      return starsMinor.toString() + " Stars";
+    }
+    const num = Number(minor);
+    if (!Number.isFinite(num)) return String(minor) + " " + (currency || "");
+    if (String(currency || "").toUpperCase() === "USDT") {
+      const usdt = (num / 1000000).toFixed(2).replace(/\.?0+$/, "");
+      return usdt + " USDT";
+    }
+    return String(num) + " " + (currency || "");
+  }
+
+  function showBootError(title, message) {
+    state.bootError = { title: title, message: message };
+    $("globalErrorTitle").textContent = title;
+    $("globalErrorMessage").textContent = message;
+    $("globalError").classList.remove("is-hidden");
+  }
+
+  function clearBootError() {
+    state.bootError = null;
+    $("globalError").classList.add("is-hidden");
+  }
+
+  async function apiCall(url, options) {
+    const opts = options || {};
+    const headers = Object.assign({}, opts.headers || {});
+    if (!headers.Accept) headers.Accept = "application/json";
+    if (opts.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+
+    const res = await fetch(url, {
+      credentials: "include",
+      method: opts.method || "GET",
+      body: opts.body,
+      headers: headers,
+    });
+    const text = await res.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch (_) {
+      payload = null;
+    }
+    if (!res.ok) {
+      const err = new Error((payload && (payload.message || payload.error)) || ("HTTP " + res.status));
+      err.status = res.status;
+      err.payload = payload;
+      throw err;
+    }
+    return payload;
+  }
+
+  function parseHash() {
+    const raw = String(window.location.hash || "").replace(/^#/, "");
+    const params = new URLSearchParams(raw);
+    const view = params.get("view");
+    const id = params.get("id") || "";
+    const fromTab = params.get("from") || "home";
+    const tab = params.get("tab") || "home";
+    if (view === "content" && id) {
+      return { view: "detail", id: id, tab: fromTab, fromTab: fromTab };
+    }
+    return { view: "tab", id: "", tab: tab, fromTab: tab };
+  }
+
+  function setHashForTab(tab) {
+    const params = new URLSearchParams();
+    params.set("tab", tab);
+    window.location.hash = params.toString();
+  }
+
+  function setHashForDetail(id, fromTab) {
+    const params = new URLSearchParams();
+    params.set("view", "content");
+    params.set("id", id);
+    params.set("from", fromTab || state.route.tab || "home");
+    window.location.hash = params.toString();
+  }
+
+  function routeTo(hashState) {
+    state.route = hashState;
+    const isDetail = hashState.view === "detail";
+    const titleMap = {
+      home: ["同频点播", "首页 · 推荐、继续浏览与热门内容"],
+      discover: ["发现", "搜索、分类筛选与完整目录"],
+      membership: ["会员", "会员权益、内容包与支付入口"],
+      orders: ["订单", "查看待支付、已支付与过期订单"],
+      me: ["我的", "访客身份、绑定 Telegram、权益与频道入口"],
+    };
+    $("backButton").hidden = !isDetail;
+    $("bottomNav").classList.toggle("is-hidden", isDetail);
+    if (isDetail) {
+      $("headerTitle").textContent = "内容详情";
+      $("headerSubtitle").textContent = "返回后将恢复原来源 Tab 与浏览状态";
+    } else {
+      $("headerTitle").textContent = titleMap[hashState.tab][0];
+      $("headerSubtitle").textContent = titleMap[hashState.tab][1];
+      updateJsonLd(null);
+      updatePageSeo(state.home && state.home.seo ? state.home.seo : null);
+      updateOgImage("");
+    }
+
+    ["home", "discover", "membership", "orders", "me"].forEach(function (tab) {
+      $(tab + "View").classList.toggle("is-hidden", isDetail || hashState.tab !== tab);
+    });
+    $("detailView").classList.toggle("is-hidden", !isDetail);
+
+    document.querySelectorAll(".nav-item").forEach(function (btn) {
+      btn.classList.toggle("is-active", !isDetail && btn.getAttribute("data-tab") === hashState.tab);
+    });
+
+    if (isDetail) {
+      renderDetail(hashState.id);
+      return;
+    }
+    if (hashState.tab === "discover") loadDiscover();
+    if (hashState.tab === "orders") loadOrders();
+    if (hashState.tab === "me") {
+      loadEntitlements();
+      loadChannels();
+    }
+  }
+
+  function createSkeletonCards(count) {
+    const out = [];
+    for (let i = 0; i < count; i += 1) out.push('<div class="skeleton"></div>');
+    return out.join("");
+  }
+
+  function renderHome() {
+    const home = state.home;
+    if (!home) {
+      $("homeBannerList").innerHTML = createSkeletonCards(2);
+      $("homeRecommendedGrid").innerHTML = createSkeletonCards(4);
+      $("homeUnlockedGrid").innerHTML = '<div class="inline-state">正在加载目录…</div>';
+      return;
+    }
+
+    const membershipActive = !!home.meta && !!home.meta.hasMembership;
+    $("heroTitle").textContent = membershipActive ? "你的会员内容已同步到当前设备" : "先浏览真实目录，再决定是否解锁";
+    $("heroDescription").textContent = state.session && state.session.identity === "guest"
+      ? "当前为访客模式，订单会自动保存在本设备；绑定 Telegram 后可跨端恢复权益。"
+      : "当前会话已建立，可直接浏览、下单与查看订单/权益。";
+
+    $("homeBannerList").innerHTML = "";
+    if (!home.banners || home.banners.length === 0) {
+      $("homeBannerList").innerHTML = '<div class="inline-state">暂无推荐 Banner。</div>';
+    } else {
+      home.banners.forEach(function (banner) {
+        const card = document.createElement("article");
+        card.className = "banner-card";
+        card.innerHTML =
+          '<p class="eyebrow">' + escapeHtml(banner.eyebrow || "RECOMMENDED") + '</p>' +
+          '<h3>' + escapeHtml(banner.title || "") + '</h3>' +
+          '<p>' + escapeHtml(banner.description || "") + '</p>' +
+          '<button class="ghost-button" type="button">' + escapeHtml(banner.actionLabel || "查看") + '</button>';
+        card.querySelector("button").addEventListener("click", function () {
+          handleBannerAction(banner);
+        });
+        $("homeBannerList").appendChild(card);
+      });
+    }
+
+    const recommended = (home.contents || []).slice(0, 6);
+    const unlocked = (home.contents || []).filter(function (item) { return item.unlocked; }).slice(0, 4);
+    renderContentCards("homeRecommendedGrid", recommended, "home");
+    $("homeUnlockedGrid").innerHTML = unlocked.length ? "" : '<div class="inline-state">暂无已解锁内容，完成购买后会显示在这里。</div>';
+    if (unlocked.length) renderContentCards("homeUnlockedGrid", unlocked, "home");
+
+    renderMembershipBadge();
+    renderSessionChip();
+    updatePageSeo(home.seo || null);
+    updateOgImage("");
+    updateJsonLd(null);
+  }
+
+  function renderMembershipBadge() {
+    const summary = state.entitlements.data && state.entitlements.data.summary ? state.entitlements.data.summary.membership : null;
+    const badge = $("membershipStatusBadge");
+    if (!summary || summary.status === "none") {
+      badge.textContent = "未开通";
+      badge.className = "status-badge status-warning";
+      $("membershipHeadline").textContent = "会员与内容包入口";
+      $("membershipCopy").textContent = state.env.isTelegram
+        ? "Telegram 内优先展示 Stars；若存在 USDT 变体，可在后续版本一起呈现。"
+        : "站外 H5 默认走 USDT；若当前商品仅有 Stars 版本，会提示前往 Telegram。";
+      return;
+    }
+    if (summary.status === "active") {
+      badge.textContent = summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已生效";
+      badge.className = "status-badge";
+      $("membershipHeadline").textContent = "你的会员权益已生效";
+      $("membershipCopy").textContent = "已生效的会员或内容包会在详情页直接展示进入频道入口。";
+      return;
+    }
+    badge.textContent = summary.status;
+    badge.className = "status-badge status-warning";
+  }
+
+  function renderDiscover() {
+    const home = state.home;
+    if (!home) {
+      $("discoverState").innerHTML = "正在加载目录…";
+      $("discoverGrid").innerHTML = createSkeletonCards(4);
+      return;
+    }
+    renderDiscoverCategoryChips(home.categories || []);
+    if (!state.discover.loaded && !state.discover.loading) loadDiscover();
+    if (state.discover.loading) {
+      $("discoverState").innerHTML = "正在加载发现页…";
+      $("discoverGrid").innerHTML = createSkeletonCards(6);
+      return;
+    }
+    const filtered = filterDiscoverItems();
+    $("discoverState").innerHTML = filtered.length
+      ? '共 ' + filtered.length + ' 条内容'
+      : '没有匹配结果，试试更换关键词或分类。';
+    if (filtered.length === 0) {
+      $("discoverGrid").innerHTML = '<div class="inline-state">暂无匹配内容。</div>';
+      return;
+    }
+    renderContentCards("discoverGrid", filtered, "discover");
+  }
+
+  function renderDiscoverCategoryChips(categories) {
+    const host = $("discoverCategoryList");
+    host.innerHTML = "";
+    categories.forEach(function (cat) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip" + (state.discover.categoryId === cat.id ? " is-active" : "");
+      btn.textContent = cat.name;
+      btn.addEventListener("click", function () {
+        state.discover.categoryId = cat.id;
+        renderDiscover();
+      });
+      host.appendChild(btn);
+    });
+  }
+
+  function filterDiscoverItems() {
+    const keyword = String(state.discover.search || "").trim().toLowerCase();
+    return (state.discover.items || []).filter(function (item) {
+      const byCategory = state.discover.categoryId === "all" || item.categoryId === state.discover.categoryId;
+      const byKeyword = !keyword || String(item.title || "").toLowerCase().includes(keyword) || String(item.description || "").toLowerCase().includes(keyword);
+      return byCategory && byKeyword;
+    });
+  }
+
+  function renderMembership() {
+    const items = (state.home && state.home.contents ? state.home.contents : []).filter(function (item) {
+      return item.accessType === "membership" || item.accessType === "package";
+    });
+    if (!state.home) {
+      $("membershipGrid").innerHTML = createSkeletonCards(4);
+      return;
+    }
+    if (!items.length) {
+      $("membershipGrid").innerHTML = '<div class="inline-state">当前目录中还没有会员或内容包内容。</div>';
+      return;
+    }
+    renderContentCards("membershipGrid", items, "membership");
+  }
+
+  function renderOrders() {
+    const host = $("ordersList");
+    if (state.orders.loading) {
+      host.innerHTML = createSkeletonCards(3);
+      return;
+    }
+    if (!state.orders.items.length) {
+      host.innerHTML = '<div class="inline-state">当前没有符合筛选条件的订单。</div>';
+      return;
+    }
+    host.innerHTML = "";
+    state.orders.items.forEach(function (order) {
+      const card = document.createElement("article");
+      const statusClass = order.status === "paid" ? "" : (order.status === "pending" ? " status-warning" : " status-danger");
+      card.className = "stack-card";
+      card.innerHTML =
+        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(order.product && order.product.title ? order.product.title : order.orderNo) + '</div>' +
+        '<div class="stack-subtitle">订单号 ' + escapeHtml(order.orderNo) + "</div></div>" +
+        '<div class="status-badge' + statusClass + '">' + escapeHtml(order.status) + "</div></div>" +
+        '<div class="stack-meta"><span>' + escapeHtml(formatPriceMinor(order.amountMinor, order.currency)) + '</span><span>' + escapeHtml(formatDate(order.createdAt)) + "</span></div>" +
+        '<div class="channel-actions" style="margin-top:12px;"></div>';
+      const actions = card.querySelector(".channel-actions");
+      const detailBtn = document.createElement("button");
+      detailBtn.type = "button";
+      detailBtn.className = "ghost-button";
+      detailBtn.textContent = "查看商品";
+      detailBtn.addEventListener("click", function () {
+        if (order.product && order.product.id) showInlineMessage("当前订单商品已绑定，可在首页/发现中继续查看。");
+      });
+      actions.appendChild(detailBtn);
+
+      if (order.status === "pending" && !state.env.isTelegram && order.product && !isStarsProduct(order.product)) {
+        const payBtn = document.createElement("button");
+        payBtn.type = "button";
+        payBtn.className = "primary-button";
+        payBtn.textContent = "继续 USDT 支付";
+        payBtn.addEventListener("click", function () {
+          window.location.assign("./h5-pay.html?orderNo=" + encodeURIComponent(order.orderNo));
+        });
+        actions.appendChild(payBtn);
+      }
+
+      if (order.status === "paid") {
+        const accessBtn = document.createElement("button");
+        accessBtn.type = "button";
+        accessBtn.className = "primary-button";
+        accessBtn.textContent = "进入频道";
+        accessBtn.addEventListener("click", function () {
+          const first = (order.entitlements || [])[0];
+          if (!first) {
+            showInlineMessage("该订单还没有已激活权益，请稍后刷新重试。");
+            return;
+          }
+          if (first.resourceType === "membership_channel") {
+            const content = findFirstContentByType("membership");
+            if (!content) {
+              showInlineMessage("还没有可作为交付触发点的会员内容。");
+              return;
+            }
+            openChannelAccess(content.id);
+            return;
+          }
+          if (first.resourceType === "package") {
+            const content = findFirstContentByPackage(first.resourceId);
+            if (!content) {
+              showInlineMessage("该内容包暂无可触发的已发布内容。");
+              return;
+            }
+            openChannelAccess(content.id);
+          }
+        });
+        actions.appendChild(accessBtn);
+      }
+      host.appendChild(card);
+    });
+    renderOrdersBadge();
+  }
+
+  function renderMe() {
+    const session = state.session;
+    $("profileTitle").textContent = session && session.identity === "telegram"
+      ? (session.displayName || "已绑定 Telegram")
+      : "访客模式";
+    $("profileSubtitle").textContent = session && session.identity === "telegram"
+      ? "已绑定 Telegram，可跨设备恢复订单与权益。"
+      : "已自动保存本设备订单；绑定 Telegram 后可跨设备恢复权益。";
+    $("logoutButton").classList.toggle("is-hidden", !(session && session.identity));
+
+    if (!state.entitlements.loaded || state.entitlements.loading) {
+      $("meEntitlementsList").innerHTML = createSkeletonCards(2);
+      $("meMembershipText").textContent = "加载中";
+      $("meMembershipHint").textContent = "正在读取权益摘要…";
+    } else {
+      const summary = state.entitlements.data && state.entitlements.data.summary ? state.entitlements.data.summary.membership : { status: "none", expiresAt: null };
+      $("meMembershipText").textContent = summary.status === "active"
+        ? (summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已生效")
+        : "未开通";
+      $("meMembershipHint").textContent = summary.status === "active"
+        ? "会员内容会在详情页直接展示进入频道入口。"
+        : "完成购买后，会员/内容包/单条内容权益会显示在这里。";
+      renderEntitlementCards();
+    }
+
+    $("meOrdersText").textContent = state.orders.items.length
+      ? "共 " + state.orders.items.length + " 条"
+      : "暂无订单";
+    $("meOrdersHint").textContent = state.orders.items.some(function (item) { return item.status === "pending"; })
+      ? "你有待支付订单，可前往订单页继续支付。"
+      : "订单页会显示待支付、已支付与过期状态。";
+
+    if (!state.channels.loaded || state.channels.loading) {
+      $("meChannelsList").innerHTML = createSkeletonCards(2);
+    } else {
+      renderChannelCards();
+    }
+  }
+
+  function renderEntitlementCards() {
+    const host = $("meEntitlementsList");
+    host.innerHTML = "";
+    const data = state.entitlements.data;
+    const all = []
+      .concat(data.memberships || [])
+      .concat(data.packages || [])
+      .concat(data.contents || []);
+    if (!all.length) {
+      host.innerHTML = '<div class="inline-state">暂无权益记录。</div>';
+      return;
+    }
+    all.slice(0, 8).forEach(function (item) {
+      const metaTitle = item.meta && item.meta.title ? item.meta.title : (
+        item.resourceType === "membership_channel" ? "VIP 会员频道" : item.resourceType
+      );
+      const card = document.createElement("article");
+      const statusClass = item.status === "active" ? "" : " status-warning";
+      card.className = "stack-card";
+      card.innerHTML =
+        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(metaTitle) + '</div>' +
+        '<div class="stack-subtitle">' + escapeHtml(item.resourceType) + "</div></div>" +
+        '<div class="status-badge' + statusClass + '">' + escapeHtml(item.status) + "</div></div>" +
+        '<div class="stack-meta"><span>开始 ' + escapeHtml(formatDate(item.startsAt)) + '</span><span>到期 ' + escapeHtml(item.expiresAt ? formatDate(item.expiresAt) : "永久") + "</span></div>";
+      host.appendChild(card);
+    });
+  }
+
+  function renderChannelCards() {
+    const host = $("meChannelsList");
+    host.innerHTML = "";
+    if (!state.channels.items.length) {
+      host.innerHTML = '<div class="inline-state">当前没有可进入的频道。</div>';
+      return;
+    }
+    state.channels.items.forEach(function (item) {
+      const card = document.createElement("article");
+      card.className = "stack-card";
+      card.innerHTML =
+        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.label) + '</div>' +
+        '<div class="stack-subtitle">' + escapeHtml(item.subtitle || "") + '</div></div>' +
+        '<div class="status-badge' + (item.available ? "" : " status-warning") + '">' + (item.available ? "可进入" : "待配置") + "</div></div>" +
+        '<div class="channel-actions" style="margin-top:12px;"></div>';
+      const actions = card.querySelector(".channel-actions");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = item.available ? "primary-button" : "ghost-button";
+      btn.textContent = item.accessMode === "public_link" ? "打开频道" : "进入频道";
+      btn.disabled = !item.available;
+      btn.addEventListener("click", function () {
+        if (item.link) {
+          if (tg && tg.openTelegramLink) tg.openTelegramLink(item.link);
+          else window.open(item.link, "_blank", "noopener");
+          return;
+        }
+        if (item.resourceId) openChannelAccess(item.resourceId);
+      });
+      actions.appendChild(btn);
+      if (!item.available && item.reason) {
+        const note = document.createElement("div");
+        note.className = "stack-note";
+        note.textContent = item.reason;
+        card.appendChild(note);
+      }
+      host.appendChild(card);
+    });
+  }
+
+  async function renderDetail(id) {
+    if (!id) {
+      $("detailContent").innerHTML = '<div class="empty-state">内容 ID 缺失。</div>';
+      return;
+    }
+    if (state.detailLoading) {
+      $("detailContent").innerHTML = createSkeletonCards(1);
+      return;
+    }
+    if (!state.detailCache[id]) {
+      state.detailLoading = true;
+      $("detailContent").innerHTML = createSkeletonCards(1);
+      try {
+        state.detailCache[id] = await apiCall("/api/contents/" + encodeURIComponent(id));
+      } catch (err) {
+        $("detailContent").innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(apiText(err)) + "</div>";
+        state.detailLoading = false;
+        return;
+      }
+      state.detailLoading = false;
+    }
+    const detail = state.detailCache[id];
+    updatePageSeo(detail.effectiveSeo || { title: detail.title, description: detail.description, keywords: [] });
+    updateOgImage(detail.coverUrl || "");
+    updateJsonLd(detail.videoObjectJsonLd || null);
+    const coverClass = detail.coverUrl ? "detail-cover has-image" : "detail-cover";
+    const priceText = detail.product ? formatPriceMinor(detail.product.priceMinor, detail.product.currency) : "未配置商品";
+    $("detailContent").innerHTML =
+      '<div class="' + coverClass + '"' + (detail.coverUrl ? ' style="background-image:url(\'' + String(detail.coverUrl).replace(/'/g, "%27") + '\')"' : "") + '></div>' +
+      '<div class="detail-copy">' +
+      '<p class="eyebrow">' + escapeHtml((detail.tags || []).join(" · ") || detail.accessType || "DETAIL") + '</p>' +
+      '<h2>' + escapeHtml(detail.title || "") + '</h2>' +
+      '<div class="detail-meta"><span>' + escapeHtml(detail.duration || "—") + '</span><span>' + escapeHtml(priceText) + '</span><span>' + escapeHtml(detail.ownedBy || detail.accessType || "") + '</span></div>' +
+      '<div class="detail-description">' + escapeHtml(detail.description || "暂无内容介绍。") + '</div>' +
+      '<div class="detail-actions"></div>' +
+      "</div>";
+    const actions = $("detailContent").querySelector(".detail-actions");
+    if (detail.unlocked) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "primary-button";
+      btn.textContent = "进入频道观看";
+      btn.addEventListener("click", function () {
+        openChannelAccess(detail.id);
+      });
+      actions.appendChild(btn);
+    } else if (detail.product) {
+      const buyBtn = document.createElement("button");
+      buyBtn.type = "button";
+      buyBtn.className = "primary-button";
+      buyBtn.textContent = state.env.isTelegram && isStarsProduct(detail.product) ? "使用 Stars 解锁" : "去支付";
+      buyBtn.addEventListener("click", function () {
+        startPurchase(detail);
+      });
+      actions.appendChild(buyBtn);
+    }
+    const backBtn = document.createElement("button");
+    backBtn.type = "button";
+    backBtn.className = "ghost-button";
+    backBtn.textContent = "返回";
+    backBtn.addEventListener("click", function () {
+      setHashForTab(state.route.fromTab || "home");
+    });
+    actions.appendChild(backBtn);
+  }
+
+  function renderContentCards(hostId, items, fromTab) {
+    const host = $(hostId);
+    host.innerHTML = "";
+    const tpl = $("contentCardTemplate");
+    items.forEach(function (item) {
+      const node = tpl.content.cloneNode(true);
+      const cover = node.querySelector(".card-cover");
+      if (item.coverUrl) {
+        cover.style.backgroundImage = "linear-gradient(135deg, rgba(166,107,255,0.24), rgba(38,34,54,0.62)), url('" + String(item.coverUrl).replace(/'/g, "%27") + "')";
+        cover.style.backgroundSize = "cover";
+        cover.style.backgroundPosition = "center";
+      }
+      node.querySelector(".cover-duration").textContent = item.duration || "—";
+      node.querySelector(".card-tag").textContent = (item.tags || []).join(" · ") || item.accessType || "";
+      node.querySelector(".card-title").textContent = item.title || "未命名内容";
+      node.querySelector(".card-desc").textContent = item.description || "暂无描述";
+      node.querySelector(".card-price").textContent = item.priceMinor ? formatPriceMinor(item.priceMinor, item.priceCurrency) : "免费";
+      node.querySelector(".card-access").textContent = item.unlocked ? "已解锁" : (item.accessType || "待解锁");
+      node.querySelector(".cover-button").addEventListener("click", function () {
+        setHashForDetail(item.id, fromTab);
+      });
+      const action = node.querySelector(".card-action");
+      action.textContent = item.unlocked ? "查看详情" : "查看并解锁";
+      action.addEventListener("click", function () {
+        setHashForDetail(item.id, fromTab);
+      });
+      host.appendChild(node);
+    });
+  }
+
+  function renderSessionChip() {
+    const session = state.session;
+    const text = $("sessionChipText");
+    const icon = $("sessionChipIcon");
+    if (!session) {
+      icon.textContent = "…";
+      text.textContent = "建立会话中";
+      return;
+    }
+    if (session.identity === "telegram") {
+      icon.textContent = (session.displayName || "T").slice(0, 1);
+      text.textContent = session.displayName || "已绑定 Telegram";
+      return;
+    }
+    icon.textContent = "访";
+    text.textContent = "访客模式";
+  }
+
+  async function bootstrapSession() {
+    state.booting = true;
+    clearBootError();
+    renderSessionChip();
+    let session = null;
+
+    if (state.env.isTelegram && state.env.hasInitData) {
+      try {
+        const payload = await apiCall("/api/telegram/session", {
+          method: "POST",
+          body: JSON.stringify({ initData: tg.initData, botKey: getLaunchBotKey() }),
+        });
+        session = {
+          identity: "telegram",
+          displayName: payload.user && (payload.user.first_name || payload.user.username) ? (payload.user.first_name || payload.user.username) : "Telegram 用户",
+          telegramBound: true,
+          userId: payload.user && payload.user.id ? String(payload.user.id) : null,
+        };
+      } catch (_) {
+      }
+    }
+
+    if (!session) {
+      try {
+        session = await apiCall("/api/auth/h5/session");
+      } catch (err) {
+        if (err.status === 401) {
+          try {
+            session = await apiCall("/api/auth/h5/guest-session", {
+              method: "POST",
+              body: JSON.stringify({}),
+            });
+          } catch (guestErr) {
+            showBootError("暂时无法建立会话", apiText(guestErr));
+            state.booting = false;
+            return false;
+          }
+        } else {
+          showBootError("暂时无法建立会话", apiText(err));
+          state.booting = false;
+          return false;
+        }
+      }
+    }
+
+    state.session = session;
+    renderSessionChip();
+    state.booting = false;
+    return true;
+  }
+
+  async function bootstrapApp() {
+    if (state.booting) return;
+    const sessionOk = await bootstrapSession();
+    if (!sessionOk) return;
+    await loadHome();
+    routeTo(parseHash());
+  }
+
+  async function loadHome() {
+    try {
+      state.home = await apiCall("/api/home");
+      renderHome();
+      renderDiscover();
+      renderMembership();
+    } catch (err) {
+      showBootError("目录加载失败", apiText(err));
+    }
+  }
+
+  async function loadDiscover() {
+    if (state.discover.loading) return;
+    state.discover.loading = true;
+    renderDiscover();
+    try {
+      const params = new URLSearchParams({
+        page: "1",
+        pageSize: "50",
+        sort: "newest",
+      });
+      const data = await apiCall("/api/contents?" + params.toString());
+      state.discover.items = (data && data.items) || [];
+      state.discover.pagination = data && data.pagination ? data.pagination : null;
+      state.discover.loaded = true;
+    } catch (err) {
+      $("discoverState").innerHTML = "发现页加载失败：" + escapeHtml(apiText(err));
+    } finally {
+      state.discover.loading = false;
+      renderDiscover();
+    }
+  }
+
+  async function loadOrders() {
+    if (state.orders.loading) return;
+    state.orders.loading = true;
+    renderOrders();
+    try {
+      const params = new URLSearchParams({
+        page: "1",
+        pageSize: "50",
+      });
+      if (state.orders.status) params.set("status", state.orders.status);
+      const data = await apiCall("/api/user/orders?" + params.toString());
+      state.orders.items = data.items || [];
+      state.orders.pagination = data.pagination || null;
+    } catch (err) {
+      $("ordersList").innerHTML = '<div class="inline-state">订单加载失败：' + escapeHtml(apiText(err)) + "</div>";
+    } finally {
+      state.orders.loading = false;
+      renderOrders();
+      renderMe();
+    }
+  }
+
+  async function loadEntitlements() {
+    if (state.entitlements.loading) return;
+    state.entitlements.loading = true;
+    renderMe();
+    try {
+      state.entitlements.data = await apiCall("/api/user/entitlements");
+      state.entitlements.loaded = true;
+    } catch (err) {
+      $("meEntitlementsList").innerHTML = '<div class="inline-state">权益加载失败：' + escapeHtml(apiText(err)) + "</div>";
+    } finally {
+      state.entitlements.loading = false;
+      renderMembershipBadge();
+      renderMe();
+    }
+  }
+
+  async function loadChannels() {
+    if (state.channels.loading) return;
+    state.channels.loading = true;
+    renderMe();
+    try {
+      const data = await apiCall("/api/user/channels");
+      state.channels.items = data.items || [];
+      state.channels.loaded = true;
+    } catch (err) {
+      $("meChannelsList").innerHTML = '<div class="inline-state">频道列表加载失败：' + escapeHtml(apiText(err)) + "</div>";
+    } finally {
+      state.channels.loading = false;
+      renderMe();
+    }
+  }
+
+  function openChannelAccess(resourceId) {
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/api/resources/" + encodeURIComponent(resourceId) + "/access-link";
+    form.target = "_blank";
+    form.style.display = "none";
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }
+
+  function showInlineMessage(message) {
+    if (tg && tg.showPopup) {
+      tg.showPopup({ title: "提示", message: message, buttons: [{ type: "ok" }] }).catch(function () {});
+      return;
+    }
+    window.alert(message);
+  }
+
+  function handleBannerAction(banner) {
+    if (banner.targetType === "content" && banner.targetId) {
+      setHashForDetail(banner.targetId, "home");
+      return;
+    }
+    if (banner.targetType === "category" && banner.targetId) {
+      state.discover.categoryId = banner.targetId;
+      setHashForTab("discover");
+      return;
+    }
+    if (banner.externalUrl || banner.targetId) {
+      const url = banner.externalUrl || banner.targetId;
+      if (/^https:\/\/t\.me\//.test(url) && tg && tg.openTelegramLink) tg.openTelegramLink(url);
+      else window.open(url, "_blank", "noopener");
+    }
+  }
+
+  function findFirstContentByType(type) {
+    return (state.home && state.home.contents ? state.home.contents : []).find(function (item) { return item.accessType === type; }) || null;
+  }
+
+  function findFirstContentByPackage(packageId) {
+    return Object.keys(state.detailCache).map(function (id) { return state.detailCache[id]; }).find(function (detail) {
+      return detail && detail.package && detail.package.id === packageId;
+    }) || null;
   }
 
   function getLaunchBotKey() {
-    const value = telegram?.initDataUnsafe?.start_param;
-    return /^[a-z0-9_-]{1,32}$/i.test(value || "") ? value : undefined;
+    const value = tg && tg.initDataUnsafe ? tg.initDataUnsafe.start_param : "";
+    return /^[a-zA-Z0-9_-]{1,32}$/.test(value || "") ? value : undefined;
   }
 
-  /* ================= hash 路由 ================= */
-
-  function parseHash() {
-    const raw = (location.hash || "").replace(/^#/, "");
-    const params = new URLSearchParams(raw);
-    const view = params.get("view");
-    const id = params.get("id");
-    /** @type {ViewName} */
-    let v = "home";
-    if (view === "orders") v = "orders";
-    else if (view === "entitlements") v = "entitlements";
-    else if (view === "content" && id) v = "content";
-    return { view: v, id: id || "", params };
-  }
-
-  function setHashView(view, extra = {}) {
-    const params = new URLSearchParams({ view, ...extra });
-    location.hash = params.toString();
-  }
-
-  function syncViewFromHash() {
-    const parsed = parseHash();
-    state.view = parsed.view;
-    state.viewParams = parsed.params;
-    const titleMap = {
-      home: "同频点播",
-      content: "内容详情",
-      orders: "我的订单",
-      entitlements: "我的权益",
-    };
-    document.getElementById("pageTitle").textContent = titleMap[state.view] || "同频点播";
-    const backBtn = document.getElementById("backButton");
-    if (state.view === "home") {
-      backBtn.style.display = "none";
-    } else {
-      backBtn.style.display = "inline-flex";
-    }
-    const sections = {
-      home: document.getElementById("homeView"),
-      content: document.getElementById("contentDetailView"),
-      orders: document.getElementById("ordersView"),
-      entitlements: document.getElementById("entitlementsView"),
-    };
-    Object.entries(sections).forEach(([k, el]) => {
-      el.classList.toggle("is-hidden", k !== state.view);
-    });
-    if (state.view === "content") renderContentDetail(parsed.id);
-    if (state.view === "orders") loadUserOrders(true);
-    if (state.view === "entitlements") loadUserEntitlements();
-    window.scrollTo({ top: 0, behavior: state.view === "home" ? "instant" : "smooth" });
-  }
-
-  /* ================= 启动与鉴权 ================= */
-
-  function initTelegram() {
-    if (!telegram) return;
-    try { telegram.ready(); } catch (_) {}
-    try { telegram.expand(); } catch (_) {}
-    try { telegram.setHeaderColor?.("#13111c"); } catch (_) {}
-    try { telegram.setBackgroundColor?.("#13111c"); } catch (_) {}
-    state.user = telegram.initDataUnsafe?.user || null;
-  }
-
-  async function loadAccess() {
-    renderStatus("checking");
-    let hasSession = false;
-    try {
-      if (!telegram?.initData) throw new Error("Telegram context unavailable");
-      const payload = await apiCall("/api/telegram/session", {
-        method: "POST",
-        body: JSON.stringify({ initData: telegram.initData, botKey: getLaunchBotKey() }),
-      });
-      state.user = payload.user;
-      state.access = payload.access?.membership || payload.access || "none";
-      hasSession = true;
-    } catch (_) {
-      state.access = "none";
-    }
-    try {
-      if (!hasSession) throw new Error("no session");
-      const home = await apiCall("/api/home");
-      state.banners = home.banners || [];
-      state.categories = home.categories || [];
-      state.videos = home.contents || home.videos || [];
-    } catch (_) {
-      state.videos = demoVideos();
-      state.banners = demoHome().banners;
-      state.categories = demoHome().categories;
-    }
-    renderProfileInitial();
-    render();
-  }
-
-  /* ================= demo 数据（无网络时用） ================= */
-
-  function demoVideos() {
-    return [
-      { id: "welcome", title: "同频 · 新成员导览", tag: "START HERE", duration: "03:20", description: "认识社区边界、内容规则与成员权益。", accessType: "public", unlocked: true, categoryId: "guide" },
-      { id: "topic-01", title: "主题内容 · 第一辑", tag: "MEMBERS ONLY", duration: "18:42", description: "已授权的精选内容；完整访问需拥有对应会员权益。", accessType: "membership", unlocked: false, categoryId: "featured" },
-      { id: "topic-02", title: "创作者访谈 · 真实表达", tag: "MEMBERS ONLY", duration: "24:10", description: "围绕理解、尊重与个人边界展开的对话。", accessType: "membership", unlocked: false, categoryId: "interview" },
-      { id: "topic-03", title: "主题内容 · 第二辑", tag: "CONTENT PACK", duration: "16:35", description: "加入内容包后可持续查看同主题更新。", accessType: "package", unlocked: false, categoryId: "featured" },
-    ];
-  }
-  function demoHome() {
-    return {
-      banners: [
-        { eyebrow: "PUBLIC PREVIEW", title: "关注同频公开频道", description: "获取最新预告、公开样本与平台通知。", actionLabel: "前往频道", targetType: "external", targetId: "https://t.me/InTune_bdsm" },
-      ],
-      categories: [
-        { id: "all", name: "全部" },
-        { id: "featured", name: "精选" },
-        { id: "guide", name: "导览" },
-        { id: "interview", name: "访谈" },
-      ],
-    };
-  }
-
-  /* ================= 渲染：状态 + 顶部 ================= */
-
-  function renderStatus(access = state.access) {
-    const statusEl = document.getElementById("membershipStatus");
-    const hintEl = document.getElementById("membershipHint");
-    const labels = {
-      checking: ["正在核验…", "正在确认账户与订单状态"],
-      active: ["会员有效", "你已拥有会员内容访问权益"],
-      expired: ["会员已到期", "续费完成后将恢复会员内容访问"],
-      none: ["尚未开通会员", "可浏览目录；会员内容需完成有效订单后访问"],
-    };
-    const [s, h] = labels[access] || labels.none;
-    statusEl.textContent = s;
-    hintEl.textContent = h;
-  }
-
-  function renderProfileInitial() {
-    const initial = state.user?.first_name?.slice(0, 1) || "访";
-    document.getElementById("profileInitial").textContent = initial;
-  }
-
-  /* ================= 渲染：首页 ================= */
-
-  function renderHome() {
-    renderStatus();
-    renderBanners();
-    renderCategories();
-    renderVideoList();
-  }
-
-  function renderBanners() {
-    const list = document.getElementById("bannerList");
-    list.replaceChildren();
-    state.banners.forEach((banner, index) => {
-      const el = document.createElement("article");
-      el.className = "banner";
-      el.style.background = index % 2 ? "linear-gradient(120deg, #1d5960, #202639 65%, #af7764)" : "linear-gradient(120deg, #632d73, #222438 65%, #ba7269)";
-      const actionLabel = escapeHtml(banner.actionLabel || "查看");
-      el.innerHTML =
-        `<span class="eyebrow">${escapeHtml(banner.eyebrow || "")}</span>` +
-        `<strong>${escapeHtml(banner.title || "")}</strong>` +
-        `<p>${escapeHtml(banner.description || "")}</p>` +
-        `<button type="button">${actionLabel}</button>`;
-      el.querySelector("button").addEventListener("click", () => handleBannerClick(banner));
-      list.appendChild(el);
-    });
-  }
-
-  function handleBannerClick(banner) {
-    const externalUrl = banner.externalUrl || banner.targetId;
-    if ((banner.targetType === "external" || banner.targetType === "external_link") && /^https:\/\/t\.me\//.test(externalUrl)) {
-      telegram?.openTelegramLink ? telegram.openTelegramLink(externalUrl) : window.open(externalUrl, "_blank", "noopener");
+  async function startPurchase(detail) {
+    if (!detail || !detail.product) {
+      showInlineMessage("当前内容没有可用商品。");
       return;
     }
-    if (banner.targetType === "category") {
-      state.activeCategory = banner.targetId || "all";
-      renderVideoList();
-      document.getElementById("sectionTitle")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (state.env.isTelegram && isStarsProduct(detail.product)) {
+      await createStarsOrderAndPay(detail);
       return;
     }
-    const target = document.querySelector(`[data-video-id="${banner.targetId}"]`);
-    target?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-
-  function renderCategories() {
-    const list = document.getElementById("categoryList");
-    list.replaceChildren();
-    state.categories.forEach((cat) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = `category ${state.activeCategory === cat.id ? "active" : ""}`;
-      btn.textContent = cat.name;
-      btn.addEventListener("click", () => {
-        state.activeCategory = cat.id;
-        renderCategories();
-        renderVideoList();
-      });
-      list.appendChild(btn);
-    });
-  }
-
-  function renderVideoList() {
-    const visible = state.activeCategory === "all"
-      ? state.videos
-      : state.activeCategory === "featured"
-        ? state.videos.filter((v) => v.isFeatured || v.categoryId === "featured")
-        : state.videos.filter((v) => v.categoryId === state.activeCategory);
-    const titleEl = document.getElementById("sectionTitle");
-    const countEl = document.getElementById("contentCount");
-    const catName = state.categories.find((c) => c.id === state.activeCategory)?.name || "精选内容";
-    titleEl.textContent = state.activeCategory === "all" ? "推荐内容" : catName;
-    countEl.textContent = `${visible.length} 项`;
-
-    const list = document.getElementById("videoList");
-    const tpl = document.getElementById("videoTemplate");
-    list.replaceChildren();
-    visible.forEach((video, index) => {
-      const f = tpl.content.cloneNode(true);
-      const card = f.querySelector(".video-card");
-      card.dataset.videoId = video.id;
-      const cover = f.querySelector(".cover");
-      const fallback = index % 2
-        ? "linear-gradient(145deg, #23495d, #17232d 57%, #7a5c6d)"
-        : "linear-gradient(145deg, #582667, #241834 55%, #b27066)";
-      cover.style.background = video.coverUrl
-        ? `center / cover no-repeat url("${String(video.coverUrl).replace(/[\"\\]/g, "")}"), ${fallback}`
-        : fallback;
-      f.querySelector(".duration").textContent = video.duration || "-";
-      f.querySelector(".tag").textContent = video.tag || "";
-      f.querySelector("h3").textContent = video.title;
-      f.querySelector(".description").textContent = video.description || "";
-      const btn = f.querySelector(".open-button");
-      const owned = video.unlocked === true || (video.unlocked === undefined && (video.accessType === "public" || state.access === "active"));
-      btn.textContent = owned ? "打开详情" : "查看详情并解锁";
-      btn.disabled = false;
-      btn.addEventListener("click", () => setHashView("content", { id: video.id }));
-      list.appendChild(f);
-    });
-  }
-
-  /* ================= 内容详情 ================= */
-
-  async function renderContentDetail(id) {
-    const host = document.getElementById("contentDetail");
-    host.innerHTML = `<div class="empty-hint"><h4>正在加载内容…</h4></div>`;
-    if (!id) {
-      host.innerHTML = `<div class="empty-hint"><h4>内容 ID 缺失</h4><p>返回首页重新选择。</p></div>`;
+    if (!isStarsProduct(detail.product)) {
+      window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id));
       return;
     }
-    let detail = null;
-    try {
-      detail = await apiCall(`/api/contents/${encodeURIComponent(id)}`);
-    } catch (err) {
-      if (err.status === 404) {
-        host.innerHTML = `<div class="empty-hint"><h4>内容不存在或已下架</h4><p>返回首页重新选择。</p></div>`;
-      } else if (err.status === 403) {
-        host.innerHTML = `<div class="empty-hint"><h4>内容未上架</h4><p>${escapeHtml(err.payload?.message || err.message)}</p></div>`;
-      } else {
-        host.innerHTML = `<div class="empty-hint"><h4>加载失败</h4><p>${escapeHtml(err.message || "请刷新重试")}</p></div>`;
-      }
-      return;
-    }
-    renderContentDetailCard(detail);
-  }
-
-  function renderContentDetailCard(d) {
-    const host = document.getElementById("contentDetail");
-    host.replaceChildren();
-
-    const cover = document.createElement("div");
-    cover.className = "detail-cover";
-    if (d.coverUrl) {
-      cover.style.backgroundImage = `url("${String(d.coverUrl).replace(/[\"\\]/g, "")}")`;
-      cover.style.backgroundSize = "cover";
-      cover.style.backgroundPosition = "center";
-    }
-    const durationChip = document.createElement("span");
-    durationChip.className = "duration-chip";
-    durationChip.textContent = d.duration || "—";
-    cover.appendChild(durationChip);
-    host.appendChild(cover);
-
-    const tags = document.createElement("div");
-    tags.className = "detail-tags";
-    const typeMap = { public: { label: "免费内容", cls: "green" }, single: "单条内容", package: "内容包", membership: { label: "会员专属", cls: "purple" } };
-    const t = d.accessType;
-    const typeTag = typeMap[t];
-    if (typeTag) {
-      const typeChip = document.createElement("span");
-      typeChip.className = "chip " + (typeof typeTag === "string" ? "" : typeTag.cls);
-      typeChip.textContent = typeof typeTag === "string" ? typeTag : typeTag.label;
-      tags.appendChild(typeChip);
-    }
-    (d.tags || []).forEach((tName) => {
-      const c = document.createElement("span");
-      c.className = "chip";
-      c.textContent = tName;
-      tags.appendChild(c);
-    });
-    if (d.unlocked) {
-      const okTag = document.createElement("span");
-      okTag.className = "chip green";
-      okTag.textContent = "已解锁";
-      tags.appendChild(okTag);
-    }
-    host.appendChild(tags);
-
-    const title = document.createElement("h2");
-    title.className = "detail-title";
-    title.textContent = d.title;
-    host.appendChild(title);
-
-    const meta = document.createElement("div");
-    meta.className = "detail-meta";
-    const items = [];
-    if (d.duration) items.push(`时长 ${d.duration}`);
-    if (d.categories && d.categories.length) items.push(d.categories.map((c) => c.name).join(" · "));
-    if (d.publishedAt) items.push(`更新于 ${formatDate(d.publishedAt, false)}`);
-    if (d.product) {
-      const priceStars = (Number(d.product.priceMinor || 0) / 1_000_000_000).toFixed(2).replace(/\.?0+$/, "");
-      const currency = d.product.currency === "XTR" ? "Stars" : d.product.currency;
-      items.push(`${priceStars} ${currency}`);
-      if (d.product.durationDays) items.push(`会员 ${d.product.durationDays} 天`);
-    }
-    items.forEach((it) => {
-      const s = document.createElement("span");
-      s.textContent = it;
-      meta.appendChild(s);
-    });
-    host.appendChild(meta);
-
-    if (d.description) {
-      const desc = document.createElement("div");
-      desc.className = "detail-description";
-      desc.textContent = d.description;
-      host.appendChild(desc);
-    }
-
-    const footer = document.createElement("div");
-    footer.className = "detail-footer";
-    const cta = document.createElement("button");
-    cta.className = "detail-cta" + (d.unlocked ? "" : " locked");
-    const sub = document.createElement("div");
-    sub.className = "detail-cta-sub";
-
-    if (d.unlocked) {
-      cta.textContent = "前往频道观看 / 获取观看链接";
-      cta.addEventListener("click", () => requestChannelLink(d.id));
-      const ownedLabel = d.ownedBy === "single" ? "你已单独购买此内容" :
-        d.ownedBy === "package" ? "你已购买所属内容包" :
-        d.ownedBy === "membership" ? "当前会员已包含此内容" : "此内容可直接查看";
-      sub.textContent = `${ownedLabel} · 点击进入收费频道/预览频道`;
-    } else {
-      if (d.accessType === "public") {
-        cta.textContent = "此内容免费开放（无需解锁）";
-        cta.disabled = true;
-        sub.textContent = "未登录状态下的占位；请重新在 Telegram 中打开。";
-      } else if (d.product && d.product.id) {
-        const priceStars = (Number(d.product.priceMinor || 0) / 1_000_000_000).toFixed(2).replace(/\.?0+$/, "");
-        const label = d.accessType === "membership" ? `开通会员 · ${d.product.durationDays || 30} 天` :
-          d.accessType === "package" ? "购买内容包" : "购买内容";
-        cta.textContent = `${label} · ${priceStars} Stars`;
-        cta.addEventListener("click", () => createStarsOrderAndPay(d));
-        sub.textContent = "点击后直接唤起 Telegram Stars 原生支付，成功后立即激活权益并自动进入频道。";
-      } else {
-        cta.textContent = "当前内容暂未上架购买";
-        cta.disabled = true;
-        sub.textContent = "如有需要，联系同频运营单独开通。";
-      }
-    }
-    footer.appendChild(cta);
-    footer.appendChild(sub);
-    host.appendChild(footer);
-  }
-
-  async function requestChannelLink(videoId) {
-    try {
-      if (!videoId) throw new Error("missing_video_id");
-      const jumpUrl = `/api/resources/${encodeURIComponent(videoId)}/access-link`;
-      // P0-#2-B FIX：由浏览器直接 GET 受控跳转入口，Location 头 302 到 Telegram t.me/ 邀请；
-      // Mini App 环境优先使用 telegram.openTelegramLink 跳 tg 域，但这里是本域 302，因此直接 window.open 让浏览器处理。
-      try {
-        const win = window.open(jumpUrl, "_blank", "noopener,noreferrer");
-        if (!win) throw new Error("popup_blocked");
-      } catch (_openErr) {
-        // 弹窗拦截时走 location.href 兜底
-        location.href = jumpUrl;
-      }
-    } catch (err) {
-      showAlert("当前无法取得访问链接：" + zhMessage(err));
-    }
-  }
-
-  /* ================= Stars 原生支付（内容详情 CTA → 旧单续付/新单 → 服务端验状态 → 激活） ================= */
-
-  const STARS_CONTINUE_WINDOW_MS = 30 * 60 * 1000; // 30 分钟窗口内复用待支付 Stars 订单
-
-  async function findActiveStarsOrderForProduct(productId) {
-    try {
-      const data = await apiCall(`/api/user/orders?page=1&pageSize=50`);
-      const candidates = (data?.items || []).filter((o) =>
-        o.product?.id === productId &&
-        (o.paymentMethod === "telegram_stars" || o.currency === "XTR") &&
-        (o.status === "pending" || o.status === "processing"),
-      );
-      if (!candidates.length) return null;
-      candidates.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      for (const c of candidates) {
-        try {
-          const r = await apiCall(`/api/orders/${encodeURIComponent(c.orderNo)}/continue-stars`, {
-            method: "POST",
-            body: JSON.stringify({}),
-          });
-          if (r?.ok && r?.order?.invoiceLink) {
-            return {
-              ...r.order,
-              remainMs: typeof r.remainMs === "number" ? r.remainMs : STARS_CONTINUE_WINDOW_MS,
-              _hitContinueStars: true,
-            };
-          }
-        } catch (_) {
-        }
-      }
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  async function pollOrderUntilPaid(orderNo, maxWaitMs) {
-    const start = Date.now();
-    let lastStatus = null;
-    let lastEntitlements = null;
-    while (Date.now() - start < maxWaitMs) {
-      try {
-        const data = await apiCall(`/api/user/orders?page=1&pageSize=100`);
-        const order = (data?.items || []).find((o) => o.orderNo === orderNo);
-        if (order) {
-          lastStatus = order.status;
-          lastEntitlements = order.entitlements || [];
-          if (order.status === "paid" && lastEntitlements.length > 0) {
-            return { order, ok: true };
-          }
-          if (["expired", "cancelled", "refunded", "failed"].includes(order.status)) {
-            return { order, ok: false, reason: order.status };
-          }
-        }
-      } catch (_) {
-        // 网络抖动静默重试
-      }
-      await sleep(1500);
-    }
-    return { ok: false, reason: "timeout", lastStatus, lastEntitlements };
+    showInlineMessage("当前商品仅支持 Telegram Stars。请在 Telegram Mini App 内打开后支付。");
   }
 
   async function createStarsOrderAndPay(detail) {
-    if (!detail.product?.id) {
-      showAlert("该内容暂未配置商品，无法创建订单。");
+    if (!tg || typeof tg.openInvoice !== "function") {
+      showInlineMessage("请在 Telegram Mini App 内使用 Stars 支付。");
       return;
     }
-    if (!telegram || typeof telegram.openInvoice !== "function") {
-      showAlert("请在 Telegram Mini App 内打开本页面以使用 Stars 支付。");
-      return;
-    }
-    const toastLoading = showToastLoading("检查是否有进行中的 Stars 订单…");
-    const existing = await findActiveStarsOrderForProduct(detail.product.id);
-    toastLoading.close();
-
-    let orderTarget;
-    let invoiceLink;
-    if (existing) {
-      const remainMs = typeof existing.remainMs === "number"
-        ? existing.remainMs
-        : Math.max(0, STARS_CONTINUE_WINDOW_MS - (Date.now() - new Date(existing.createdAt).getTime()));
-      const remainSec = Math.round(remainMs / 1000);
-      const pick = await new Promise((resolve) => {
-        showConfirmDialog(
-          `已有同商品的 Stars 待支付订单（创建于 ${formatDate(existing.createdAt)}，剩余 ${remainSec}s 有效），是否继续该订单支付？`,
-          `继续支付该订单 · ${existing.orderNo}`,
-          () => resolve("continue"),
-          "丢弃旧单，新建订单",
-          () => resolve("renew"),
-          () => resolve("cancel"),
-        );
+    let created;
+    try {
+      created = await apiCall("/api/orders/stars", {
+        method: "POST",
+        body: JSON.stringify({ productId: detail.product.id }),
       });
-      if (pick === "cancel") {
-        return;
-      }
-      if (pick === "continue") {
-        orderTarget = existing;
-        invoiceLink = existing.invoiceLink;
-      }
+    } catch (err) {
+      showInlineMessage("创建 Stars 订单失败：" + apiText(err));
+      return;
     }
+    const invoiceLink =
+      (created && created.created && created.created.invoiceLink) ||
+      (created && created.invoice && created.invoice.invoiceLink) ||
+      (created && created.order && created.order.invoiceLink) ||
+      null;
+    if (!invoiceLink) {
+      showInlineMessage("未获得有效 Stars 发票链接。");
+      return;
+    }
+    tg.openInvoice(invoiceLink, function () {
+      loadOrders();
+      loadEntitlements();
+      showInlineMessage("Stars 支付已提交，请在订单页确认状态。");
+    });
+  }
 
-    if (!orderTarget) {
-      const t2 = showToastLoading("正在创建支付订单…");
-      let createdResp = null;
+  function renderOrdersBadge() {
+    const pending = state.orders.items.filter(function (item) { return item.status === "pending"; }).length;
+    const badge = $("ordersBadge");
+    if (!pending) {
+      badge.classList.add("is-hidden");
+      return;
+    }
+    badge.classList.remove("is-hidden");
+    badge.textContent = pending > 99 ? "99+" : String(pending);
+  }
+
+  function bindEvents() {
+    $("retryBootstrapButton").addEventListener("click", function () {
+      bootstrapApp();
+    });
+    $("backButton").addEventListener("click", function () {
+      setHashForTab(state.route.fromTab || "home");
+    });
+    $("homePrimaryAction").addEventListener("click", function () {
+      setHashForTab("discover");
+    });
+    $("homeSecondaryAction").addEventListener("click", function () {
+      setHashForTab("me");
+    });
+    $("jumpDiscoverButton").addEventListener("click", function () {
+      setHashForTab("discover");
+    });
+    $("sessionChip").addEventListener("click", function () {
+      setHashForTab("me");
+    });
+    $("bindTelegramButton").addEventListener("click", function () {
+      const redirect = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
+      window.location.assign("/login.html?redirect=" + redirect);
+    });
+    $("logoutButton").addEventListener("click", async function () {
       try {
-        createdResp = await apiCall("/api/orders/stars", {
+        await apiCall("/api/auth/h5/logout", {
           method: "POST",
-          body: JSON.stringify({ productId: detail.product.id }),
+          body: JSON.stringify({}),
         });
-      } catch (err) {
-        t2.close();
-        showAlert("创建支付订单失败：" + zhMessage(err));
-        return;
+      } catch (_) {
       }
-      t2.close();
-      const link =
-        createdResp?.created?.invoiceLink ??
-        createdResp?.invoice?.invoiceLink ??
-        createdResp?.order?.invoiceLink ??
-        null;
-      if (!link || !/^https:\/\/t\.me\//.test(link)) {
-        const msg = createdResp?.message || createdResp?.userMessage || "";
-        showAlert("未获得有效支付链接，请稍后重试。" + (msg ? " 错误：" + msg : ""));
-        return;
-      }
-      orderTarget = createdResp?.created || createdResp?.order || createdResp;
-      invoiceLink = link;
-    }
-
-    try {
-      const paid = await new Promise((resolve) => {
-        let settled = false;
-        telegram.openInvoice(invoiceLink, (status) => {
-          if (settled) return;
-          settled = true;
-          const ok = status === "paid" || status === true;
-          resolve(ok);
+      window.location.reload();
+    });
+    $("discoverSearchInput").addEventListener("input", function (evt) {
+      state.discover.search = evt.target.value || "";
+      renderDiscover();
+    });
+    $("ordersStatusSegment").querySelectorAll(".segment-button").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        $("ordersStatusSegment").querySelectorAll(".segment-button").forEach(function (node) {
+          node.classList.remove("is-active");
         });
-        setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          resolve(false);
-        }, 10 * 60 * 1000);
-      });
-      if (!paid) {
-        showToast("Stars 支付未完成，可稍后回到「我的订单」继续支付。");
-        setHashView("orders");
-        return;
-      }
-      await afterPaymentActivate(orderTarget, detail);
-    } catch (e) {
-      showAlert("支付流程中断：" + zhMessage(e));
-    }
-  }
-
-  async function afterPaymentActivate(orderOrNull, detail) {
-    const orderNo = orderOrNull?.orderNo;
-    const toast1 = showToastLoading("✅ Telegram Stars 已扣款 · 正在等待服务端确认订单状态…");
-    let polled = null;
-    if (orderNo) {
-      polled = await pollOrderUntilPaid(orderNo, 60 * 1000);
-    }
-    toast1.close();
-    if (!orderNo || !polled?.ok) {
-      const toastFail = showToastLoading("⏳ 支付到账仍在确认中（最长约 1 分钟）…已跳到「我的订单」，状态更新后可自行进入频道。");
-      setHashView("orders");
-      setTimeout(() => toastFail.close(), 2800);
-      return;
-    }
-    const toast2 = showToastLoading("🎊 权益已激活！正在进入对应私密频道…");
-    try {
-      state.access = "active";
-      renderStatus("active");
-      await sleep(1200);
-      toast2.close();
-      const resourceId =
-        (detail?.accessType === "membership") ? "membership-main" :
-        (detail?.id ? detail.id : "membership-main");
-      await requestChannelLink(resourceId).catch((err) => {
-        showAlert("进入频道失败：" + zhMessage(err) + "；请返回「我的订单」，在已支付订单中点击「进入频道观看」。");
-        setHashView("orders");
-      });
-    } catch (_) {
-      toast2.close();
-      setHashView("orders");
-    }
-  }
-
-  function showToastLoading(msg) {
-    const mask = document.createElement("div");
-    mask.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:9999; padding:24px;";
-    const box = document.createElement("div");
-    box.style.cssText = "background:#1b1928; color:#fff; padding:18px 22px; border-radius:14px; max-width:85%; font-size:15px; line-height:1.55; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,.35);";
-    box.textContent = msg;
-    mask.appendChild(box);
-    document.body.appendChild(mask);
-    return {
-      close() {
-        try { document.body.removeChild(mask); } catch (_) {}
-      },
-    };
-  }
-
-  /* ================= 我的订单 ================= */
-
-  function initOrdersToolbar() {
-    const seg = document.getElementById("ordersStatusSegment");
-    seg.querySelectorAll(".seg-item").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        seg.querySelectorAll(".seg-item").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        state.orderPage.status = btn.dataset.status || "";
-        loadUserOrders(true);
+        btn.classList.add("is-active");
+        state.orders.status = btn.getAttribute("data-status") || "";
+        loadOrders();
       });
     });
-    document.getElementById("loadMoreOrdersButton").addEventListener("click", () => loadUserOrders(false));
-  }
-
-  async function loadUserOrders(reset) {
-    const list = document.getElementById("ordersList");
-    if (reset) {
-      state.orderPage.page = 1;
-      state.orderPage.items = [];
-      state.orderPage.loaded = false;
-      list.replaceChildren();
-      list.innerHTML = `<div class="empty-hint"><h4>加载中…</h4></div>`;
-    }
-    const qs = new URLSearchParams({
-      page: String(state.orderPage.page),
-      pageSize: String(state.orderPage.pageSize),
-    });
-    if (state.orderPage.status) qs.set("status", state.orderPage.status);
-    try {
-      const data = await apiCall(`/api/user/orders?${qs.toString()}`);
-      state.orderPage.total = data.pagination.total;
-      const nextItems = reset ? data.items : state.orderPage.items.concat(data.items);
-      state.orderPage.items = nextItems;
-      state.orderPage.page = data.pagination.page + 1;
-      state.orderPage.loaded = nextItems.length >= data.pagination.total;
-      renderOrders(nextItems);
-      const loadMoreBtn = document.getElementById("loadMoreOrdersButton");
-      loadMoreBtn.style.display = state.orderPage.loaded || data.items.length === 0 ? "none" : "inline-block";
-    } catch (err) {
-      const msg = err?.status === 401 ? "请先在 Telegram Mini App 内完成登录" : (err?.payload?.message || err?.message || "加载失败");
-      if (reset) {
-        list.innerHTML = `<div class="empty-hint"><h4>订单加载失败</h4><p>${escapeHtml(msg)}</p></div>`;
-      } else {
-        showAlert("加载更多失败：" + msg);
-      }
-    }
-  }
-
-  function renderOrders(items) {
-    const list = document.getElementById("ordersList");
-    list.replaceChildren();
-    if (!items.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty-hint";
-      empty.innerHTML =
-        `<h4>暂无订单记录</h4>` +
-        `<p>先在内容详情页创建订单，或联系客服/运营协助下单。</p>` +
-        `<div style="margin-top:14px"><button class="cta-button cta-primary" id="goHomeFromOrders">回到首页浏览内容</button></div>`;
-      list.appendChild(empty);
-      document.getElementById("goHomeFromOrders")?.addEventListener("click", () => setHashView("home"));
-      return;
-    }
-    const tpl = document.getElementById("orderTemplate");
-    items.forEach((o) => list.appendChild(renderOrderCard(o, tpl)));
-  }
-
-  function renderOrderCard(o, tpl) {
-    const f = tpl.content.cloneNode(true);
-    const product = o.product;
-    f.querySelector(".order-no").textContent = o.orderNo;
-
-    const status = f.querySelector(".order-status");
-    status.className = "order-status status-" + o.status;
-    const statusLabel = {
-      pending: "待支付",
-      processing: "处理中",
-      paid: "已支付",
-      failed: "失败",
-      refunded: "已退款",
-      cancelled: "已取消",
-      expired: "已过期",
-    }[o.status] || o.status;
-    status.textContent = statusLabel;
-
-    const cover = f.querySelector(".order-cover");
-    const covers = [
-      "linear-gradient(145deg, #582667, #241834 55%, #b27066)",
-      "linear-gradient(145deg, #23495d, #17232d 57%, #7a5c6d)",
-      "linear-gradient(145deg, #1d5960, #202639 65%, #af7764)",
-      "linear-gradient(145deg, #632d73, #222438 65%, #ba7269)",
-    ];
-    cover.style.background = covers[Math.abs(hashStr(o.orderNo)) % covers.length];
-
-    f.querySelector(".product-title").textContent = product?.title || "未命名商品";
-    const metaBits = [];
-    if (product?.type) metaBits.push({ single: "单条内容", package: "内容包", membership: "会员" }[product.type] || product.type);
-    if (product?.durationDays) metaBits.push(`${product.durationDays} 天`);
-    const ent = o.entitlements && o.entitlements[0];
-    if (ent && ent.expiresAt) metaBits.push(`权益至 ${formatDate(ent.expiresAt, false)}`);
-    f.querySelector(".product-meta").textContent = metaBits.join(" · ");
-
-    const priceStars = (Number(o.amountMinor || 0) / 1_000_000_000).toFixed(2).replace(/\.?0+$/, "");
-    f.querySelector(".amount").textContent = priceStars || "0";
-    f.querySelector(".amount-sub").textContent =
-      o.currency === "USDT" ? `${o.currency} 站外支付` : `${o.currency || "Stars"} · Telegram Stars 支付`;
-
-    const dateBits = [`创建 ${formatDate(o.createdAt)}`];
-    if (o.paidAt) dateBits.push(`到账 ${formatDate(o.paidAt)}`);
-    f.querySelector(".order-time").textContent = dateBits.join(" ｜ ");
-
-    const ctaHost = f.querySelector(".order-cta");
-    ctaHost.innerHTML = "";
-    const copyOrderBtn = document.createElement("button");
-    copyOrderBtn.type = "button";
-    copyOrderBtn.className = "cta-button cta-ghost";
-    copyOrderBtn.textContent = "复制订单号";
-    copyOrderBtn.addEventListener("click", () => {
-      if (copyText(o.orderNo)) showToast(`已复制订单号 ${o.orderNo}`);
-    });
-    ctaHost.appendChild(copyOrderBtn);
-    if (o.status === "pending") {
-      const isStars = o.paymentMethod === "telegram_stars" || o.currency === "XTR";
-      const payBtn = document.createElement("button");
-      payBtn.type = "button";
-      payBtn.className = "cta-button cta-primary";
-      if (isStars) {
-        payBtn.textContent = "使用 Stars 重新下单支付";
-        payBtn.addEventListener("click", async () => {
-          if (!o.product?.id) { showAlert("该订单缺少关联商品信息，无法继续支付。"); return; }
-          await createStarsOrderAndPay(o.product).catch((err) => showAlert("唤起 Stars 支付失败：" + zhMessage(err)));
-        });
-      } else {
-        payBtn.textContent = "复制订单号去 USDT 支付";
-        payBtn.addEventListener("click", async () => {
-          if (copyText(o.orderNo)) showToast("订单号已复制。在独立 USDT 支付页粘贴该订单号即可完成转账。");
-        });
-      }
-      ctaHost.appendChild(payBtn);
-    }
-    if (o.status === "paid" && o.entitlements && o.entitlements.length) {
-      const goBtn = document.createElement("button");
-      goBtn.type = "button";
-      goBtn.className = "cta-button cta-primary";
-      goBtn.textContent = "进入频道观看";
-      goBtn.addEventListener("click", () => {
-        const firstMember = o.entitlements.find((e) => e.resourceType === "membership_channel");
-        const firstPkg = o.entitlements.find((e) => e.resourceType === "package");
-        if (firstMember) {
-          requestChannelLink("membership-main").catch((err) => showAlert("进入会员频道失败：" + zhMessage(err)));
-        } else if (firstPkg) {
-          setHashView("home");
-          setTimeout(() => showToast("请返回首页，找到所属内容包下已解锁内容，点击「前往频道观看」。"), 250);
-        } else if (o.product?.id) {
-          setHashView("home");
-          setTimeout(() => showToast("请返回首页，找到「已解锁」内容，点击「前往频道观看」。"), 300);
-        }
+    document.querySelectorAll(".nav-item").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        setHashForTab(btn.getAttribute("data-tab"));
       });
-      ctaHost.appendChild(goBtn);
-    }
-    return f;
-  }
-
-  function hashStr(s) {
-    let h = 0;
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0x7fffffff;
-    return h;
-  }
-
-  /* ================= 我的权益 ================= */
-
-  async function loadUserEntitlements() {
-    const summaryEl = document.getElementById("entitlementsSummary");
-    const mBlock = document.getElementById("entitlementsMemberships");
-    const pBlock = document.getElementById("entitlementsPackages");
-    const cBlock = document.getElementById("entitlementsContents");
-    summaryEl.innerHTML = `<div class="empty-hint" style="padding:16px">正在加载…</div>`;
-    [mBlock, pBlock, cBlock].forEach((b) => (b.innerHTML = ""));
-    try {
-      const data = await apiCall("/api/user/entitlements");
-      renderEntitlementsSummary(data.summary);
-      renderMemberships(data.memberships || [], mBlock);
-      renderPackages(data.packages || [], pBlock);
-      renderContents(data.contents || [], cBlock);
-    } catch (err) {
-      const msg = err?.status === 401 ? "请先在 Telegram Mini App 内完成登录" : (err?.payload?.message || err?.message || "加载失败");
-      summaryEl.innerHTML = `<div class="empty-hint" style="padding:16px"><h4>权益加载失败</h4><p>${escapeHtml(msg)}</p></div>`;
-    }
-  }
-
-  function renderEntitlementsSummary(summary) {
-    const el = document.getElementById("entitlementsSummary");
-    const ms = summary?.membership || { status: "none", expiresAt: null };
-    const statusLabel = {
-      active: { label: "会员有效", color: "var(--success)", text: "#0f3c25" },
-      pending: { label: "待激活", color: "var(--pending)", text: "#7a4a00" },
-      expired: { label: "已过期", color: "#e1c699", text: "#5b3200" },
-      cancelled: { label: "已取消", color: "#ffbfbf", text: "#4d1515" },
-      revoked: { label: "已收回", color: "#ffbfbf", text: "#4d1515" },
-      none: { label: "尚未开通", color: "rgba(255,255,255,.08)", text: "#efeaf6" },
-    }[ms.status] || { label: ms.status, color: "rgba(255,255,255,.08)", text: "#efeaf6" };
-
-    const expiresText = ms.expiresAt ? `到期日：${formatDate(ms.expiresAt, false)}` : "";
-    const totalText = `共 ${summary?.totalEntitlements ?? 0} 条权益记录`;
-
-    el.innerHTML = `
-      <div class="summary-row">
-        <div>
-          <div class="summary-label">当前会员</div>
-          <div class="summary-value" style="color:${statusLabel.color === "var(--success)" ? "var(--success)" : "#fff"}">${statusLabel.label}</div>
-          ${expiresText ? `<div class="summary-sub">${escapeHtml(expiresText)}</div>` : ""}
-        </div>
-        <div style="padding: 6px 12px; border-radius: 999px; background: ${statusLabel.color}; color: ${statusLabel.text}; font-weight: 800; font-size: 12px;">
-          MEMBERSHIP
-        </div>
-      </div>
-      <div class="summary-row">
-        <div>
-          <div class="summary-label">累计权益</div>
-          <div class="summary-value">${escapeHtml(totalText)}</div>
-          ${ms.status === "active" ? `<div class="summary-sub">会员内容、会员频道邀请、以及单独购买的内容均在此处查看。</div>`
-            : ms.status === "none" ? `<div class="summary-sub">先从首页选择内容，或联系客服开通会员。</div>`
-            : `<div class="summary-sub">如需续费，请在订单页创建续费订单后联系客服确认。</div>`}
-        </div>
-        <button type="button" class="cta-button cta-ghost" id="goHomeFromEntitlements">去首页</button>
-      </div>
-    `;
-    document.getElementById("goHomeFromEntitlements")?.addEventListener("click", () => setHashView("home"));
-  }
-
-  function entitlementsBlockHeader(blockEl, title, count, color = "") {
-    const h3 = document.createElement("h3");
-    h3.innerHTML = `<span>${escapeHtml(title)}</span><span class="count">${count} 条</span>`;
-    if (color) h3.style.borderLeft = `4px solid ${color}`;
-    blockEl.appendChild(h3);
-  }
-
-  function renderMemberships(items, block) {
-    block.replaceChildren();
-    entitlementsBlockHeader(block, "会员频道权益", items.length, "var(--success)");
-    if (!items.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty-hint";
-      empty.innerHTML = `<h4>暂无会员权益</h4><p>开通后即可进入同频收费会员频道，浏览全部会员内容。</p>`;
-      block.appendChild(empty);
-      return;
-    }
-    items.forEach((e) => block.appendChild(entitlementCard({
-      status: e.status,
-      title: "同频会员频道",
-      subtitle: e.expiresAt ? `将于 ${formatDate(e.expiresAt, false)} 到期` : "永久有效",
-      start: e.startsAt, end: e.expiresAt, orderNo: e.orderNo,
-      cta: e.status === "active"
-        ? { text: "进入会员频道", onClick: () => requestChannelLink("membership-main") }
-        : null,
-    })));
-  }
-
-  function renderPackages(items, block) {
-    block.replaceChildren();
-    entitlementsBlockHeader(block, "内容包权益", items.length, "#b470ff");
-    if (!items.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty-hint";
-      empty.innerHTML = `<h4>暂无内容包权益</h4><p>内容包购买完成后，同主题下的全部内容解锁。</p>`;
-      block.appendChild(empty);
-      return;
-    }
-    items.forEach((e) => {
-      const meta = e.meta || {};
-      const card = entitlementCard({
-        status: e.status,
-        title: meta.title || `内容包 #${e.resourceId.slice(0, 8)}`,
-        subtitle: `${meta.itemsCount || 0} 条内容 · ${e.orderNo ? ("订单 " + e.orderNo) : "无订单"}`,
-        start: e.startsAt, end: e.expiresAt, orderNo: e.orderNo,
-      });
-      if (meta.itemTitles && meta.itemTitles.length) {
-        const box = document.createElement("div");
-        box.className = "ent-items";
-        box.innerHTML = `<div>包含内容（展示前 ${meta.itemTitles.length} 条）</div>
-          <ul>${meta.itemTitles.map((t) => `<li>${escapeHtml(t || "未命名内容")}</li>`).join("")}</ul>`;
-        card.appendChild(box);
-      }
-      block.appendChild(card);
+    });
+    window.addEventListener("hashchange", function () {
+      routeTo(parseHash());
     });
   }
 
-  function renderContents(items, block) {
-    block.replaceChildren();
-    entitlementsBlockHeader(block, "单独购买的内容权益", items.length, "#81d5a3");
-    if (!items.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty-hint";
-      empty.innerHTML = `<h4>暂无单独购买内容</h4><p>如购买过单条内容，会显示在这里。</p>`;
-      block.appendChild(empty);
-      return;
-    }
-    items.forEach((e) => {
-      const meta = e.meta || {};
-      const card = entitlementCard({
-        status: e.status,
-        title: meta.title || `内容 #${e.resourceId.slice(0, 8)}`,
-        subtitle: meta.durationSeconds
-          ? `时长 ${formatDurationSeconds(meta.durationSeconds)}`
-          : (e.orderNo ? ("订单 " + e.orderNo) : ""),
-        start: e.startsAt, end: e.expiresAt, orderNo: e.orderNo,
-        cta: e.status === "active"
-          ? { text: "进入频道观看", onClick: () => requestChannelLink(e.resourceId) }
-          : null,
-      });
-      block.appendChild(card);
-    });
+  function initTelegram() {
+    if (!tg) return;
+    try { tg.ready(); } catch (_) {}
+    try { tg.expand(); } catch (_) {}
+    try { tg.setHeaderColor("#12111A"); } catch (_) {}
+    try { tg.setBackgroundColor("#12111A"); } catch (_) {}
   }
 
-  function entitlementCard({ status, title, subtitle, start, end, orderNo, cta }) {
-    const card = document.createElement("div");
-    card.className = "entitlement-card";
-    const head = document.createElement("div");
-    head.className = "ent-head";
-    const left = document.createElement("div");
-    const t = document.createElement("div");
-    t.className = "ent-title";
-    t.textContent = title;
-    const s = document.createElement("div");
-    s.className = "ent-sub";
-    s.textContent = subtitle || "";
-    left.append(t, s);
-    const right = document.createElement("div");
-    const st = document.createElement("span");
-    st.className = `ent-status status-${status}`;
-    const statusLabel = {
-      active: "有效",
-      pending: "待生效",
-      expired: "已过期",
-      revoked: "已收回",
-      cancelled: "已取消",
-    }[status] || status || "-";
-    st.textContent = statusLabel;
-    right.appendChild(st);
-    head.append(left, right);
-    card.appendChild(head);
-
-    const dates = document.createElement("div");
-    dates.className = "ent-dates";
-    dates.innerHTML = `
-      <div>生效开始：<strong>${formatDate(start)}</strong></div>
-      <div>到期时间：<strong>${end ? formatDate(end, true) : "永久"}</strong></div>
-      ${orderNo ? `<div>订单号：<code style="user-select:all; font-size: 12px; color: #e9d5ff">${escapeHtml(orderNo)}</code></div>` : ""}
-    `;
-    card.appendChild(dates);
-
-    if (cta) {
-      const footer = document.createElement("div");
-      footer.style.cssText = "margin-top:12px; display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap;";
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "cta-button cta-primary";
-      btn.textContent = cta.text;
-      btn.addEventListener("click", cta.onClick);
-      footer.appendChild(btn);
-      card.appendChild(footer);
-    }
-    return card;
-  }
-
-  /* ================= 全局按钮绑定 ================= */
-
-  function bindGlobalButtons() {
-    document.getElementById("backButton").addEventListener("click", () => {
-      if (state.view === "home") return;
-      setHashView("home");
-    });
-    document.getElementById("refreshButton").addEventListener("click", loadAccess);
-    document.getElementById("openOrdersButton").addEventListener("click", () => setHashView("orders"));
-    document.getElementById("openEntitlementsButton").addEventListener("click", () => setHashView("entitlements"));
-
-    const dlg = document.getElementById("accountDialog");
-    document.getElementById("profileButton").addEventListener("click", () => {
-      document.getElementById("accountName").textContent = state.user?.first_name || "访客";
-      document.getElementById("accountId").textContent = state.user?.id || "仅在 Telegram 内获取";
-      document.getElementById("accountAccess").textContent = state.access || "-";
-      try { dlg.showModal(); } catch (_) {}
-    });
-    document.getElementById("closeDialog").addEventListener("click", () => dlg.close());
-    document.getElementById("navOrdersButton").addEventListener("click", () => {
-      dlg.close();
-      setHashView("orders");
-    });
-    document.getElementById("navEntitlementsButton").addEventListener("click", () => {
-      dlg.close();
-      setHashView("entitlements");
-    });
-
-    const co = document.getElementById("createOrderDialog");
-    document.getElementById("closeOrderDialog").addEventListener("click", () => co.close());
-    document.getElementById("coCancel").addEventListener("click", () => co.close());
-  }
-
-  /* ================= 顶层 render ================= */
-
-  function render() {
-    renderHome();
-    syncViewFromHash();
-  }
-
-  /* ================= 启动 ================= */
-
-  document.addEventListener("DOMContentLoaded", () => {
+  document.addEventListener("DOMContentLoaded", function () {
     initTelegram();
-    bindGlobalButtons();
-    initOrdersToolbar();
-    window.addEventListener("hashchange", syncViewFromHash);
-    if (!location.hash) location.hash = "view=home";
-    else syncViewFromHash();
-    loadAccess();
+    bindEvents();
+    renderHome();
+    renderDiscover();
+    renderMembership();
+    renderOrders();
+    renderMe();
+    if (!window.location.hash) setHashForTab("home");
+    else routeTo(parseHash());
+    bootstrapApp();
   });
 })();
