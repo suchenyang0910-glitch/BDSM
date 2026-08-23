@@ -394,20 +394,26 @@
   }
 
   function renderThemeCards() {
-    const themes = state.home && state.home.themeCategories ? state.home.themeCategories : [];
+    const themes = (state.home && state.home.themeCategories ? state.home.themeCategories : [])
+      .filter(function (theme) {
+        return Number(theme.publishedContentCount || 0) > 0 && String(theme.name || "") !== "全部";
+      })
+      .slice(0, 4);
+    const section = $("homeThemesSection");
     const host = $("homeThemesList");
     host.innerHTML = "";
-    if (!themes.length) {
-      host.innerHTML = '<div class="inline-state">当前没有本周主题。</div>';
+    // Themes are a secondary navigation aid, never a blank or dominant block.
+    // Require at least two useful choices; otherwise the library filter is clearer.
+    if (themes.length < 2) {
+      section.classList.add("is-hidden");
       return;
     }
+    section.classList.remove("is-hidden");
     themes.forEach(function (theme) {
       const card = document.createElement("button");
       card.type = "button";
-      card.className = "topic-card";
-      card.innerHTML =
-        '<strong>' + escapeHtml(theme.name) + '</strong>' +
-        '<p class="muted-copy">' + escapeHtml((theme.publishedContentCount || 0) + " 条内容") + '</p>';
+      card.className = "topic-chip";
+      card.innerHTML = '<strong>' + escapeHtml(theme.name) + '</strong>';
       card.addEventListener("click", function () {
         state.library.categoryId = theme.id;
         setHashForTab("library");

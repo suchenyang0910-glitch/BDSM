@@ -379,6 +379,7 @@ h3 {
 
 .content-grid,
 .topic-grid,
+.topic-rail,
 .info-grid {
   display: grid;
   gap: 12px;
@@ -400,6 +401,30 @@ h3 {
 .topic-card strong {
   display: block;
   margin-bottom: 4px;
+}
+
+.topic-rail {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+
+.topic-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.topic-chip {
+  flex: 0 0 auto;
+  min-width: 104px;
+  min-height: 52px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(166, 107, 255, 0.18), rgba(38, 34, 54, 0.72));
+  color: var(--text-primary);
+  font-size: 14px;
 }
 
 .content-card {
@@ -881,7 +906,6 @@ h3 {
 }
 
 @media (max-width: 560px) {
-  .topic-grid,
   .info-grid {
     grid-template-columns: 1fr;
   }
