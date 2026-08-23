@@ -669,8 +669,8 @@
     const session = state.session;
     const isTelegram = session && session.identity === "telegram";
     $("profileTitle").textContent = isTelegram
-      ? "当前账户 · " + (session.displayName || "已连接 Telegram")
-      : (session.displayName || "同频用户");
+      ? "我的昵称 · " + (session.displayName || "同频成员")
+      : (session.displayName || "同频成员");
     $("profileSubtitle").textContent = isTelegram
       ? "已连接 Telegram，可跨设备恢复订单与权益。"
       : "已自动登录；绑定 Telegram 后可跨设备恢复订单与权益。";
@@ -831,9 +831,9 @@
         });
         session = {
           identity: "telegram",
-          displayName: payload.user && (payload.user.first_name || payload.user.username)
-            ? (payload.user.first_name || payload.user.username)
-            : "Telegram 用户",
+          displayName: payload.user && payload.user.displayName
+            ? payload.user.displayName
+            : "同频成员",
           telegramBound: true,
           userId: payload.user && payload.user.id ? String(payload.user.id) : null,
         };

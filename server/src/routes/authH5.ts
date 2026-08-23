@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { createHash, createHmac, timingSafeEqual, randomBytes } from "node:crypto";
+import { isLegacyPlatformDisplayName, randomPlatformPseudonym } from "../utils/pseudonym.js";
 
 const H5_LOGIN_AUTH_MAX_AGE_SEC = 10 * 60;
 const H5_LOGIN_MIN_AUTH_TS_SEC = Math.floor(Date.now() / 1000) - 60 * 60;
@@ -56,11 +57,11 @@ function randomHexToken(bytes: number): string {
 }
 
 function randomH5DisplayName(): string {
-  return `同频用户 ${randomBytes(3).toString("hex").toUpperCase()}`;
+  return randomPlatformPseudonym();
 }
 
 function isLegacyH5DisplayName(value: string | null | undefined): boolean {
-  return value === "同频账户" || value === "访客用户" || value === "本机账户";
+  return isLegacyPlatformDisplayName(value);
 }
 
 function setDeviceCookie(reply: any, token: string, maxAgeMs: number, secure: boolean) {
@@ -370,9 +371,8 @@ export default async function authH5Routes(fastify: FastifyInstance) {
     const tgUserIdStr = params.id!;
     const tgUserId = BigInt(tgUserIdStr);
     const username = params.username || null;
-    const firstName = params.first_name || "";
-    const lastName = params.last_name || "";
-    const displayName = `${firstName} ${lastName}`.trim() || `Telegram 用户 ${tgUserIdStr}`;
+    // Telegram 身份只用于安全校验和跨设备恢复；平台公开昵称使用一次性分配的匿名网名。
+    const displayName = randomH5DisplayName();
     const photoUrl = params.photo_url || null;
 
     let targetUser;
@@ -389,14 +389,19 @@ export default async function authH5Routes(fastify: FastifyInstance) {
           },
         });
       } else {
+        const needsPseudonym = isLegacyPlatformDisplayName(targetUser.displayName);
         const changed =
           (username ?? null) !== (targetUser.username ?? null) ||
-          displayName !== targetUser.displayName ||
-          (photoUrl ?? null) !== (targetUser.photoUrl ?? null);
+          (photoUrl ?? null) !== (targetUser.photoUrl ?? null) ||
+          needsPseudonym;
         if (changed) {
           targetUser = await prisma.user.update({
             where: { id: targetUser.id },
-            data: { username, displayName, photoUrl },
+            data: {
+              username,
+              displayName: needsPseudonym ? randomH5DisplayName() : targetUser.displayName,
+              photoUrl,
+            },
           });
         }
       }

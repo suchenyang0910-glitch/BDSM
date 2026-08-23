@@ -490,7 +490,7 @@
       const text = $("userChipText");
       if (chip && text) {
         chip.classList.remove("off");
-        text.textContent = (currentIdentitySession.displayName || "同频用户") + " · 绑定 Telegram 可跨设备恢复";
+        text.textContent = (currentIdentitySession.displayName || "同频成员") + " · 绑定 Telegram 可跨设备恢复";
         chip.title = "当前账户可浏览、创建 USDT 待支付订单；绑定 Telegram 后可跨设备恢复订单与权益。";
         let bound = false;
         chip.onclick = () => {
