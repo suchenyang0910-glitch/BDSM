@@ -785,8 +785,14 @@ const ContentsPage: React.FC = () => {
       onOk: async () => {
         if (extraWarnings.length > 0) return;
         try {
-          await publishAdminContent(row.id, "管理员发布内容");
-          message.success("已发布");
+          const result = await publishAdminContent(row.id, "管理员发布内容");
+          if (result.telegramPublish?.queued) {
+            message.success(`已发布，Bot 已创建 ${result.telegramPublish.jobs?.length || 0} 条频道发送任务`);
+          } else if (result.telegramPublish) {
+            message.warning(`内容已发布，但频道发送任务未创建：${result.telegramPublish.message || result.telegramPublish.error || "请进入编辑页检查发布进度"}`);
+          } else {
+            message.success("已发布");
+          }
           fetchList();
         } catch (e) {
           message.error(errMsg(e, "发布失败"));
@@ -1164,19 +1170,23 @@ const ContentsPage: React.FC = () => {
                     />
                   )}
 
-                  {accessTypeValue === "public" && (
+                  {accessTypeValue !== "single" && (
                     <Space direction="vertical" size={12} style={{ width: "100%", marginBottom: 12 }}>
                       <Alert
                         type="info"
                         showIcon
                         icon={<InfoCircleOutlined />}
-                        message="公开内容：用户点击卡片后，将直接跳转到所选免费频道（由服务端映射 chatId，不允许运营自填）"
+                        message={
+                          accessTypeValue === "public"
+                            ? "公开内容：试看会发布到所选免费频道（由服务端映射，不允许运营自填频道 ID）"
+                            : "免费试看投放（可选）：选择后，发布内容时会将 30–60 秒试看自动投放到该免费频道；完整视频仍只发送到私密频道。"
+                        }
                       />
                       <Form.Item
                         name="freeChannelCode"
-                        label="选择免费频道（必填，只能从白名单选择）"
+                        label={accessTypeValue === "public" ? "选择免费频道（必填）" : "选择免费试看频道（可选）"}
                         rules={[
-                          { required: true, message: "公开内容必须选择一个免费频道（由服务端受控白名单）" },
+                          { required: accessTypeValue === "public", message: "公开内容必须选择一个免费频道（由服务端受控白名单）" },
                           {
                             validator: (_, value) => {
                               if (!value) return Promise.resolve();
@@ -1193,6 +1203,7 @@ const ContentsPage: React.FC = () => {
                         style={{ marginBottom: 0 }}
                       >
                         <Select
+                          allowClear={accessTypeValue !== "public"}
                           placeholder="选择服务端受控的免费频道"
                           showSearch
                           optionFilterProp="label"
@@ -1699,13 +1710,13 @@ const ContentsPage: React.FC = () => {
                             </Button>
                           </Space>
                           <Alert
-                            type="warning"
+                            type="info"
                             showIcon
                             message="发布模式说明"
                             description={
                               <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-                                <span>· 当前为 P0 「任务队列 · 从未启用真实发送」阶段：即便入队成功，也需要运维完成：S3 env 配置、REDIS_URL、Bot Token、频道 chatId 加密写入、migration 0014 deploy、BullMQ Worker 启动后才会真正发 Telegram。</span>
-                                <span>· 即便运维部署完成，Bot 发送也为异步：大视频 8GB 级可能需要 10 分钟以上（TG 大文件带宽限制），请耐心查看下表 attempt / nextRetryAt。</span>
+                                <span>· 点击列表里的“发布”会自动创建完整视频的私密频道任务；已选免费试看频道且试看素材就绪时，也会自动创建免费频道预览任务。</span>
+                                <span>· 此处用于查看状态、按需补发或取消。Bot 发送为异步：大视频可能需要较长时间，请查看下表状态与重试次数。</span>
                                 <span>· 最大重试 3 次，指数退避（5s / 10s / 20s），重试耗尽后可手动点击「重试」按钮重新入队。</span>
                               </Space>
                             }

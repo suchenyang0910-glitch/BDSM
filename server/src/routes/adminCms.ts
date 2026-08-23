@@ -381,6 +381,149 @@ async function validatePublishReady(
   });
 }
 
+type TelegramPublishPlanKind = "public_free_preview" | "membership_full" | "package_full";
+type TelegramPublishQueueResult =
+  | { ok: true; jobs: any[]; normalizedTelegramTags: string[] }
+  | { ok: false; status: number; error: string; message: string; details?: any };
+
+/**
+ * 为内容创建受控的 Telegram 发送任务。
+ *
+ * 这不是“登记已发布消息”的旧流程：任务会由 publisher worker 真正发送。
+ * 目标频道始终由 accessType / freeChannelCode / package 的服务端映射决定，调用方不能传 chatId。
+ */
+async function queueTelegramPublishForContent(input: {
+  prisma: PrismaClient;
+  contentId: string;
+  meta: ReturnType<typeof adminMeta>;
+  channelKinds: TelegramPublishPlanKind[];
+  telegramTags?: string[];
+  reason?: string | null;
+}): Promise<TelegramPublishQueueResult> {
+  const { prisma, contentId, meta } = input;
+  const content = await prisma.content.findUnique({
+    where: { id: contentId },
+    include: {
+      coverAsset: true,
+      previewAsset: true,
+      fullVideoAsset: true,
+      package: { select: { id: true, status: true, channelId: true, channelIdCiphertext: true, title: true } },
+    },
+  });
+  if (!content) return { ok: false, status: 404, error: "not_found", message: "内容不存在" };
+
+  const baseOk = await validateContentAccessTypeConstraints({
+    prisma,
+    accessType: content.accessType as AccessTypeBound,
+    packageId: content.packageId,
+    productId: content.productId,
+    freeChannelCode: content.freeChannelCode,
+    coverAssetId: content.coverAssetId,
+    previewAssetId: content.previewAssetId,
+    fullVideoAssetId: content.fullVideoAssetId,
+  });
+  if (!baseOk.ok) {
+    return {
+      ok: false,
+      status: baseOk.status,
+      error: baseOk.error,
+      message: baseOk.message || "频道发布前检查未通过。",
+      details: baseOk.details,
+    };
+  }
+
+  const kinds = Array.from(new Set(input.channelKinds));
+  const plans: Array<{
+    mediaAssetId: string;
+    targetFreeChannelCode?: string | null;
+    channelKindDb: TelegramPublishPlanKind;
+    packageId?: string | null;
+  }> = [];
+  for (const kind of kinds) {
+    if (kind === "public_free_preview") {
+      if (!content.freeChannelCode || !isValidFreeChannelCode(content.freeChannelCode)) {
+        return { ok: false, status: 400, error: "free_channel_code_required", message: "发布免费频道前必须先选择白名单免费频道。" };
+      }
+      if (!content.previewAsset || content.previewAsset.status !== "ready") {
+        return { ok: false, status: 409, error: "preview_asset_required", message: "免费预览必须先上传并校验试看视频。" };
+      }
+      plans.push({ mediaAssetId: content.previewAsset.id, targetFreeChannelCode: content.freeChannelCode, channelKindDb: kind });
+      continue;
+    }
+    if (kind === "membership_full") {
+      if (content.accessType !== "membership") {
+        return { ok: false, status: 409, error: "publish_kind_mismatch", message: "只有会员内容可发送到会员私密频道。" };
+      }
+      if (!content.fullVideoAsset || content.fullVideoAsset.status !== "ready") {
+        return { ok: false, status: 409, error: "full_video_asset_required", message: "会员内容必须先上传并校验完整视频。" };
+      }
+      plans.push({ mediaAssetId: content.fullVideoAsset.id, channelKindDb: kind });
+      continue;
+    }
+    if (kind === "package_full") {
+      if (content.accessType !== "package") {
+        return { ok: false, status: 409, error: "publish_kind_mismatch", message: "只有内容包内容可发送到内容包私密频道。" };
+      }
+      if (!content.package || resolvePackageChannelId({ channelId: content.package.channelId, channelIdCiphertext: content.package.channelIdCiphertext }) == null) {
+        return { ok: false, status: 409, error: "package_channel_not_configured", message: "内容包尚未配置受控交付频道。" };
+      }
+      if (!content.fullVideoAsset || content.fullVideoAsset.status !== "ready") {
+        return { ok: false, status: 409, error: "full_video_asset_required", message: "内容包内容必须先上传并校验完整视频。" };
+      }
+      plans.push({ mediaAssetId: content.fullVideoAsset.id, channelKindDb: kind, packageId: content.package.id });
+    }
+  }
+  if (plans.length === 0) return { ok: false, status: 400, error: "publish_plan_empty", message: "没有任何合法的频道发布计划。" };
+
+  const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([content.tags, input.telegramTags || []]);
+  const createdJobs = await prisma.$transaction(async (tx: any) => {
+    const jobs: any[] = [];
+    const now = Date.now();
+    for (const plan of plans) {
+      const jobSeed = `${plan.channelKindDb}|${content.id}|${plan.mediaAssetId}|${meta.adminId}|${now}|${cryptoRandomUuid()}`;
+      const jobToken = `tgj_${createHash("sha256").update(jobSeed).digest("hex").slice(0, 48)}`;
+      let captionBundle: { captionText?: string | null; parseMode?: string | null } = {};
+      if (plan.channelKindDb === "public_free_preview") {
+        const { caption, parseMode } = buildPreviewVideoCaption(content);
+        captionBundle = { captionText: appendTelegramTagLine(caption, normalizedTelegramTags), parseMode };
+      } else if (normalizedTelegramTags.length > 0) {
+        captionBundle = { captionText: normalizedTelegramTags.join(" "), parseMode: null };
+      }
+      const job = await tx.telegramPublishJob.create({
+        data: {
+          contentId: content.id,
+          packageId: plan.packageId ?? null,
+          adminId: meta.adminId,
+          mediaAssetId: plan.mediaAssetId,
+          channelKind: plan.channelKindDb,
+          targetFreeChannelCode: plan.targetFreeChannelCode ?? null,
+          jobToken,
+          queueName: "telegram-publish-default",
+          botKey: "primary",
+          captionText: captionBundle.captionText ?? null,
+          parseMode: captionBundle.parseMode ?? null,
+          telegramTagsJson: normalizedTelegramTags,
+        },
+      });
+      jobs.push(job);
+      await writeAudit(tx, meta, `content.publish_telegram_queue_${plan.channelKindDb}`, "content", content.id, null, serialize({ jobId: job.id, jobToken_fp: safeHexDigest(jobToken, 16) }), input.reason || null);
+    }
+    return jobs;
+  });
+
+  const queueHandle = getPublishQueueHandle();
+  if (queueHandle) {
+    for (const job of createdJobs) {
+      try { await queueHandle.add(job.jobToken); } catch (err) {
+        emitSafetyEvent({ event: "tg_publish_enqueue_failed", errorClass: "queue_error", note: `job_fp=${safeHexDigest(job.id, 12)}` }, err);
+      }
+    }
+  } else {
+    emitSafetyEvent({ event: "tg_publish_no_queue_handle", errorClass: "publisher_uninitialized", note: `jobs=${createdJobs.length}` });
+  }
+  return { ok: true, jobs: createdJobs, normalizedTelegramTags };
+}
+
 export default async function adminCmsRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma as PrismaClient;
   const SENSITIVE_MASK = "******";
@@ -937,7 +1080,48 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         });
         await writeAudit(tx, meta, "content.publish", "content", id, stripSensitiveFields(before), stripSensitiveFields(after), reason);
       });
-      return reply.send({ ok: true, status: "published" });
+
+      // 内容发布即启动频道交付：会员/内容包必发完整视频；已配置免费频道且有试看时，同时发预览。
+      // 历史已发布内容不会被本分支回放，避免升级代码后向频道重复投递。
+      const automaticKinds: TelegramPublishPlanKind[] = [];
+      if (before.accessType === "public") automaticKinds.push("public_free_preview");
+      if (before.accessType === "membership") automaticKinds.push("membership_full");
+      if (before.accessType === "package") automaticKinds.push("package_full");
+      if (
+        (before.accessType === "membership" || before.accessType === "package") &&
+        before.freeChannelCode &&
+        before.previewAssetId
+      ) {
+        automaticKinds.unshift("public_free_preview");
+      }
+      const telegramPublish = await queueTelegramPublishForContent({
+        prisma,
+        contentId: id,
+        meta,
+        channelKinds: automaticKinds,
+        reason: `${reason || "管理员发布内容"}；自动创建频道投放任务`,
+      });
+      if (!telegramPublish.ok) {
+        emitSafetyEvent({
+          event: "content_publish_channel_queue_failed",
+          errorClass: telegramPublish.error,
+          adminId: meta.adminId,
+          note: `content_fp=${safeHexDigest(id, 12)}`,
+        });
+        return reply.status(202).send({
+          ok: true,
+          status: "published",
+          telegramPublish: { queued: false, error: telegramPublish.error, message: telegramPublish.message },
+        });
+      }
+      return reply.send({
+        ok: true,
+        status: "published",
+        telegramPublish: {
+          queued: true,
+          jobs: telegramPublish.jobs.map((job: any) => ({ id: job.id, channelKind: job.channelKind, status: job.status })),
+        },
+      });
     },
   );
 
@@ -1901,128 +2085,18 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const contentId = z.string().uuid().parse(req.params.id);
       const body = ZSTART_PUBLISH.parse(req.body);
       const meta = adminMeta(req);
-      // 1. 查 content + 全 FK + 所属 package
-      const content = await prisma.content.findUnique({
-        where: { id: contentId },
-        include: {
-          coverAsset: true,
-          previewAsset: true,
-          fullVideoAsset: true,
-          package: { select: { id: true, status: true, channelId: true, channelIdCiphertext: true, title: true } },
-        },
-      });
-      if (!content) return reply.status(404).send({ error: "not_found", message: "内容不存在" });
-      // 2. validateContentAccessTypeConstraints + validatePublishReady 合并（避免重复查）
-      const baseOk = await validateContentAccessTypeConstraints({
+      const result = await queueTelegramPublishForContent({
         prisma,
-        accessType: content.accessType as AccessTypeBound,
-        packageId: content.packageId,
-        productId: content.productId,
-        freeChannelCode: content.freeChannelCode,
-        coverAssetId: content.coverAssetId,
-        previewAssetId: content.previewAssetId,
-        fullVideoAssetId: content.fullVideoAssetId,
+        contentId,
+        meta,
+        channelKinds: body.channelKinds,
+        telegramTags: body.telegramTags,
+        reason: body.reason,
       });
-      if (!baseOk.ok) return reply.status(baseOk.status).send({ error: baseOk.error, message: baseOk.message, details: baseOk.details });
-      // 3. 强业务矩阵：accessType × channelKinds（服务端强制，前端 UI 会灰选但 API 侧必须二次校验）
-      const kinds = Array.from(new Set(body.channelKinds));
-      type K = "public_free_preview" | "membership_full" | "package_full";
-      const resolvedPlans: Array<{
-        kind: K;
-        mediaAssetId: string;
-        targetFreeChannelCode?: string | null;
-        channelKindDb: "public_free_preview" | "membership_full" | "package_full";
-        packageId?: string | null;
-      }> = [];
-      for (const raw of kinds) {
-        const kind = raw as K;
-        if (kind === "public_free_preview") {
-          if (content.accessType !== "public" && content.accessType !== "membership" && content.accessType !== "package") {
-            return reply.status(409).send({ error: "publish_kind_mismatch", message: `只有 public/membership/package 类型可发布试看到免费频道，当前 accessType=${content.accessType}` });
-          }
-          if (!content.freeChannelCode || !isValidFreeChannelCode(content.freeChannelCode)) {
-            return reply.status(400).send({ error: "free_channel_code_required", message: "发布免费频道前必须先绑定白名单免费频道编码（freeChannelCode）。" });
-          }
-          if (!content.previewAsset || content.previewAsset.status !== "ready") {
-            return reply.status(409).send({ error: "preview_asset_required", message: "免费预览必须先上传并校验试看视频（previewAsset.status=ready）。" });
-          }
-          resolvedPlans.push({ kind, mediaAssetId: content.previewAsset.id, targetFreeChannelCode: content.freeChannelCode, channelKindDb: "public_free_preview" });
-        } else if (kind === "membership_full") {
-          if (content.accessType !== "membership") {
-            return reply.status(409).send({ error: "publish_kind_mismatch", message: "只有 membership 类型可发布完整视频至会员主频道。" });
-          }
-          if (!content.fullVideoAsset || content.fullVideoAsset.status !== "ready") {
-            return reply.status(409).send({ error: "full_video_asset_required", message: "会员内容必须先上传并校验完整视频（fullVideoAsset.status=ready）。" });
-          }
-          resolvedPlans.push({ kind, mediaAssetId: content.fullVideoAsset.id, channelKindDb: "membership_full" });
-        } else if (kind === "package_full") {
-          if (content.accessType !== "package") {
-            return reply.status(409).send({ error: "publish_kind_mismatch", message: "只有 package 类型可发布完整视频至包独立私密频道。" });
-          }
-          if (!content.package) {
-            return reply.status(409).send({ error: "package_not_bound", message: "package 类型必须先绑定已发布的内容包。" });
-          }
-          if (resolvePackageChannelId({ channelId: content.package.channelId, channelIdCiphertext: content.package.channelIdCiphertext }) == null) {
-            return reply.status(409).send({ error: "package_channel_not_configured", message: "绑定的内容包未配置交付频道（服务端受控映射未完成）。" });
-          }
-          if (!content.fullVideoAsset || content.fullVideoAsset.status !== "ready") {
-            return reply.status(409).send({ error: "full_video_asset_required", message: "内容包内容必须先上传并校验完整视频（fullVideoAsset.status=ready）。" });
-          }
-          resolvedPlans.push({ kind, mediaAssetId: content.fullVideoAsset.id, channelKindDb: "package_full", packageId: content.package.id });
-        }
-      }
-      if (resolvedPlans.length === 0) return reply.status(400).send({ error: "publish_plan_empty", message: "没有任何合法的发布计划；请检查 accessType 与目标频道类型是否匹配。" });
-      const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([content.tags, body.telegramTags]);
-      // 4. 事务内：批量创建 TelegramPublishJob + auditLog
-      const queueHandle = getPublishQueueHandle();
-      const createdJobs = await prisma.$transaction(async (tx: any) => {
-        const jobs: Array<any> = [];
-        const now = Date.now();
-        for (const plan of resolvedPlans) {
-          const jobSeed = `${plan.channelKindDb}|${content.id}|${plan.mediaAssetId}|${meta.adminId}|${now}|${cryptoRandomUuid()}`;
-          const jobToken = `tgj_${createHash("sha256").update(jobSeed).digest("hex").slice(0, 48)}`;
-          // public_free_preview + preview 自动带 caption（HTML 模板），其他为空 caption
-          let captionBundle: { captionText?: string | null; parseMode?: string | null } = {};
-          if (plan.channelKindDb === "public_free_preview") {
-            const { caption, parseMode } = buildPreviewVideoCaption(content);
-            captionBundle = { captionText: appendTelegramTagLine(caption, normalizedTelegramTags), parseMode };
-          } else if (normalizedTelegramTags.length > 0) {
-            captionBundle = { captionText: normalizedTelegramTags.join(" "), parseMode: null };
-          }
-          const job = await tx.telegramPublishJob.create({
-            data: {
-              contentId: content.id,
-              packageId: plan.packageId ?? null,
-              adminId: meta.adminId,
-              mediaAssetId: plan.mediaAssetId,
-              channelKind: plan.channelKindDb,
-              targetFreeChannelCode: plan.targetFreeChannelCode ?? null,
-              jobToken,
-              queueName: "telegram-publish-default",
-              botKey: "primary",
-              captionText: captionBundle.captionText ?? null,
-              parseMode: captionBundle.parseMode ?? null,
-              telegramTagsJson: normalizedTelegramTags,
-            },
-          });
-          jobs.push(job);
-          await writeAudit(tx, meta, `content.publish_telegram_queue_${plan.channelKindDb}`, "content", content.id, null, serialize({ jobId: job.id, jobToken_fp: safeHexDigest(jobToken, 16) }), body.reason || null);
-        }
-        return jobs;
-      });
-      // 5. 入队（BullMQ 或 DB 轮询模式，异步）
-      if (queueHandle) {
-        for (const j of createdJobs) {
-          try { await queueHandle.add(j.jobToken); } catch (err) {
-            emitSafetyEvent({ event: "tg_publish_enqueue_failed", errorClass: "queue_error", note: truncateNote(err instanceof Error ? err.message : String(err), 80) || undefined }, err);
-          }
-        }
-      } else {
-        emitSafetyEvent({ event: "tg_publish_no_queue_handle", errorClass: "publisher_uninitialized", note: `jobs=${createdJobs.length}` });
-      }
+      if (!result.ok) return reply.status(result.status).send({ error: result.error, message: result.message, details: result.details });
       return reply.status(201).send({
         ok: true,
-        jobs: createdJobs.map((j: any) => ({
+        jobs: result.jobs.map((j: any) => ({
           id: j.id,
           channelKind: j.channelKind,
           status: j.status,
@@ -2031,7 +2105,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           targetFreeChannelCode: j.targetFreeChannelCode,
           createdAt: j.createdAt,
         })),
-        normalizedTelegramTags,
+        normalizedTelegramTags: result.normalizedTelegramTags,
       });
     },
   );

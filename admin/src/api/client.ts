@@ -243,7 +243,11 @@ export async function submitContentForReview(id: string, reason?: string): Promi
   return res.data;
 }
 
-export async function publishAdminContent(id: string, reason?: string): Promise<{ ok: true; status: string }> {
+export async function publishAdminContent(id: string, reason?: string): Promise<{
+  ok: true;
+  status: string;
+  telegramPublish?: { queued: boolean; jobs?: Array<{ id: string; channelKind: string; status: string }>; error?: string; message?: string };
+}> {
   const res = await http.post(`/admin/contents/${encodeURIComponent(id)}/publish`, { reason });
   return res.data;
 }

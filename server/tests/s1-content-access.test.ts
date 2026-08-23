@@ -497,6 +497,15 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
       publishResp.statusCode === 200 || publishResp.statusCode === 202,
       `membership publish expected 2xx, got ${publishResp.statusCode}: ${publishResp.body}`,
     );
+    const publishBody = publishResp.json() as any;
+    assert.equal(publishBody.telegramPublish?.queued, true, "publishing a membership video must create a private-channel delivery job");
+    assert.equal(publishBody.telegramPublish?.jobs?.length, 1, "membership content without an optional preview channel creates exactly one private-channel job");
+    assert.equal(publishBody.telegramPublish?.jobs?.[0]?.channelKind, "membership_full");
+    const queuedJobs = await prisma.telegramPublishJob.findMany({
+      where: { contentId: newId },
+      select: { channelKind: true, status: true },
+    });
+    assert.deepEqual(queuedJobs, [{ channelKind: "membership_full", status: "queued" }]);
     assertNoSensitiveLeaks(publishResp.body, "membership publish 2xx");
 
     // 审计 4 动作按序存在，且脱敏
