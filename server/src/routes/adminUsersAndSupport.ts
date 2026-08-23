@@ -5,11 +5,11 @@ import { requireAdmin } from "./admin.js";
 import {
   createChannelInvite,
   sendDirectMessage,
-  refMembershipMain,
   maskChatIdSafe,
   chatIdFingerprint,
   TELEGRAM_CONFIG,
 } from "../services/telegramBot.js";
+import { resolveMembershipChannelRef } from "../services/membershipChannel.js";
 import { processEntitlementGraceCleanup } from "../services/entitlementsCron.js";
 import type { ResourceType } from "@prisma/client";
 
@@ -322,7 +322,7 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
       try {
         // 【Security Boundary - 细节2】路由层只传 ChannelRef，不处理明文 chatId
         invite = await createChannelInvite({
-          channel: refMembershipMain(),
+          channel: await resolveMembershipChannelRef(prisma),
           name: `补发邀请 权益ID ${e.id.slice(0, 8)} admin ${admin.adminId.slice(0, 6)}`,
           ttlSeconds: bodyParse.data.ttlSeconds ?? 60 * 60 * 24 * 1,
           memberLimit: bodyParse.data.memberLimit ?? 1,
@@ -565,7 +565,7 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
         try {
           // 【Security Boundary - 细节2】路由层只传 ChannelRef
           const r = await createChannelInvite({
-            channel: refMembershipMain(),
+            channel: await resolveMembershipChannelRef(prisma),
             name: `客服直接发放 权益ID ${txResult.created.id.slice(0, 8)}`,
             ttlSeconds: 60 * 60 * 24 * 1,
             memberLimit: 1,

@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
-import { kickChannelMember, sendDirectMessage, refMembershipMain, maskChatIdSafe, chatIdFingerprint } from "./telegramBot.js";
+import { kickChannelMember, sendDirectMessage, maskChatIdSafe, chatIdFingerprint } from "./telegramBot.js";
+import { resolveMembershipChannelRef } from "./membershipChannel.js";
 import { hmacSha256Hex, userIdIndexKey } from "../utils/crypto.js";
 import { extractPrismaCodeOnly } from "../utils/structuredError.js";
 import { verifyAndFreezePaymentAddressIntegrity } from "./paymentAddressIntegrity.js";
@@ -344,7 +345,7 @@ export async function refundOrder(
     for (const e of txResult.revoked) {
       if (e.resourceType === "membership_channel") {
         try {
-          const r = await kickChannelMember({ channel: refMembershipMain(), telegramUserId: tgid, allowReinvite: true });
+          const r = await kickChannelMember({ channel: await resolveMembershipChannelRef(prisma), telegramUserId: tgid, allowReinvite: true });
           channelKicks.push({
             entitlementId: e.id,
             success: !!r.success,

@@ -2,8 +2,8 @@ import type { FastifyInstance } from "fastify";
 import {
   createChannelInvite,
   sendDirectMessage,
-  refMembershipMain,
   refRawChatId,
+  type ChannelRef,
 } from "../services/telegramBot.js";
 import {
   resolveContentChannelId,
@@ -17,7 +17,7 @@ import {
   PUBLIC_FREE_CHANNELS,
 } from "../services/freeChannels.js";
 import { emitSafetyEvent } from "../utils/structuredError.js";
-import { decryptChatIdAesGcm } from "../utils/crypto.js";
+import { resolveMembershipChannelRef } from "../services/membershipChannel.js";
 
 export default async function resourceRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
@@ -56,7 +56,7 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
       });
     }
 
-    let channelRef: ReturnType<typeof refMembershipMain> | ReturnType<typeof refRawChatId> | ReturnType<typeof refFreeChannelByCode> | null = null;
+    let channelRef: ChannelRef | null = null;
     let validEntitlementId: string | null = null;
     // 免费频道有公开 t.me 链接的话直接返回，不走一次性 invite 创建
     let publicDirectUrl: string | null = null;
@@ -127,22 +127,7 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
           return reply.status(403).send({ error: "forbidden", message: "无访问权限，请完成会员订单" });
         }
         matchedEntitlement = membershipE;
-        // Production may manage the membership channel through the encrypted
-        // admin channel registry. Prefer that binding; retain env fallback for
-        // existing installations and isolated tests.
-        const managedMembership = await prisma.adminManagedChannel.findFirst({
-          where: { purpose: "membership_main" },
-          select: { deprecatedChatIdBig: true, chatIdCiphertextB64: true },
-          orderBy: [{ updatedAt: "desc" }],
-        });
-        let managedChatId: bigint | null = null;
-        if (managedMembership?.chatIdCiphertextB64) {
-          try { managedChatId = decryptChatIdAesGcm(managedMembership.chatIdCiphertextB64); } catch { managedChatId = null; }
-        }
-        if (managedChatId == null && typeof managedMembership?.deprecatedChatIdBig === "bigint") {
-          managedChatId = managedMembership.deprecatedChatIdBig;
-        }
-        channelRef = managedChatId != null ? refRawChatId(managedChatId) : refMembershipMain();
+        channelRef = await resolveMembershipChannelRef(prisma);
       } else if (content.accessType === "package") {
         if (!content.packageId) {
           return reply.status(400).send({

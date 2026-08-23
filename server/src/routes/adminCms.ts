@@ -5,12 +5,12 @@ import { requireAdmin, type AdminSession } from "./admin.js";
 import { adminHasPermission } from "../services/authAdmin.js";
 import { resolvePackageChannelId, resolveContentChannelId } from "../services/channelCrypto.js";
 import {
-  refMembershipMain,
   refRawChatId,
   type ChannelRef,
   chatIdFingerprint,
   maskChatIdSafe,
 } from "../services/telegramBot.js";
+import { resolveMembershipChannelRef } from "../services/membershipChannel.js";
 import { emitSafetyEvent } from "../utils/structuredError.js";
 import {
   isValidFreeChannelCode,
@@ -1018,7 +1018,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         break;
       }
       case "membership": {
-        ref = refMembershipMain();
+        ref = await resolveMembershipChannelRef(prisma);
         channelLabel = "会员专属频道";
         break;
       }
