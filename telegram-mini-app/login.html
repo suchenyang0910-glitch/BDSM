@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>H5 登录 · BDSM InTune</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      .login-wrap {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 28px 20px;
+        background: radial-gradient(1000px 600px at 15% -10%, rgba(180,112,255,.22), transparent 60%),
+                    radial-gradient(900px 600px at 110% 10%, rgba(120,100,255,.18), transparent 60%),
+                    linear-gradient(180deg, #1a1330 0%, #120d22 60%, #0f0a1d 100%);
+      }
+      .login-card {
+        width: 100%;
+        max-width: 440px;
+        background: rgba(255,255,255,.04);
+        border: 1px solid rgba(180,112,255,.22);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border-radius: 18px;
+        padding: 28px 24px 32px;
+        box-shadow: 0 20px 60px rgba(0,0,0,.35);
+      }
+      .brand-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      .brand-logo {
+        width: 42px; height: 42px;
+        border-radius: 12px;
+        background: linear-gradient(145deg, #b470ff, #5f33ff);
+        display: grid; place-items: center;
+        font-weight: 800; color: #fff; letter-spacing: .5px;
+        box-shadow: 0 8px 22px rgba(120,60,255,.35);
+      }
+      .brand-title { font-size: 20px; font-weight: 700; color: #fff; }
+      .brand-sub { font-size: 12px; color: #b9a7e6; margin-top: 2px; }
+      .login-title { font-size: 22px; font-weight: 700; color: #fff; margin: 4px 0 6px; }
+      .login-desc { font-size: 13px; color: #b9a7e6; line-height: 1.6; margin-bottom: 20px; }
+      .widget-wrap {
+        display: grid; place-items: center;
+        padding: 22px 0 10px;
+        background: rgba(180,112,255,.06);
+        border: 1px dashed rgba(180,112,255,.28);
+        border-radius: 14px;
+        margin-bottom: 16px;
+      }
+      .error-box {
+        margin-top: 14px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: rgba(255,102,102,.08);
+        border: 1px solid rgba(255,102,102,.22);
+        color: #ffb0b0;
+        font-size: 13px;
+        line-height: 1.55;
+        display: none;
+      }
+      .error-box.show { display: block; }
+      .footnote {
+        margin-top: 18px;
+        font-size: 12px;
+        color: #7c6d9f;
+        line-height: 1.6;
+      }
+      .back-miniapp {
+        display: inline-block;
+        margin-top: 10px;
+        padding: 10px 16px;
+        color: #c8b7ff;
+        border-radius: 10px;
+        background: rgba(180,112,255,.08);
+        border: 1px solid rgba(180,112,255,.2);
+        font-size: 13px;
+        text-decoration: none;
+      }
+      .back-miniapp:hover { background: rgba(180,112,255,.14); }
+    </style>
+  </head>
+  <body>
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="brand-row">
+          <div class="brand-logo">BD</div>
+          <div>
+            <div class="brand-title">BDSM InTune</div>
+            <div class="brand-sub">同频内容交付 · 会员 / 内容包</div>
+          </div>
+        </div>
+        <h1 class="login-title">使用 Telegram 账号登录</h1>
+        <p class="login-desc">
+          本站内容由 Telegram Bot 与私密频道承载。请使用官方 Telegram 登录组件完成授权，<br/>
+          登录后即可查看订单、权益与可进入的频道；Stars 支付请在 Telegram Mini App 内完成。
+        </p>
+
+        <div class="widget-wrap" id="widgetWrap">
+          <div style="color:#b9a7e6; font-size:12px;">正在加载 Telegram 登录组件…</div>
+        </div>
+
+        <div id="errorBox" class="error-box" role="alert"></div>
+
+        <div style="text-align:center;">
+          <a class="back-miniapp" href="./index.html">返回 Telegram Mini App 中打开（推荐）</a>
+        </div>
+
+        <div class="footnote">
+          · 登录后会在浏览器中写入 7 天有效期的会话 Cookie（仅用于本域识别身份，不会把 Telegram 凭证保存到第三方）。<br/>
+          · 如果登录按钮长时间未加载，可能是浏览器网络无法访问 telegram.org；请切换网络或使用 Telegram Mini App 打开本站。<br/>
+          · 授权完成后若长时间未跳转，请手动点击「返回 Mini App」按钮进入你的订单列表。
+        </div>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        "use strict";
+        const H5_LOGIN_ERROR_ZH = {
+          h5_login_missing_bot_token: "服务端未配置 Telegram Bot 凭证，H5 登录暂不可用（Fail-Closed）。请使用 Telegram Mini App 打开本页，或稍后重试。",
+          h5_login_invalid_hash: "登录回调校验失败（签名不一致或参数被篡改）。请重新点击上方按钮发起登录。",
+          h5_login_invalid_id: "回调缺少有效用户 ID。请重新点击上方按钮发起登录。",
+          h5_login_invalid_auth_date: "回调授权时间无效。请重新点击上方按钮发起登录。",
+          h5_login_auth_clock_skew: "本机时间与服务器时间差异过大。请校对时间后重试。",
+          h5_login_auth_expired: "登录链接已超过 10 分钟有效窗口。请重新点击上方按钮发起登录。",
+          h5_login_auth_too_old: "登录授权过于陈旧。请重新点击上方按钮发起登录。",
+          h5_login_internal_error: "服务端用户登记失败（数据库写入异常）。请稍后重试或使用 Telegram Mini App 打开。",
+        };
+        const qs = new URLSearchParams(location.search);
+        const code = qs.get("error");
+        const box = document.getElementById("errorBox");
+        if (code && box) {
+          const msg = H5_LOGIN_ERROR_ZH[code] || "登录失败。请重新点击 Telegram 登录按钮重试。";
+          box.textContent = "登录失败：" + msg;
+          box.classList.add("show");
+        }
+
+        // P0-#2-C FIX：动态注入 Telegram Login Widget 脚本，携带原始 redirect 参数（登录完成后回到原页面）
+        const BOT_USERNAME_ACTUAL = "InTune_bdsm_bot";
+        const rawRedirect = qs.get("redirect");
+        let callback = "./api/auth/h5/telegram/callback";
+        if (rawRedirect) {
+          try {
+            callback = "./api/auth/h5/telegram/callback?redirect=" + encodeURIComponent(rawRedirect);
+          } catch (_) {
+            callback = "./api/auth/h5/telegram/callback";
+          }
+        }
+        const wrap = document.getElementById("widgetWrap");
+        try {
+          const s = document.createElement("script");
+          s.async = true;
+          s.src = "https://telegram.org/js/telegram-widget.js?22";
+          s.setAttribute("data-telegram-login", BOT_USERNAME_ACTUAL);
+          s.setAttribute("data-size", "large");
+          s.setAttribute("data-userpic", "false");
+          s.setAttribute("data-radius", "10");
+          s.setAttribute("data-auth-url", callback);
+          s.setAttribute("data-request-access", "write");
+          if (wrap) {
+            wrap.innerHTML = "";
+            wrap.appendChild(s);
+          } else {
+            document.write(s.outerHTML);
+          }
+        } catch (err) {
+          if (wrap) wrap.innerHTML = `<div style="color:#ff9191; font-size:13px;">登录组件加载失败。请检查网络是否能访问 telegram.org，或使用 Telegram Mini App 打开本站。</div>`;
+        }
+      })();
+    </script>
+  </body>
+</html>

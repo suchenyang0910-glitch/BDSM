@@ -98,6 +98,14 @@ enum EntitlementStatus {
   expired
 }
 
+enum EntitlementRemovalStatus {
+  none
+  grace_period
+  removed
+  removal_failed
+  renewed_during_grace
+}
+
 enum TicketStatus {
   open
   in_progress
@@ -164,11 +172,12 @@ enum PaymentAddressStatus {
 
 model User {
   id              String    @id @default(uuid())
-  telegramUserId  BigInt    @unique @map("telegram_user_id")
+  telegramUserId  BigInt?   @unique @map("telegram_user_id")
   username        String?
   displayName     String    @map("display_name")
   photoUrl        String?   @map("photo_url")
   status          UserStatus @default(active)
+  mergedIntoUserId String?  @map("merged_into_user_id")
   createdAt       DateTime  @default(now()) @map("created_at")
 
   orders          Order[]
@@ -176,9 +185,29 @@ model User {
   telegramInvites TelegramInvite[]
   supportTickets  SupportTicket[]
   authoredTicketEvents TicketEvent[]
+  deviceSessions  H5DeviceSession[]
+  mergedFromUsers User[]    @relation("UserMergeTarget")
+  mergedTargetUser User?    @relation("UserMergeTarget", fields: [mergedIntoUserId], references: [id], onDelete: SetNull)
 
   @@index([status])
+  @@index([mergedIntoUserId])
   @@map("users")
+}
+
+model H5DeviceSession {
+  tokenHash   String   @id @map("token_hash") @db.VarChar(64)
+  userId      String   @map("user_id")
+  expiresAt   DateTime @map("expires_at")
+  lastUsedAt  DateTime @map("last_used_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  createdIp   String?  @map("created_ip") @db.VarChar(45)
+  userAgent   String?  @map("user_agent") @db.VarChar(512)
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([lastUsedAt])
+  @@map("h5_device_sessions")
 }
 
 model Category {
@@ -224,19 +253,31 @@ model Banner {
 }
 
 model ContentPackage {
-  id         String        @id @default(uuid())
-  title      String
-  coverUrl   String?       @map("cover_url")
-  channelId  BigInt?       @map("channel_id")
-  productId  String?       @unique @map("product_id")
-  status     PackageStatus @default(draft)
-  createdAt  DateTime      @default(now()) @map("created_at")
-  updatedAt  DateTime      @updatedAt @map("updated_at")
+  id                    String        @id @default(uuid())
+  title                 String
+  coverUrl              String?       @map("cover_url")
+  coverAssetId          String?       @map("cover_asset_id") @db.VarChar(64)
+  previewAssetId        String?       @map("preview_asset_id") @db.VarChar(64)
+  channelId             BigInt?       @map("channel_id")
+  channelIdCiphertext   String?       @map("channel_id_ciphertext")
+  channelIdHmac         String?       @map("channel_id_hmac") @db.VarChar(64)
+  productId             String?       @unique @map("product_id")
+  status                PackageStatus @default(draft)
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
 
-  product    Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
-  contents   Content[]
+  product               Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
+  contents              Content[]
+  coverAsset            MediaAsset?   @relation("PackageCoverAsset", fields: [coverAssetId], references: [id], onDelete: SetNull)
+  previewAsset          MediaAsset?   @relation("PackagePreviewAsset", fields: [previewAssetId], references: [id], onDelete: SetNull)
+  publishJobs           TelegramPublishJob[]
+  managedChannels       AdminManagedChannel[]
+  channelDiscoveryRequests AdminChannelDiscoveryRequest[]
 
   @@index([status])
+  @@index([coverAssetId])
+  @@index([previewAssetId])
+  @@unique([channelIdHmac], name: "idx_cp_channel_hmac")
   @@map("content_packages")
 }
 
@@ -277,11 +318,20 @@ model Content {
   sortOrder          Int            @default(0) @map("sort_order")
   recommendStartsAt  DateTime?      @map("recommend_starts_at")
   recommendEndsAt    DateTime?      @map("recommend_ends_at")
-  scheduledAt        DateTime?      @map("scheduled_at")
-  channelId          BigInt?        @map("channel_id")
-  packageId          String?        @map("package_id")
+  scheduledAt        DateTime?        @map("scheduled_at")
+  freeChannelCode    String?          @map("free_channel_code") @db.VarChar(64)
+  channelId          BigInt?          @map("channel_id")
+  channelIdCiphertext String?         @map("channel_id_ciphertext")
+  channelIdHmac      String?          @map("channel_id_hmac") @db.VarChar(64)
+  packageId          String?          @map("package_id")
   productId          String?        @map("product_id")
+  coverAssetId       String?          @map("cover_asset_id") @db.VarChar(64)
+  previewAssetId     String?          @map("preview_asset_id") @db.VarChar(64)
+  fullVideoAssetId   String?          @map("full_video_asset_id") @db.VarChar(64)
   publishedAt        DateTime?      @map("published_at")
+  telegramMessageId  BigInt?          @map("telegram_message_id")
+  telegramSentAt     DateTime?        @map("telegram_sent_at")
+  telegramChatFingerprint String?   @map("telegram_chat_fingerprint") @db.VarChar(128)
   lastEditorId       String?        @map("last_editor_id")
   version            Int            @default(0)
   createdAt          DateTime       @default(now()) @map("created_at")
@@ -291,12 +341,21 @@ model Content {
   product            Product?       @relation(fields: [productId], references: [id], onDelete: SetNull)
   lastEditor         AdminUser?     @relation("ContentEditor", fields: [lastEditorId], references: [id], onDelete: SetNull)
   categories         ContentCategory[]
+  coverAsset         MediaAsset?    @relation("ContentCoverAsset", fields: [coverAssetId], references: [id], onDelete: SetNull)
+  previewAsset       MediaAsset?    @relation("ContentPreviewAsset", fields: [previewAssetId], references: [id], onDelete: SetNull)
+  fullVideoAsset     MediaAsset?    @relation("ContentFullVideoAsset", fields: [fullVideoAssetId], references: [id], onDelete: SetNull)
+  publishJobs        TelegramPublishJob[]
 
   @@index([status, accessType])
   @@index([isFeatured, featuredSort])
   @@index([isRecommended, recommendStartsAt, recommendEndsAt])
   @@index([sortOrder])
   @@index([packageId])
+  @@index([freeChannelCode])
+  @@index([channelIdHmac], name: "idx_content_channel_hmac")
+  @@index([coverAssetId])
+  @@index([previewAssetId])
+  @@index([fullVideoAssetId])
   @@map("contents")
 }
 
@@ -338,6 +397,8 @@ model Order {
   refundedAt            DateTime?       @map("refunded_at")
   refundReason          String?         @map("refund_reason") @db.VarChar(1000)
   refundAdminId         String?         @map("refund_admin_id") @db.VarChar(64)
+  telegramStarsInvoiceLink String?       @map("telegram_stars_invoice_link") @db.VarChar(512)
+  telegramStarsInvoiceVia  String?       @map("telegram_stars_invoice_via") @db.VarChar(32)
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @updatedAt @map("updated_at")
 
@@ -426,6 +487,14 @@ model Entitlement {
   status         EntitlementStatus @default(active)
   notify3dAt     DateTime?         @map("notify_3d_at")
   notifyExpiredAt DateTime?        @map("notify_expired_at")
+  graceEndsAt    DateTime?         @map("grace_ends_at")
+  expiryReminderAt DateTime?       @map("expiry_reminder_at")
+  preGraceReminderAt DateTime?     @map("pre_grace_reminder_at")
+  expiryReminderCount Int          @default(0) @map("expiry_reminder_count")
+  removalStatus  EntitlementRemovalStatus @default(none) @map("removal_status")
+  removalAttemptedAt DateTime?     @map("removal_attempted_at")
+  removedAt      DateTime?         @map("removed_at")
+  lastRemovalErrorCode String?     @map("last_removal_error_code") @db.VarChar(128)
   createdAt      DateTime          @default(now()) @map("created_at")
   updatedAt      DateTime          @updatedAt @map("updated_at")
 
@@ -439,6 +508,8 @@ model Entitlement {
   @@index([expiresAt, status])
   @@index([notify3dAt, expiresAt, status])
   @@index([notifyExpiredAt, expiresAt, status])
+  @@index([graceEndsAt, removalStatus])
+  @@index([resourceType, resourceId, userId, removalStatus])
   @@map("entitlements")
 }
 
@@ -477,6 +548,10 @@ model AdminUser {
   assignedContentCategories ContentCategory[]
   assignedSupportTickets SupportTicket[]
   authoredTicketEvents TicketEvent[]
+  ownedMediaAssets MediaAsset[]
+  publishJobsAsAdmin TelegramPublishJob[] @relation("PublishJobAdmin")
+  publishJobsAsCancelAdmin TelegramPublishJob[] @relation("PublishJobCancelAdmin")
+  channelDiscoveryRequests AdminChannelDiscoveryRequest[] @relation("ChannelDiscoverySubmitAdmin")
 
   @@map("admin_users")
 }
@@ -585,6 +660,28 @@ enum AdminManagedChatSource {
   manual_add
 }
 
+enum ChannelDiscoveryLinkType {
+  public_username
+  private_invite
+  unknown
+}
+
+enum ChannelDiscoveryStatus {
+  pending_public_check
+  awaiting_bot_admin
+  discovered
+  bound
+  conflict
+  failed
+}
+
+enum ManagedChannelPurpose {
+  none
+  free_preview
+  membership_main
+  package_channel
+}
+
 model AdminManagedChannel {
   // 【Phase 0-1 已锁定】频道 ID 加密存储
   //   id                   = UUID 主键（不可反推 chatId；同时禁止把 UUID 写进审计日志当作可解密引用）
@@ -601,17 +698,60 @@ model AdminManagedChannel {
   memberCount         Int?                    @map("member_count")
   avatarFileId        String?                 @map("avatar_file_id")
   isPrivate           Boolean                 @default(true) @map("is_private")
+  purpose             ManagedChannelPurpose   @default(none) @map("purpose")
+  packageId           String?                 @map("package_id")
+  publicUrl           String?                 @map("public_url")
+  botIsAdmin          Boolean                 @default(false) @map("bot_is_admin")
+  botCanPostMessages  Boolean                 @default(false) @map("bot_can_post_messages")
+  botCanInviteUsers   Boolean                 @default(false) @map("bot_can_invite_users")
+  botCanRestrictMembers Boolean               @default(false) @map("bot_can_restrict_members")
+  lastDiscoveryUpdateType String?             @map("last_discovery_update_type") @db.VarChar(64)
+  discoveryErrorCode  String?                 @map("discovery_error_code") @db.VarChar(128)
   lastEventAt         DateTime?               @map("last_event_at")
   refreshedAt         DateTime?               @map("refreshed_at")
   source              AdminManagedChatSource  @default(auto_scan)
   createdAt           DateTime                @default(now()) @map("created_at")
   updatedAt           DateTime                @updatedAt @map("updated_at")
 
+  package             ContentPackage?         @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  discoveryRequests   AdminChannelDiscoveryRequest[] @relation("ResolvedManagedChannel")
+
   @@unique([chatIdHmac], map: "admin_managed_channels_chat_id_hmac_key")
+  @@unique([packageId], map: "admin_managed_channels_package_id_key")
   @@index([source])
   @@index([chatType])
+  @@index([purpose])
   @@index([refreshedAt])
   @@map("admin_managed_channels")
+}
+
+model AdminChannelDiscoveryRequest {
+  id                 String                @id @default(uuid())
+  submittedLink      String                @map("submitted_link")
+  normalizedLink     String?               @map("normalized_link")
+  linkType           ChannelDiscoveryLinkType @map("link_type")
+  status             ChannelDiscoveryStatus @default(awaiting_bot_admin)
+  requestedPurpose   ManagedChannelPurpose @default(none) @map("requested_purpose")
+  packageId          String?               @map("package_id")
+  resolvedChannelId  String?               @map("resolved_channel_id")
+  submittedByAdminId String?               @map("submitted_by_admin_id")
+  waitingSince       DateTime?             @map("waiting_since")
+  discoveredAt       DateTime?             @map("discovered_at")
+  boundAt            DateTime?             @map("bound_at")
+  lastErrorCode      String?               @map("last_error_code") @db.VarChar(128)
+  lastErrorNote      String?               @map("last_error_note") @db.VarChar(500)
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+
+  package            ContentPackage?       @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  resolvedChannel    AdminManagedChannel?  @relation("ResolvedManagedChannel", fields: [resolvedChannelId], references: [id], onDelete: SetNull)
+  submittedByAdmin   AdminUser?            @relation("ChannelDiscoverySubmitAdmin", fields: [submittedByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([linkType, status])
+  @@index([requestedPurpose, packageId])
+  @@index([resolvedChannelId])
+  @@map("admin_channel_discovery_requests")
 }
 
 enum TelegramUpdateProcessStatus {
@@ -639,4 +779,131 @@ model TelegramUpdateLog {
   @@index([botKey, createdAt])
   @@unique([updateId, botKey])
   @@map("telegram_update_logs")
+}
+
+enum MediaAssetKind {
+  cover_image
+  preview_video
+  full_video
+}
+
+enum MediaAssetStatus {
+  initialized
+  uploading
+  ready
+  failed
+  deleted
+}
+
+enum MediaAssetStorageBackend {
+  s3_compatible
+  local_disk
+}
+
+model MediaAsset {
+  id                String                  @id @default(uuid())
+  kind              MediaAssetKind          @map("kind")
+  status            MediaAssetStatus        @default(initialized) @map("status")
+  storageBackend    MediaAssetStorageBackend @default(s3_compatible) @map("storage_backend")
+  ownerAdminId      String?                 @map("owner_admin_id") @db.VarChar(64)
+  originalFilename  String?                 @map("original_filename") @db.VarChar(512)
+  mimeType          String?                 @map("mime_type") @db.VarChar(128)
+  contentLength     BigInt?                 @map("content_length") @db.BigInt
+  checksumSha256    String?                 @map("checksum_sha256") @db.VarChar(64)
+  storageBucket     String?                 @map("storage_bucket") @db.VarChar(128)
+  storageRegion     String?                 @map("storage_region") @db.VarChar(64)
+  storageKey        String?                 @map("storage_key") @db.VarChar(1024)
+  storageEtag       String?                 @map("storage_etag") @db.VarChar(128)
+  storageUploadId   String?                 @map("storage_upload_id") @db.VarChar(256)
+  storagePublicUrl  String?                 @map("storage_public_url") @db.VarChar(1024)
+  durationSeconds   Int?                    @map("duration_seconds")
+  widthPixels       Int?                    @map("width_pixels")
+  heightPixels      Int?                    @map("height_pixels")
+  hasWatermark      Boolean?                @map("has_watermark")
+  lastErrorClass    String?                 @map("last_error_class") @db.VarChar(128)
+  lastErrorNote     String?                 @map("last_error_note") @db.VarChar(500)
+  note              String?                 @map("note") @db.VarChar(500)
+  expiresAt         DateTime?               @map("expires_at")
+  lastVerifiedAt    DateTime?               @map("last_verified_at")
+  createdAt         DateTime                @default(now()) @map("created_at")
+  updatedAt         DateTime                @updatedAt @map("updated_at")
+
+  ownerAdmin        AdminUser?              @relation(fields: [ownerAdminId], references: [id], onDelete: SetNull)
+  usedAsCoverByContents      Content[]       @relation("ContentCoverAsset")
+  usedAsPreviewByContents    Content[]       @relation("ContentPreviewAsset")
+  usedAsFullByContents       Content[]       @relation("ContentFullVideoAsset")
+  usedAsCoverByPackages      ContentPackage[] @relation("PackageCoverAsset")
+  usedAsPreviewByPackages    ContentPackage[] @relation("PackagePreviewAsset")
+  publishJobs       TelegramPublishJob[]
+
+  @@index([status, createdAt])
+  @@index([kind, status])
+  @@index([ownerAdminId, createdAt])
+  @@index([storageBucket, storageKey])
+  @@map("media_assets")
+}
+
+enum TelegramPublishChannelKind {
+  public_free_preview
+  membership_full
+  package_full
+  manual_target
+}
+
+enum TelegramPublishJobStatus {
+  queued
+  processing
+  sent
+  failed
+  retried_exhausted
+  cancelled
+}
+
+model TelegramPublishJob {
+  id                    String                       @id @default(uuid())
+  contentId             String?                      @map("content_id") @db.VarChar(64)
+  packageId             String?                      @map("package_id") @db.VarChar(64)
+  adminId               String?                      @map("admin_id") @db.VarChar(64)
+  mediaAssetId          String                       @map("media_asset_id") @db.VarChar(64)
+  channelKind           TelegramPublishChannelKind   @map("channel_kind")
+  targetFreeChannelCode String?                      @map("target_free_channel_code") @db.VarChar(64)
+  targetChatFingerprint String?                      @map("target_chat_fingerprint") @db.VarChar(128)
+  targetChatMasked      String?                      @map("target_chat_masked") @db.VarChar(32)
+  status                TelegramPublishJobStatus     @default(queued) @map("status")
+  queueName             String                       @default("telegram-publish-default") @map("queue_name") @db.VarChar(128)
+  botKey                String                       @default("primary") @map("bot_key") @db.VarChar(64)
+  jobToken              String                       @unique @map("job_token") @db.VarChar(64)
+  telegramMethod        String?                      @map("telegram_method") @db.VarChar(64)
+  telegramMessageId     BigInt?                      @map("telegram_message_id") @db.BigInt
+  telegramFileId        String?                      @map("telegram_file_id") @db.VarChar(512)
+  telegramFileUniqueId  String?                      @map("telegram_file_unique_id") @db.VarChar(256)
+  captionText           String?                      @map("caption_text") @db.Text
+  parseMode             String?                      @map("parse_mode") @db.VarChar(32)
+  sendOptionsJson       Json?                        @map("send_options_json")
+  attempt               Int                          @default(0) @map("attempt")
+  maxAttempts           Int                          @default(3) @map("max_attempts")
+  lastErrorClass        String?                      @map("last_error_class") @db.VarChar(128)
+  lastErrorNote         String?                      @map("last_error_note") @db.VarChar(500)
+  lastAttemptedAt       DateTime?                    @map("last_attempted_at")
+  nextRetryAt           DateTime?                    @map("next_retry_at")
+  sentAt                DateTime?                    @map("sent_at")
+  cancelledAt           DateTime?                    @map("cancelled_at")
+  cancelledByAdminId    String?                      @map("cancelled_by_admin_id") @db.VarChar(64)
+  createdAt             DateTime                     @default(now()) @map("created_at")
+  updatedAt             DateTime                     @updatedAt @map("updated_at")
+
+  content               Content?                     @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  package               ContentPackage?              @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  admin                 AdminUser?                   @relation("PublishJobAdmin", fields: [adminId], references: [id], onDelete: SetNull)
+  cancelledByAdmin      AdminUser?                   @relation("PublishJobCancelAdmin", fields: [cancelledByAdminId], references: [id], onDelete: SetNull)
+  mediaAsset            MediaAsset                   @relation(fields: [mediaAssetId], references: [id], onDelete: Restrict)
+
+  @@index([status, createdAt])
+  @@index([contentId, createdAt])
+  @@index([packageId, createdAt])
+  @@index([mediaAssetId])
+  @@index([adminId, createdAt])
+  @@index([channelKind, status])
+  @@index([nextRetryAt, status])
+  @@map("telegram_publish_jobs")
 }

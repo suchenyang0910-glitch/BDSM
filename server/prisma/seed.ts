@@ -1,5 +1,9 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import {
+  encryptPackageColsFromPlain,
+  encryptContentColsFromPlain,
+} from "../src/services/channelCrypto.js";
 
 const prisma = new PrismaClient();
 
@@ -160,11 +164,15 @@ async function main() {
   });
 
   console.log("[seed] 创建内容包...");
+  const pkgFeaturedPlainChannel = BigInt(-1000000000001);
+  const pkgEnc = encryptPackageColsFromPlain(pkgFeaturedPlainChannel);
   const pkgFeatured = await prisma.contentPackage.create({
     data: {
       title: "主题内容精选",
       coverUrl: null,
-      channelId: BigInt(-1000000000001),
+      channelId: pkgFeaturedPlainChannel, // deprecated 列，过渡期保留
+      channelIdCiphertext: pkgEnc.channelIdCiphertextB64,
+      channelIdHmac: pkgEnc.channelIdHmac,
       productId: productFeaturedPack.id,
       status: "published",
     },

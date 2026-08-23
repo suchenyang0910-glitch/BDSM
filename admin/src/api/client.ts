@@ -27,6 +27,7 @@ import type {
   CancelOrderResp,
   RefundOrderResp,
   ResendInviteResp,
+  RetryEntitlementRemovalResp,
   GrantEntitlementInput,
   GrantEntitlementResp,
   AdminUserItem,
@@ -38,9 +39,19 @@ import type {
   CreateTicketInput,
   ChannelListFilter,
   ChannelListResp,
+  ChannelDiscoveryListResp,
+  SubmitChannelDiscoveryInput,
+  SubmitChannelDiscoveryResp,
+  BindChannelPurposeInput,
+  BindChannelPurposeResp,
   ChannelRefreshResp,
-  ChannelAddResp,
-  ChannelRevealResp,
+  AdminPackageItem,
+  AdminDashboardSummary,
+  FreeChannelOption,
+  PublishVideoInput,
+  PublishVideoResult,
+  RegisterTelegramPublishInput,
+  RegisterTelegramPublishResult,
 } from "./types";
 
 const http = axios.create({
@@ -175,6 +186,35 @@ export async function unpublishAdminContent(id: string, reason?: string): Promis
   return res.data;
 }
 
+export async function listFreeChannels(): Promise<{ data: FreeChannelOption[] }> {
+  const res = await http.get("/admin/free-channels");
+  return res.data;
+}
+
+export async function publishContentToTelegram(
+  id: string,
+  input: PublishVideoInput,
+): Promise<PublishVideoResult> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(id)}/publish-to-channel`, input);
+  return res.data;
+}
+
+export async function registerTelegramPublishContent(
+  id: string,
+  input: RegisterTelegramPublishInput,
+): Promise<RegisterTelegramPublishResult> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(id)}/register-telegram-publish`, input);
+  return res.data;
+}
+
+// ==========================================================================
+// CMS: Content Packages (只读，用于内容卡关联时选择受控内容包)
+// ==========================================================================
+export async function listAdminPackages(): Promise<{ data: AdminPackageItem[] }> {
+  const res = await http.get("/admin/packages");
+  return res.data;
+}
+
 // ==========================================================================
 // CMS: Categories
 // ==========================================================================
@@ -298,6 +338,17 @@ export async function adminResendEntitlementInvite(
   return res.data;
 }
 
+export async function adminRetryEntitlementRemoval(
+  entitlementId: string,
+  reason: string,
+): Promise<RetryEntitlementRemovalResp> {
+  const res = await http.post(
+    `/admin/entitlements/${encodeURIComponent(entitlementId)}/retry-removal`,
+    { reason },
+  );
+  return res.data;
+}
+
 export async function adminGrantEntitlement(input: GrantEntitlementInput): Promise<GrantEntitlementResp> {
   const res = await http.post("/admin/entitlements/grant", input);
   return res.data;
@@ -385,20 +436,32 @@ export async function listAdminChannels(q: ChannelListFilter = {}): Promise<Chan
   return res.data;
 }
 
+export async function listChannelDiscoveryRequests(): Promise<ChannelDiscoveryListResp> {
+  const res = await http.get("/admin/channels/discovery-requests");
+  return res.data;
+}
+
+export async function submitChannelDiscoveryRequest(
+  input: SubmitChannelDiscoveryInput,
+): Promise<SubmitChannelDiscoveryResp> {
+  const res = await http.post("/admin/channels/discovery-requests", input);
+  return res.data;
+}
+
+export async function bindAdminChannelPurpose(
+  chatIdHmac: string,
+  input: BindChannelPurposeInput,
+): Promise<BindChannelPurposeResp> {
+  const res = await http.patch(`/admin/channels/${encodeURIComponent(chatIdHmac)}/purpose`, input);
+  return res.data;
+}
+
 export async function refreshAdminChannels(opts: { reason: string; force?: boolean }): Promise<ChannelRefreshResp> {
   const res = await http.post("/admin/channels/refresh", opts, { timeout: 300_000 });
   return res.data;
 }
 
-export async function addAdminChannel(opts: { chatId: string; reason: string }): Promise<ChannelAddResp> {
-  const res = await http.post("/admin/channels", opts);
-  return res.data;
-}
-
-export async function revealAdminChannelId(chatId: string, reason: string): Promise<ChannelRevealResp> {
-  const res = await http.post(
-    `/admin/channels/${encodeURIComponent(chatId)}/reveal-id`,
-    { reason },
-  );
+export async function listAdminDashboard(): Promise<AdminDashboardSummary> {
+  const res = await http.get("/admin/dashboard/summary");
   return res.data;
 }

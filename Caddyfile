@@ -1,0 +1,45 @@
+# InTune production routing
+# 部署到服务器时，务必把下方两处「/你的项目实际目录」改成服务器上的真实绝对路径
+# 例如：/opt/bdsm 或 /home/deploy/BDSM
+
+bdsm.linkx.club {
+    encode zstd gzip
+
+    # Fastify 必须优先，绝不能 fallback 到静态 SPA
+    # 这里的端口必须与 server/.env 中 SERVER_PORT 保持一致。
+    @backend path /api/* /healthz /healthz/*
+    handle @backend {
+        reverse_proxy 127.0.0.1:3001
+    }
+
+    # 规范后台尾部斜杠，保证 Vite base="/admin/" 的资源引用正确
+    redir /admin /admin/ 308
+
+    # 管理后台 hashed assets 必须优先直出，缺文件就返回 404，
+    # 绝不能 fallback 成 index.html，否则浏览器会把 HTML 当 JS 吃掉并白屏。
+    handle_path /admin/assets/* {
+        root * /你的项目实际目录/admin/dist/assets
+        file_server
+    }
+
+    # 管理后台 SPA 入口（必须放在根 Mini App 规则之前）
+    handle_path /admin/* {
+        root * /你的项目实际目录/admin/dist
+        try_files {path} /index.html
+        file_server
+    }
+
+    # H5 支付页 / 登录页必须显式命中静态文件，不能落到 Mini App 首页。
+    @h5_static path /h5-pay.html /h5-pay.js /login.html /styles.css
+    handle @h5_static {
+        root * /你的项目实际目录/telegram-mini-app
+        file_server
+    }
+
+    # Mini App 首页（兜底，所有未被上面匹配的路径都走这里）
+    handle {
+        root * /你的项目实际目录/telegram-mini-app
+        try_files {path} /index.html
+        file_server
+    }
+}

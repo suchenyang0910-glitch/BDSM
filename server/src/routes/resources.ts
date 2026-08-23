@@ -5,6 +5,18 @@ import {
   refMembershipMain,
   refRawChatId,
 } from "../services/telegramBot.js";
+import {
+  resolveContentChannelId,
+  resolvePackageChannelId,
+} from "../services/channelCrypto.js";
+import {
+  isValidFreeChannelCode,
+  refFreeChannelByCode,
+  tryGetFreeChannelPublicUrl,
+  getFreeChannelEntry,
+  PUBLIC_FREE_CHANNELS,
+} from "../services/freeChannels.js";
+import { emitSafetyEvent } from "../utils/structuredError.js";
 
 export default async function resourceRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
@@ -24,7 +36,6 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
         id: true,
         status: true,
         accessType: true,
-        channelId: true,
         packageId: true,
         title: true,
       },
@@ -37,11 +48,67 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
       return reply.status(409).send({ error: "content_unavailable", message: "内容已下架或未上架" });
     }
 
-    let channelId: bigint | null = content.channelId;
-    let validEntitlementId: string | null = null;
-    let membershipMatched = false;
+    if (content.accessType === "single") {
+      return reply.status(409).send({
+        error: "single_delivery_not_enabled",
+        message: "单篇购买（single）首期不支持，共享 VIP 频道无法做到只开放单条内容。",
+      });
+    }
 
-    if (content.accessType !== "public") {
+    let channelRef: ReturnType<typeof refMembershipMain> | ReturnType<typeof refRawChatId> | ReturnType<typeof refFreeChannelByCode> | null = null;
+    let validEntitlementId: string | null = null;
+    // 免费频道有公开 t.me 链接的话直接返回，不走一次性 invite 创建
+    let publicDirectUrl: string | null = null;
+    // 解析 chatId 用于 telegram_invites 入库（Fail-Closed: 解析不到则不写 invite 记录）
+    let resolvedChatIdForInvite: bigint | null = null;
+
+    if (content.accessType === "public") {
+      const publicContent = await prisma.content.findUnique({
+        where: { id: resourceId },
+        select: { freeChannelCode: true, channelId: true, channelIdCiphertext: true },
+      });
+      const code = publicContent?.freeChannelCode;
+      if (code && isValidFreeChannelCode(code)) {
+        // 优先走白名单（P1-#7 强制路由）
+        publicDirectUrl = tryGetFreeChannelPublicUrl(code);
+        try {
+          channelRef = refFreeChannelByCode(code);
+          // 额外解析 chatId 用于入库（refFreeChannelByCode 内部没暴露 chatId，这里再取一次，Fail-Closed）
+          const entry = getFreeChannelEntry(code);
+          const envRaw = entry?.envVarName ? process.env[entry.envVarName] : null;
+          if (envRaw && /^-?\d{6,22}$/.test(envRaw)) resolvedChatIdForInvite = BigInt(envRaw);
+        } catch (err: any) {
+          emitSafetyEvent(
+            {
+              event: "free_channel_env_resolve_failed",
+              errorClass: "business",
+              userId: uid,
+              note: `resource=${resourceId} freeChannelCode=${code}`,
+            },
+            err,
+          );
+          return reply.status(503).send({
+            error: "free_channel_not_configured",
+            userError: "free_channel_not_configured",
+            message: "该免费频道服务端未配置，请稍后重试或联系客服",
+          });
+        }
+      } else {
+        // 迁移期回退：老数据没 freeChannelCode，尝试解密 channelIdCiphertext（Fail-Closed：解析不到直接 409）
+        const ch = resolveContentChannelId({
+          channelId: publicContent?.channelId ?? null,
+          channelIdCiphertext: publicContent?.channelIdCiphertext ?? null,
+        });
+        if (!ch) {
+          return reply.status(409).send({
+            error: "free_channel_code_required",
+            message: "公开内容尚未绑定免费频道白名单编码；请编辑该内容，从免费频道下拉中选择一个合法频道。",
+          });
+        }
+        channelRef = refRawChatId(ch);
+        resolvedChatIdForInvite = ch;
+      }
+    } else {
       const entitlements = await prisma.entitlement.findMany({
         where: {
           userId: uid,
@@ -51,56 +118,104 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
         select: { id: true, resourceType: true, resourceId: true, expiresAt: true },
       });
 
-      const matchSingle = entitlements.find(
-        (e: any) => e.resourceType === "content" && e.resourceId === content.id,
-      );
-      const matchPackage =
-        content.packageId &&
-        entitlements.find(
+      let matchedEntitlement: any = null;
+
+      if (content.accessType === "membership") {
+        const membershipE = entitlements.find((e: any) => e.resourceType === "membership_channel");
+        if (!membershipE) {
+          return reply.status(403).send({ error: "forbidden", message: "无访问权限，请完成会员订单" });
+        }
+        matchedEntitlement = membershipE;
+        channelRef = refMembershipMain();
+      } else if (content.accessType === "package") {
+        if (!content.packageId) {
+          return reply.status(400).send({
+            error: "package_id_required",
+            message: "package 类型内容必须绑定内容包",
+          });
+        }
+        const pkgE = entitlements.find(
           (e: any) => e.resourceType === "package" && e.resourceId === content.packageId,
         );
-      const hasMembership = entitlements.some((e: any) => e.resourceType === "membership_channel");
-      const matchMembership = content.accessType === "membership" && hasMembership;
-      membershipMatched = !!matchMembership;
-
-      const matchedEntitlement =
-        matchSingle ||
-        matchPackage ||
-        (matchMembership ? entitlements.find((e: any) => e.resourceType === "membership_channel") : null);
-
-      if (!matchedEntitlement) {
-        return reply.status(403).send({ error: "forbidden", message: "无访问权限，请完成有效订单" });
-      }
-      validEntitlementId = matchedEntitlement.id;
-
-      if (!channelId && content.packageId) {
+        if (!pkgE) {
+          return reply.status(403).send({ error: "forbidden", message: "无访问权限，请完成对应内容包的有效订单" });
+        }
+        matchedEntitlement = pkgE;
         const pkg = await prisma.contentPackage.findUnique({
           where: { id: content.packageId },
-          select: { channelId: true },
+          select: { channelId: true, channelIdCiphertext: true },
         });
-        channelId = pkg?.channelId || null;
+        const pkgChannel = resolvePackageChannelId({
+          channelId: pkg?.channelId ?? null,
+          channelIdCiphertext: pkg?.channelIdCiphertext ?? null,
+        });
+        if (!pkg || pkgChannel == null) {
+          return reply.status(409).send({
+            error: "delivery_channel_not_configured",
+            message: "该内容包尚未配置交付频道，请联系运营确认受控频道映射已完成。",
+          });
+        }
+        channelRef = refRawChatId(pkgChannel);
+      } else {
+        return reply.status(400).send({
+          error: "unknown_access_type",
+          message: "未知的内容访问类型",
+        });
       }
 
-      // 【Security Boundary - 细节2】路由层严禁直接从 env 取明文 chatId；
-      // membership 频道的 chatId 在 telegramBot.ts 服务层通过 refMembershipMain() 解析
-    } else if (!channelId) {
-      // public 内容如果未配 channelId 不生成链接
-      return reply.status(409).send({
-        error: "channel_missing",
-        message: "公开内容尚未配置访问通道；请前往公开频道预览：" + (process.env.PUBLIC_CHANNEL_URL || ""),
+      validEntitlementId = matchedEntitlement.id;
+    }
+
+    if (!channelRef) {
+      return reply.status(500).send({ error: "internal_error", message: "交付通道解析失败" });
+    }
+
+    // 公开免费频道的直接 t.me URL（不走一次性 invite 创建，也不消耗 Bot 配额）
+    if (publicDirectUrl) {
+      // 尽力而为写条访问记录；chatId 没拿到就不写（Fail-Closed 不阻塞）
+      if (resolvedChatIdForInvite) {
+        prisma.telegramInvite
+          .create({
+            data: {
+              userId: uid,
+              entitlementId: validEntitlementId,
+              channelId: resolvedChatIdForInvite,
+              inviteLink: publicDirectUrl,
+              expiresAt: new Date(Date.now() + 365 * 24 * 3600 * 1000),
+            },
+          })
+          .catch(() => {});
+      }
+      const user = await prisma.user.findUnique({ where: { id: uid }, select: { telegramUserId: true } });
+      let dmSent = false;
+      if (user?.telegramUserId) {
+        try {
+          const dm = await sendDirectMessage({
+            telegramUserId: String(user.telegramUserId),
+            text:
+              `【同频 · 免费公开内容】\n` +
+              `《${content.title || content.id}》\n直达公开频道：${publicDirectUrl}`,
+            disableWebPagePreview: true,
+          });
+          dmSent = dm.success;
+        } catch {
+          dmSent = false;
+        }
+      }
+      return reply.status(302).header("Location", publicDirectUrl).send({
+        delivery: {
+          method: dmSent ? "telegram_dm_sent_plus_302_redirect" : "302_redirect_only",
+          redirectTo: "same-as-location-header",
+          channel: "public_free_channel_direct_url",
+          stub: false,
+        },
       });
     }
 
     let invite!: Awaited<ReturnType<typeof createChannelInvite>>;
     try {
-      // 【Security Boundary - 细节2】根据命中类型传递 ChannelRef
-      const channel = membershipMatched
-        ? refMembershipMain()
-        : channelId
-        ? refRawChatId(channelId)
-        : refMembershipMain();
       invite = await createChannelInvite({
-        channel,
+        channel: channelRef,
         name: `[InTune] uid=${uid.slice(0, 8)} content=${content.id.slice(0, 8)}`,
       });
     } catch (err: any) {
@@ -110,9 +225,18 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
         msg.includes("TELEGRAM_BOTS") ||
         msg.includes("TELEGRAM_CHANNEL_MEMBERSHIP") ||
         msg.includes("no valid invite Bot");
-      console.error("[access-link] createChannelInvite failed: telegram_api_error (详细错误已脱敏)");
+      emitSafetyEvent(
+        {
+          event: isConfigIssue ? "invite_bot_not_configured" : "invite_bot_create_failed",
+          errorClass: "business",
+          userId: uid,
+          note: isConfigIssue ? `配置缺失(res=${String(resourceId ?? "null").slice(0, 64)})` : `raw_len=${msg.length} res=${String(resourceId ?? "null").slice(0, 64)}`,
+        },
+        err,
+      );
       return reply.status(isConfigIssue ? 503 : 502).send({
         error: isConfigIssue ? "bot_not_configured" : "bot_api_error",
+        userError: isConfigIssue ? "invite_bot_not_configured" : "invite_bot_create_failed",
         message: isConfigIssue
           ? "暂不能发放入口：服务端邀请 Bot 未配置。请联系管理员检查 TELEGRAM_BOTS 和 TELEGRAM_INVITE_BOT_KEY。"
           : "暂不能发放入口：创建 Telegram 邀请失败，请稍后重试或联系支持。",
@@ -125,14 +249,12 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
       data: {
         userId: uid,
         entitlementId: validEntitlementId,
-        channelId: invite._resolvedChannelId, // 细节2：同一调用栈内部使用解析值，不暴露给 JSON
+        channelId: invite._resolvedChannelId,
         inviteLink: invite.inviteLink,
         expiresAt: invite.expiresAt,
       },
     });
 
-    // 【Security Boundary - 细节3】前端 API 永远不含 inviteLink 字段
-    // 优先通过 Telegram Bot 私信发送邀请链接；同时提供一次性 302 跳转作为备用
     const user = await prisma.user.findUnique({
       where: { id: uid },
       select: { telegramUserId: true },
@@ -153,11 +275,10 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // 302 跳转作为备用交付方式；邀请链接直接在 Location 中，绝不写入响应 body
     return reply.status(302).header("Location", invite.inviteLink).send({
       delivery: {
         method: dmSent ? "telegram_dm_sent_plus_302_redirect" : "302_redirect_only",
-        redirectTo: "same-as-location-header", // 占位说明，不重复明文链接
+        redirectTo: "same-as-location-header",
         expiresAt: invite.expiresAt.toISOString(),
         ttlSeconds: invite.ttlSeconds,
         stub: invite.stub,
@@ -166,19 +287,165 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
   }
 
   fastify.post<{ Params: { id: string } }>("/resources/:id/access-link", handleAccessLink);
+  fastify.get<{ Params: { id: string } }>("/resources/:id/access-link", async (_req, reply) => {
+    return reply.status(405).send({
+      error: "method_not_allowed",
+      message: "请使用 POST /api/resources/:id/access-link 由浏览器处理 302 跳转",
+    });
+  });
 
   fastify.get<{ Params: { id: string } }>("/videos/:id/telegram-link", async (_req, reply) => {
     return reply.status(410).send({
       error: "gone",
-      message: "GET /api/videos/:id/telegram-link 已废弃，请使用 POST /api/resources/:id/access-link",
-      hint: "废弃原因：防止浏览器预取、爬虫或邮件预览在无用户交互时误发邀请",
+      message: "GET /api/videos/:id/telegram-link 已废弃，请使用 GET /api/resources/:id/access-link 由浏览器处理 302 跳转",
     });
   });
-  fastify.get<{ Params: { id: string } }>("/resources/:id/access-link", async (_req, reply) => {
-    return reply.status(405).send({
-      error: "method_not_allowed",
-      message: "access-link 只允许 POST，防止浏览器预取误发邀请",
-      allowedMethods: ["POST"],
-    });
+
+  // ============================================================
+  // P0 修复：我的可进入频道（H5 & Mini App 共用）
+  //   聚合 public（免费白名单）+ membership 会员主频道 + package 内容包交付频道
+  //   安全策略：
+  //     1. 不批量调用 createChannelInvite（避免 bot 限流），只返回 resourceId 触发点和 public 现成 link
+  //     2. 用户点击「进入频道」按钮时再单条调 POST /api/resources/:resourceId/access-link
+  //     3. 免费频道 env 缺失：Fail-Closed 不抛 503，只在条目标 available=false + reason 中文
+  //     4. 返回绝对不暴露明文 chatId 或 channelIdCiphertext/hmac
+  // ============================================================
+  fastify.get("/user/channels", async (req, reply) => {
+    const uid = (req as any).userId as string | undefined;
+    if (!uid) return reply.status(401).send({ error: "unauthorized", userError: "unauthorized", message: "请先完成登录后再查看你的频道" });
+
+    const prisma = (fastify as any).prisma;
+    const items: Array<{
+      id: string;
+      kind: "public" | "membership" | "package";
+      label: string;
+      subtitle: string;
+      accessMode: "public_link" | "invite_link_on_demand";
+      link: string | null;
+      available: boolean;
+      resourceId?: string;
+      reason?: string;
+    }> = [];
+
+    // ----- 1. 免费公开频道（白名单 3 条）-----
+    for (const entry of PUBLIC_FREE_CHANNELS) {
+      const code = entry.code;
+      // 找一个 published + accessType=public + freeChannelCode=code 的内容作为 access-link 触发点
+      let triggerContentId: string | null = null;
+      try {
+        const c = await prisma.content.findFirst({
+          where: { status: "published", accessType: "public", freeChannelCode: code },
+          select: { id: true },
+        });
+        triggerContentId = c?.id || null;
+      } catch (_) {
+        triggerContentId = null;
+      }
+      // 优先公开 t.me URL
+      let publicLink: string | null = null;
+      let configured = false;
+      try {
+        publicLink = tryGetFreeChannelPublicUrl(code);
+        // 检查 env chatId 是否存在（Fail-Closed 不抛，只记录）
+        const raw = entry.envVarName ? process.env[entry.envVarName] : null;
+        if (publicLink || (raw && /^-?\d{6,22}$/.test(raw))) configured = true;
+      } catch (_) {
+        configured = false;
+      }
+      items.push({
+        id: `public-${code}`,
+        kind: "public",
+        label: entry.label,
+        subtitle: entry.description,
+        accessMode: publicLink ? "public_link" : "invite_link_on_demand",
+        link: publicLink,
+        available: configured && (!!publicLink || !!triggerContentId),
+        resourceId: triggerContentId || undefined,
+        reason: configured ? undefined : "免费频道服务端尚未配置（env TELEGRAM_FREE_CHANNEL_*）",
+      });
+    }
+
+    // ----- 2. 会员主频道（如果有 active membership_channel entitlement）-----
+    try {
+      const now = new Date();
+      const membershipE = await prisma.entitlement.findFirst({
+        where: {
+          userId: uid,
+          status: "active",
+          resourceType: "membership_channel",
+          OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
+        },
+        select: { id: true, expiresAt: true, grantedAt: true, sourceOrderNo: true },
+      });
+      if (membershipE) {
+        // 找一个 accessType=membership + published 的内容作为触发点
+        const trigger = await prisma.content.findFirst({
+          where: { status: "published", accessType: "membership" },
+          select: { id: true },
+        });
+        const sub = [
+          membershipE.expiresAt ? `有效期至 ${new Date(membershipE.expiresAt).toISOString().slice(0, 10)}` : "永久有效",
+          membershipE.sourceOrderNo ? `订单：${membershipE.sourceOrderNo}` : "",
+        ].filter(Boolean).join(" · ");
+        items.push({
+          id: "membership-main",
+          kind: "membership",
+          label: "VIP 会员专属频道",
+          subtitle: sub || "会员期内可无限观看全部 VIP 视频内容",
+          accessMode: "invite_link_on_demand",
+          link: null,
+          available: !!trigger,
+          resourceId: trigger?.id || undefined,
+          reason: trigger ? undefined : "系统尚未配置会员内容条目（accessType=membership），请联系运营。",
+        });
+      }
+    } catch (_) {
+    }
+
+    // ----- 3. 内容包交付频道（每个 active package entitlement）-----
+    try {
+      const now = new Date();
+      const pkgEntitlements = await prisma.entitlement.findMany({
+        where: {
+          userId: uid,
+          status: "active",
+          resourceType: "package",
+          OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
+        },
+        select: { id: true, resourceId: true, expiresAt: true, grantedAt: true, sourceOrderNo: true, productTitle: true, contentPackageTitle: true },
+      });
+      for (const e of pkgEntitlements) {
+        const pkgId = e.resourceId;
+        if (!pkgId) continue;
+        // 找 packageId=pkgId + accessType=package + published 的任意内容 id 作为触发点
+        const trigger = await prisma.content.findFirst({
+          where: { status: "published", accessType: "package", packageId: pkgId },
+          select: { id: true, title: true },
+        });
+        const pkgMeta = await prisma.contentPackage.findUnique({
+          where: { id: pkgId },
+          select: { id: true, title: true, status: true },
+        }).catch(() => null);
+        const label = e.contentPackageTitle || pkgMeta?.title || e.productTitle || `内容包 ${pkgId.slice(0, 8)}`;
+        const sub = [
+          e.expiresAt ? `有效期至 ${new Date(e.expiresAt).toISOString().slice(0, 10)}` : "无限期",
+          e.sourceOrderNo ? `订单：${e.sourceOrderNo}` : "",
+        ].filter(Boolean).join(" · ");
+        items.push({
+          id: `package-${pkgId}`,
+          kind: "package",
+          label,
+          subtitle: sub || "已购内容包交付频道",
+          accessMode: "invite_link_on_demand",
+          link: null,
+          available: !!trigger,
+          resourceId: trigger?.id || undefined,
+          reason: trigger ? undefined : "该内容包尚未发布任何交付内容条目（accessType=package），请联系运营完成发布配置。",
+        });
+      }
+    } catch (_) {
+    }
+
+    return reply.status(200).send({ items, total: items.length });
   });
 }

@@ -182,6 +182,66 @@ async function callBotApi<T = unknown>(bot: TelegramBotCredential, method: strin
   }
 }
 
+type MultipartField = { name: string; type: "text"; value: string | number | boolean } | { name: string; type: "file"; filename: string; contentType: string; body: unknown };
+
+async function callBotApiMultipart<T = unknown>(
+  bot: TelegramBotCredential,
+  method: string,
+  fields: MultipartField[],
+): Promise<{ ok: boolean; result?: T; error_code?: number; description?: string }> {
+  try {
+    const FormDataCtor: any = (globalThis as any).FormData;
+    if (!FormDataCtor) {
+      return { ok: false, error_code: 500, description: "node_fetch_multipart_formdata_unavailable" };
+    }
+    const BlobCtor: any = (globalThis as any).Blob;
+    const fd = new FormDataCtor();
+    for (const f of fields) {
+      if (f.type === "text") {
+        fd.append(f.name, typeof f.value === "string" ? f.value : JSON.stringify(f.value));
+      } else {
+        let blobLike: any = f.body;
+        if (BlobCtor && blobLike && !(blobLike instanceof BlobCtor)) {
+          try { blobLike = new BlobCtor([blobLike], { type: f.contentType }); } catch { /* noop */ }
+        }
+        fd.append(f.name, blobLike, f.filename);
+      }
+    }
+    const response = await fetch(`${API_BASE}/bot${bot.token}/${method}`, { method: "POST", body: fd as any });
+    return await response.json() as { ok: boolean; result?: T; error_code?: number; description?: string };
+  } catch (error) {
+    return { ok: false, error_code: 500, description: error instanceof Error ? error.message : "network error" };
+  }
+}
+
+export type SendMediaFromStoragePayload = {
+  tgMethod: "sendVideo" | "sendPhoto";
+  supportsStreaming?: boolean;
+  caption?: string;
+  parseMode?: "HTML" | "MarkdownV2" | "Markdown";
+  thumbnail?: { filename: string; contentType: string; body: unknown } | null;
+  mediaFilename: string;
+  mediaContentType: string;
+  mediaBody: unknown;
+  extraTextFields?: Record<string, string | number | boolean>;
+};
+
+export type SendMediaFromStorageResult = {
+  stub: false;
+  success: boolean;
+  chatFingerprint: string;
+  chatMasked: string;
+  errorCode?: number;
+  errorNote?: string;
+  messageId?: number;
+  telegramFileId?: string;
+  telegramFileUniqueId?: string;
+  width?: number;
+  height?: number;
+  durationSeconds?: number;
+  waitedMs: number;
+};
+
 export async function createChannelInvite(opts: CreateInviteOptions): Promise<TelegramInviteResult> {
   const bot = assertInviteBot("create invite link");
   const chatId = resolveChannelRefToChatId(opts.channel);
@@ -278,6 +338,18 @@ export type GetChatResult = {
   isForum?: boolean;
 };
 
+export type GetChatMemberResult = {
+  stub: false;
+  chatId: string;
+  userId: string;
+  status: string;
+  isMember: boolean;
+  isAdministrator: boolean;
+  canPostMessages?: boolean;
+  canInviteUsers?: boolean;
+  canRestrictMembers?: boolean;
+};
+
 export async function getChat(chat: ChannelRef): Promise<GetChatResult> {
   const bot = assertInviteBot("getChat");
   const chatId = resolveChannelRefToChatId(chat);
@@ -301,6 +373,60 @@ export async function getChat(chat: ChannelRef): Promise<GetChatResult> {
   };
 }
 
+export async function getChatByUsername(username: string): Promise<GetChatResult> {
+  const bot = assertInviteBot("getChatByUsername");
+  const normalized = String(username || "").trim().replace(/^@+/, "");
+  if (!normalized || !/^[A-Za-z0-9_]{4,64}$/.test(normalized)) {
+    throw new Error("getChatByUsername invalid username");
+  }
+  const chatId = `@${normalized}`;
+  const r = await callBotApi<any>(bot, "getChat", { chat_id: chatId });
+  if (!r.ok || !r.result) throw new Error(`getChat failed: [${r.error_code}] ${r.description || "unknown"}`);
+  const c = r.result as any;
+  return {
+    stub: false,
+    chatId: String(c.id),
+    title: c.title ?? null,
+    username: c.username ?? null,
+    type: String(c.type),
+    description: c.description ?? null,
+    inviteLink: c.invite_link ?? null,
+    hasVisibleHistory: c.has_visible_history === true,
+    isForum: c.is_forum === true,
+    photo: c.photo
+      ? { smallFileId: c.photo.small_file_id ?? undefined, bigFileId: c.photo.big_file_id ?? undefined }
+      : null,
+  };
+}
+
+export async function getBotChatMember(chat: ChannelRef | string): Promise<GetChatMemberResult> {
+  const bot = assertInviteBot("getBotChatMember");
+  const chatId = typeof chat === "string"
+    ? (String(chat).startsWith("@") ? String(chat) : channelIdString(BigInt(String(chat))))
+    : channelIdString(resolveChannelRefToChatId(chat));
+  const me = await botSelfTest();
+  if (!me.ok || !me.botInfo?.id) {
+    throw new Error(`getBotChatMember bot getMe failed: ${me.error || "unknown"}`);
+  }
+  const r = await callBotApi<any>(bot, "getChatMember", {
+    chat_id: chatId,
+    user_id: me.botInfo.id,
+  });
+  if (!r.ok || !r.result) throw new Error(`getChatMember failed: [${r.error_code}] ${r.description || "unknown"}`);
+  const m = r.result as any;
+  return {
+    stub: false,
+    chatId: String(chatId),
+    userId: String(me.botInfo.id),
+    status: String(m.status || "unknown"),
+    isMember: ["member", "administrator", "creator"].includes(String(m.status || "")),
+    isAdministrator: ["administrator", "creator"].includes(String(m.status || "")),
+    canPostMessages: m.can_post_messages === true,
+    canInviteUsers: m.can_invite_users === true,
+    canRestrictMembers: m.can_restrict_members === true,
+  };
+}
+
 export async function getChatMemberCount(chat: ChannelRef): Promise<number> {
   const bot = assertInviteBot("getChatMemberCount");
   const chatId = resolveChannelRefToChatId(chat);
@@ -308,6 +434,161 @@ export async function getChatMemberCount(chat: ChannelRef): Promise<number> {
   const r = await callBotApi<number>(bot, "getChatMemberCount", { chat_id: id });
   if (!r.ok || typeof r.result !== "number") throw new Error(`getChatMemberCount failed: [${r.error_code}] ${r.description || "unknown"}`);
   return r.result;
+}
+
+// ============= 频道发布（P1-#5） =============
+// 延迟要求：批量调用 Telegram API 时单次请求间必须 ≥350ms（防官方 flood 限制）
+const TG_API_MIN_INTERVAL_MS = 350;
+let _lastTgLaneAt = 0;
+async function tgRateLimitSleepIfNeeded(): Promise<void> {
+  const now = Date.now();
+  const wait = TG_API_MIN_INTERVAL_MS - (now - _lastTgLaneAt);
+  if (wait > 0) {
+    await new Promise<void>((r) => setTimeout(r, wait));
+  }
+  _lastTgLaneAt = Date.now();
+}
+
+export type SendVideoPayload =
+  | { videoFileId: string; caption?: string; supportsStreaming?: boolean; thumbnailFileId?: string; parseMode?: "MarkdownV2" | "HTML" | "Markdown" };
+
+export type SendVideoToChannelResult = {
+  stub: false;
+  success: boolean;
+  messageId?: number;
+  /** 脱敏的目标频道指纹（HMAC，可入库/审计） */
+  chatFingerprint: string;
+  /** 脱敏的目标频道掩码（可展示给运营看） */
+  chatMasked: string;
+  /** 上传前等待时间（用于 flood 调试） */
+  waitedMs: number;
+  errorMessage?: string;
+  /** 原始 TG error_code，内部排错用，不返回给前端 */
+  _rawErrorCode?: number;
+};
+
+export async function sendVideoToChannel(
+  channel: ChannelRef,
+  payload: SendVideoPayload,
+): Promise<SendVideoToChannelResult> {
+  const bot = assertInviteBot("send video to channel");
+  const chatId = resolveChannelRefToChatId(channel);
+  const fingerprint = chatIdFingerprint(chatId);
+  const masked = maskChatIdSafe(chatId);
+  const startedAt = Date.now();
+  await tgRateLimitSleepIfNeeded();
+  const waitedMs = Date.now() - startedAt;
+
+  const r = await callBotApi<{ message_id: number }>(bot, "sendVideo", {
+    chat_id: channelIdString(chatId),
+    video: payload.videoFileId,
+    ...(payload.caption ? { caption: payload.caption } : {}),
+    ...(payload.parseMode ? { parse_mode: payload.parseMode } : {}),
+    ...(payload.supportsStreaming !== undefined ? { supports_streaming: payload.supportsStreaming } : {}),
+    ...(payload.thumbnailFileId ? { thumbnail: payload.thumbnailFileId } : {}),
+  });
+  if (!r.ok || !r.result) {
+    return {
+      stub: false,
+      success: false,
+      chatFingerprint: fingerprint,
+      chatMasked: masked,
+      waitedMs,
+      errorMessage: `sendVideo: [${r.error_code ?? 500}] ${r.description || "unknown"}`,
+      _rawErrorCode: r.error_code,
+    };
+  }
+  return {
+    stub: false,
+    success: true,
+    messageId: r.result.message_id,
+    chatFingerprint: fingerprint,
+    chatMasked: masked,
+    waitedMs,
+  };
+}
+
+export async function sendMediaFromStorage(
+  botSlot: TelegramBotSlot | undefined | null,
+  channel: ChannelRef,
+  payload: SendMediaFromStoragePayload,
+): Promise<SendMediaFromStorageResult> {
+  const bot = (botSlot ? resolveBotSlot(botSlot) : undefined) || assertInviteBot("send media from storage");
+  const chatId = resolveChannelRefToChatId(channel);
+  const fingerprint = chatIdFingerprint(chatId);
+  const masked = maskChatIdSafe(chatId);
+  const startedAt = Date.now();
+  await tgRateLimitSleepIfNeeded();
+  const waitedMs = Date.now() - startedAt;
+
+  const fileField = payload.tgMethod === "sendPhoto" ? "photo" : "video";
+  const fields: MultipartField[] = [
+    { name: "chat_id", type: "text", value: channelIdString(chatId) },
+    { name: fileField, type: "file", filename: payload.mediaFilename, contentType: payload.mediaContentType, body: payload.mediaBody },
+  ];
+  if (payload.caption) fields.push({ name: "caption", type: "text", value: payload.caption });
+  if (payload.parseMode) fields.push({ name: "parse_mode", type: "text", value: payload.parseMode });
+  if (payload.tgMethod === "sendVideo" && payload.supportsStreaming !== undefined) {
+    fields.push({ name: "supports_streaming", type: "text", value: payload.supportsStreaming });
+  }
+  if (payload.thumbnail) {
+    fields.push({ name: "thumbnail", type: "file", filename: payload.thumbnail.filename, contentType: payload.thumbnail.contentType, body: payload.thumbnail.body });
+  }
+  if (payload.extraTextFields) {
+    for (const [k, v] of Object.entries(payload.extraTextFields)) fields.push({ name: k, type: "text", value: v as any });
+  }
+  type TgMedia = { message_id: number; video?: { file_id: string; file_unique_id?: string; width?: number; height?: number; duration?: number }; photo?: Array<{ file_id: string; file_unique_id?: string; width?: number; height?: number }> };
+  const r = await callBotApiMultipart<TgMedia>(bot, payload.tgMethod, fields);
+  if (!r.ok || !r.result) {
+    return {
+      stub: false,
+      success: false,
+      chatFingerprint: fingerprint,
+      chatMasked: masked,
+      waitedMs,
+      errorCode: r.error_code ?? 500,
+      errorNote: `len=${(r.description || "").length}`,
+    };
+  }
+  const mid = r.result.message_id;
+  if (payload.tgMethod === "sendVideo" && r.result.video) {
+    return {
+      stub: false,
+      success: true,
+      messageId: mid,
+      telegramFileId: r.result.video.file_id,
+      telegramFileUniqueId: r.result.video.file_unique_id,
+      width: r.result.video.width,
+      height: r.result.video.height,
+      durationSeconds: r.result.video.duration,
+      chatFingerprint: fingerprint,
+      chatMasked: masked,
+      waitedMs,
+    };
+  }
+  if (payload.tgMethod === "sendPhoto" && Array.isArray(r.result.photo) && r.result.photo.length > 0) {
+    const thumb = r.result.photo[r.result.photo.length - 1];
+    return {
+      stub: false,
+      success: true,
+      messageId: mid,
+      telegramFileId: thumb.file_id,
+      telegramFileUniqueId: thumb.file_unique_id,
+      width: thumb.width,
+      height: thumb.height,
+      chatFingerprint: fingerprint,
+      chatMasked: masked,
+      waitedMs,
+    };
+  }
+  return {
+    stub: false,
+    success: true,
+    messageId: mid,
+    chatFingerprint: fingerprint,
+    chatMasked: masked,
+    waitedMs,
+  };
 }
 
 export type GetUpdatesOptions = { limit?: number; offset?: number; allowedUpdates?: readonly string[]; timeoutSeconds?: number };
@@ -545,7 +826,7 @@ export type CreateStarsInvoiceOptions = {
 };
 
 export type CreateStarsInvoiceResult =
-  | { ok: true; invoiceLink: string; via: "createInvoiceLink" | "sendInvoice" }
+  | { ok: true; invoiceLink: string; via: "createInvoiceLink" }
   | { ok: false; errorClass: string; reason: string };
 
 export async function createStarsInvoice(opts: CreateStarsInvoiceOptions): Promise<CreateStarsInvoiceResult> {
@@ -557,62 +838,64 @@ export async function createStarsInvoice(opts: CreateStarsInvoiceOptions): Promi
   if (!Array.isArray(opts.prices) || opts.prices.length === 0) {
     return { ok: false, errorClass: "prices_empty", reason: "prices[] required" };
   }
-  // 防止 429：与其他批量调用共用 350ms 间隔（与 adminChannels.ts/refresh 等其他 TG 调用一致）
+  // 防止 429：与其他批量调用共用 350ms 间隔
   await new Promise((res) => setTimeout(res, 350));
   try {
-    if (opts.sendToTelegramUserId != null) {
-      // Bot DM 模式：sendInvoice → 用户在 Bot 内支付
-      const payload: Record<string, unknown> = {
-        chat_id: channelIdString(opts.sendToTelegramUserId),
-        title: opts.title,
-        description: opts.description,
-        payload: opts.payload,
-        provider_token: "", // Stars = 无 provider_token
-        currency: opts.currency || "XTR",
-        prices: opts.prices,
-      };
-      if (opts.photoUrl) payload.photo_url = opts.photoUrl;
-      if (opts.photoSize) payload.photo_size = opts.photoSize;
-      if (opts.photoWidth) payload.photo_width = opts.photoWidth;
-      if (opts.photoHeight) payload.photo_height = opts.photoHeight;
-      if (opts.maxTipAmount != null) payload.max_tip_amount = opts.maxTipAmount;
-      if (opts.suggestedTipAmounts?.length) payload.suggested_tip_amounts = opts.suggestedTipAmounts;
-      if (opts.needName) payload.need_name = true;
-      if (opts.needPhoneNumber) payload.need_phone_number = true;
-      if (opts.needEmail) payload.need_email = true;
-      if (opts.sendPhoneNumberToProvider) payload.send_phone_number_to_provider = true;
-      if (opts.sendEmailToProvider) payload.send_email_to_provider = true;
-      if (opts.flexible) payload.is_flexible = true;
-      const r = await callBotApi<{ invoice_link?: string }>(bot!, "sendInvoice", payload);
-      if (!r.ok) return { ok: false, errorClass: `tg_${r.error_code || 500}`, reason: r.description || "sendInvoice failed" };
-      // sendInvoice 不返回 invoice_link；但返回成功后，用户在 Bot 内可支付。这里把 payload 当做唯一标识。
-      return { ok: true, invoiceLink: `tg:invoice:${opts.payload.slice(0, 32)}`, via: "sendInvoice" };
-    }
-    // Mini App 模式：createInvoiceLink → 前端 tg.openInvoice(url)
-    const payload: Record<string, unknown> = {
+    // ============ P0-#1-C FIX：强制 createInvoiceLink，禁止 sendInvoice 返回占位 tg:invoice ============
+    // Mini App / H5 只接受 https://t.me/ 真实发票链接。
+    // 若提供了 sendToTelegramUserId，则在后台「额外私信一张发票」作为提醒，但失败不应影响主流程。
+    const basePayload: Record<string, unknown> = {
       title: opts.title,
       description: opts.description,
       payload: opts.payload,
+      provider_token: "",
       currency: opts.currency || "XTR",
       prices: opts.prices,
     };
-    if (opts.photoUrl) payload.photo_url = opts.photoUrl;
-    if (opts.photoSize) payload.photo_size = opts.photoSize;
-    if (opts.photoWidth) payload.photo_width = opts.photoWidth;
-    if (opts.photoHeight) payload.photo_height = opts.photoHeight;
-    if (opts.maxTipAmount != null) payload.max_tip_amount = opts.maxTipAmount;
-    if (opts.suggestedTipAmounts?.length) payload.suggested_tip_amounts = opts.suggestedTipAmounts;
-    if (opts.needName) payload.need_name = true;
-    if (opts.needPhoneNumber) payload.need_phone_number = true;
-    if (opts.needEmail) payload.need_email = true;
-    if (opts.sendPhoneNumberToProvider) payload.send_phone_number_to_provider = true;
-    if (opts.sendEmailToProvider) payload.send_email_to_provider = true;
-    if (opts.flexible) payload.is_flexible = true;
-    const r = await callBotApi<string>(bot!, "createInvoiceLink", payload);
+    if (opts.photoUrl) basePayload.photo_url = opts.photoUrl;
+    if (opts.photoSize) basePayload.photo_size = opts.photoSize;
+    if (opts.photoWidth) basePayload.photo_width = opts.photoWidth;
+    if (opts.photoHeight) basePayload.photo_height = opts.photoHeight;
+    if (opts.maxTipAmount != null) basePayload.max_tip_amount = opts.maxTipAmount;
+    if (opts.suggestedTipAmounts?.length) basePayload.suggested_tip_amounts = opts.suggestedTipAmounts;
+    if (opts.needName) basePayload.need_name = true;
+    if (opts.needPhoneNumber) basePayload.need_phone_number = true;
+    if (opts.needEmail) basePayload.need_email = true;
+    if (opts.sendPhoneNumberToProvider) basePayload.send_phone_number_to_provider = true;
+    if (opts.sendEmailToProvider) basePayload.send_email_to_provider = true;
+    if (opts.flexible) basePayload.is_flexible = true;
+
+    // 1) 可选：额外私信 sendInvoice 给用户（Fail-Open，不影响主链接返回）
+    if (opts.sendToTelegramUserId != null) {
+      try {
+        const dmPayload: Record<string, unknown> = { ...basePayload, chat_id: channelIdString(opts.sendToTelegramUserId) };
+        await callBotApi<{ ok?: boolean }>(bot!, "sendInvoice", dmPayload);
+      } catch (_dmErr: any) {
+        // 私信失败绝不影响主流程；仅 stderr 结构化（不暴露 bot 返回）
+        try {
+          const { emitSafetyEvent } = await import("../utils/structuredError.js" as any);
+          emitSafetyEvent({
+            event: "stars_invoice_dm_fallback_failed",
+            errorClass: "business",
+            note: `payloadHd=${opts.payload.slice(0, 16)}`,
+          }, _dmErr);
+        } catch (_importErr) {
+          // 模块不可用则静默 swallow，仅保证不抛
+        }
+      }
+    }
+
+    // 2) 真正用于支付的链接：必须走 createInvoiceLink
+    const r = await callBotApi<string>(bot!, "createInvoiceLink", basePayload);
     if (!r.ok || typeof r.result !== "string") {
       return { ok: false, errorClass: `tg_${r.error_code || 500}`, reason: r.description || "createInvoiceLink failed" };
     }
-    return { ok: true, invoiceLink: r.result, via: "createInvoiceLink" };
+    const invoiceLink = r.result;
+    // P0-#1-C 强校验：必须是 Telegram 官方 https://t.me/$ 开头的真实链接，否则直接视为服务异常
+    if (typeof invoiceLink !== "string" || !invoiceLink.startsWith("https://t.me/")) {
+      return { ok: false, errorClass: "stars_invoice_link_malformed", reason: `createInvoiceLink returned non https://t.me/ link (len=${invoiceLink?.length || 0})` };
+    }
+    return { ok: true, invoiceLink, via: "createInvoiceLink" };
   } catch (e: any) {
     return { ok: false, errorClass: "stars_invoice_exception", reason: e?.message || String(e) };
   }
@@ -681,4 +964,3 @@ export async function refundStarsPayment(opts: RefundStarsPaymentOptions): Promi
     return { ok: false, errorClass: "stars_refund_exception", reason: e?.message || String(e) };
   }
 }
-

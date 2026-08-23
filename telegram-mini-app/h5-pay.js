@@ -1,0 +1,924 @@
+(function () {
+  "use strict";
+
+  const H5_ERROR_ZH = {
+    unauthorized: "未检测到登录态。请使用页面上的「Telegram 登录」按钮完成登录，或回到 Telegram Mini App 中打开本页面。",
+    forbidden: "无权访问该订单。",
+    product_not_found: "商品不存在或已下架，请回到 Mini App 选择在售商品。",
+    bad_request: "参数不正确：USDT 商品需要 productId 为 USDT 币种，订单号需是你的订单。",
+    usdt_address_pool_exhausted: "当前地址池已满，请稍后重试或联系客服更换地址池。",
+    usdt_assign_failed: "地址分配失败，请稍后重试。",
+    usdt_tail_exhausted_retry_next: "地址尾数占用，请重新下单（会换地址重试）。",
+    pool_empty: "支付系统资源占用已满，请稍后再试。",
+    payment_expired: "支付窗口已过期，请重新创建订单。",
+    not_found: "订单或商品不存在。",
+    stars_invoice_service_unavailable: "Stars 发票服务暂时不可用（Bot 未配置或 API 失败），请稍后重试或联系运营。",
+    stars_continue_not_found: "未找到该订单（可能已被删除或订单号错误）。",
+    stars_continue_not_owner: "该订单不是你的，无法续付（可发起新单或在 Mini App 中打开）。",
+    stars_continue_not_stars: "该订单不是 Telegram Stars 支付，不能使用 Stars 续付通道。",
+    stars_continue_not_pending: "该订单已不处于待支付状态，请重新创建订单。",
+    stars_continue_expired: "Stars 续付窗口（30 分钟）已过，请重新创建订单。",
+    stars_continue_no_invoice: "该旧单未保存发票链接（可能是旧版本创建），请重新创建订单。",
+    h5_login_missing_bot_token: "服务端未配置 Telegram Bot 凭证，H5 登录暂不可用。请使用 Telegram Mini App 打开本页。",
+    h5_login_invalid_hash: "登录回调签名校验失败。请返回登录页重新点击「使用 Telegram 登录」。",
+    h5_login_auth_expired: "登录授权已超过 10 分钟有效窗口。请返回登录页重新发起授权。",
+    h5_login_internal_error: "服务端用户登记失败。请稍后重试，或使用 Telegram Mini App 打开本页。",
+    h5_login_merge_failed: "匿名订单合并失败。请稍后重试，或使用 Telegram Mini App 打开本页。",
+    h5_login_required_for_payment: "该操作需要先绑定 Telegram 身份（防止换设备/清浏览器后无法找回订单与 VIP 频道权益）。请完成登录后重试。",
+    h5_login_required_for_channel_access: "获取 VIP 频道邀请链接前需要先绑定 Telegram 身份，否则无法将你加入目标频道。",
+  };
+
+  const BOT_USERNAME_FALLBACK = "InTune_bdsm_bot";
+
+  const VIEW_MAP = ["unauth", "orders", "entitlements", "channels", "payDetail", "error"];
+  let currentView = "";
+  let currentIdentitySession: null | { identity: "guest" | "telegram"; userId: string; telegramBound: boolean; displayName?: string } = null;
+
+  function zhMsg(err) {
+    const payload = err?.payload || err?.response?.data || {};
+    const code =
+      payload.error ||
+      payload.code ||
+      payload.userError ||
+      payload.errorClass ||
+      "";
+    if (code && H5_ERROR_ZH[code]) return H5_ERROR_ZH[code];
+    const raw = payload.userMessage || payload.message || payload.error || err?.message || "";
+    return raw || "请稍后重试或联系客服。";
+  }
+
+  function minorToDecimalUsdt(minorStr) {
+    const n = BigInt(minorStr || "0");
+    const d = 1_000_000n;
+    const whole = n / d;
+    const frac = n % d;
+    const fracStr = frac.toString().padStart(6, "0");
+    return `${whole.toString()}.${fracStr}`;
+  }
+
+  function minorToDecimalXtr(minorStr) {
+    const n = BigInt(minorStr || "0");
+    const d = 1_000_000_000n;
+    const whole = n / d;
+    const frac = n % d;
+    const fracStr = frac.toString().padStart(9, "0");
+    return `${whole.toString()}.${fracStr}`;
+  }
+
+  function api(url, options) {
+    return fetch(url, {
+      credentials: "include",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options?.headers || {}),
+      },
+    }).then(async (res) => {
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch (_) {
+        payload = null;
+      }
+      if (!res.ok) {
+        const e = new Error(payload?.message || `HTTP ${res.status}`);
+        e.status = res.status;
+        e.payload = payload;
+        throw e;
+      }
+      return payload;
+    });
+  }
+
+  function $(id) {
+    return document.getElementById(id);
+  }
+
+  function showView(name) {
+    const keyMap = {
+      unauth: "viewUnauth",
+      orders: "viewOrders",
+      entitlements: "viewEntitlements",
+      channels: "viewChannels",
+      payDetail: "viewPayDetail",
+      error: "viewError",
+    };
+    VIEW_MAP.forEach((n) => {
+      const el = $(keyMap[n]);
+      if (!el) return;
+      el.style.display = n === name ? "block" : "none";
+    });
+    currentView = name;
+
+    const tabBar = $("tabBar");
+    if (tabBar) {
+      const tabEnabled = name !== "unauth";
+      tabBar.style.display = tabEnabled ? "grid" : "none";
+      if (tabEnabled) {
+        const tabName = { orders: "orders", entitlements: "entitlements", channels: "channels", payDetail: "pay" }[name];
+        tabBar.querySelectorAll(".t").forEach((el) => {
+          el.classList.toggle("active", el.dataset.tab === tabName);
+        });
+      }
+    }
+  }
+
+  function showError(text) {
+    showView("error");
+    $("errorBox").textContent = text;
+  }
+
+  function copyText(t) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(t).then(() => true).catch(() => fallbackCopy(t));
+      }
+      return fallbackCopy(t);
+    } catch (_) {
+      return fallbackCopy(t);
+    }
+  }
+  function fallbackCopy(t) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = t;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function currentOrderNoFromQs() {
+    const p = new URLSearchParams(location.search);
+    return p.get("orderNo") || "";
+  }
+  function currentProductIdFromQs() {
+    const p = new URLSearchParams(location.search);
+    return p.get("productId") || "";
+  }
+
+  function setStep(stepIdx) {
+    document.querySelectorAll("#paySteps .step").forEach((el, idx) => {
+      const i = idx + 1;
+      el.classList.remove("active", "done");
+      if (i < stepIdx) el.classList.add("done");
+      else if (i === stepIdx) el.classList.add("active");
+    });
+  }
+
+  function setStatus(status, textOverride) {
+    const pill = $("statusPill");
+    const text = $("statusText");
+    if (!pill || !text) return;
+    pill.classList.remove(
+      "pill-pending",
+      "pill-paid",
+      "pill-checking",
+      "pill-expired",
+    );
+    const map = {
+      pending: ["pill-pending", "待支付"],
+      processing: ["pill-checking", "检测中"],
+      paid: ["pill-paid", "已支付"],
+      expired: ["pill-expired", "已过期"],
+      cancelled: ["pill-expired", "已取消"],
+      failed: ["pill-expired", "支付失败"],
+      refunded: ["pill-expired", "已退款"],
+    };
+    const [cls, txt] = map[status] || ["pill-checking", "状态未知"];
+    pill.classList.add(cls);
+    text.textContent = textOverride || txt;
+  }
+
+  let pollTimer = null;
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function startPolling(orderNo) {
+    stopPolling();
+    let attempt = 0;
+    const tick = async () => {
+      attempt += 1;
+      try {
+        const list = await api(`/api/user/orders?page=1&pageSize=50`);
+        const found = (list?.items || []).find((o) => o.orderNo === orderNo);
+        if (!found) return;
+        applyOrderData(found);
+        if (["paid", "expired", "cancelled", "refunded", "failed"].includes(found.status)) {
+          stopPolling();
+          if (found.status === "paid") {
+            setStep(4);
+            const card = $("activatedCard");
+            if (card) card.style.display = "block";
+          }
+        }
+      } catch (e) {
+        // 忽略，下次重试
+      }
+    };
+    tick();
+    pollTimer = setInterval(tick, attempt < 5 ? 2500 : 5000);
+  }
+
+  function drawQr(uri) {
+    const box = $("qrBox");
+    if (!box) return;
+    box.innerHTML = "";
+    try {
+      if (typeof QRCode !== "undefined") {
+        new QRCode(box, {
+          text: uri,
+          width: 104,
+          height: 104,
+          colorDark: "#0f0c18",
+          colorLight: "#ffffff",
+          correctLevel: 2,
+        });
+      } else {
+        const img = document.createElement("img");
+        img.alt = "二维码";
+        img.src = `https://api.qrserver.com/v1/create-qr-code/?size=104x104&margin=0&data=${encodeURIComponent(uri)}`;
+        box.appendChild(img);
+      }
+    } catch (_) {
+      const span = document.createElement("div");
+      span.textContent = "请使用钱包扫描下方地址";
+      span.style.color = "#632d73";
+      span.style.fontSize = "11px";
+      span.style.fontWeight = "800";
+      box.appendChild(span);
+    }
+  }
+
+  let lastAddress = "";
+  function applyOrderData(o) {
+    const metaEl = $("orderMeta");
+    if (metaEl) {
+      metaEl.innerHTML =
+        `<div>订单号：<code style="user-select:all; background:rgba(180,112,255,.14); padding:2px 6px; border-radius:6px; font-size:12px">${o.orderNo}</code></div>` +
+        `<div style="margin-top:4px">创建：${formatDate(o.createdAt)}｜${o.product?.title ? ("商品：" + o.product.title) : ""}</div>` +
+        (o.currency ? `<div style="margin-top:4px">币种：${o.currency}｜状态：${o.status}</div>` : "");
+    }
+
+    const isUsdt = o.currency === "USDT";
+    const displayAmount =
+      o.usdtPayment?.displayAmountDecimal ??
+      (isUsdt ? minorToDecimalUsdt(o.amountMinor) :
+        o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : null);
+    const listPrice = isUsdt ? minorToDecimalUsdt(o.amountMinor) :
+      o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : null;
+
+    const listPriceEl = $("listPrice");
+    if (listPriceEl) listPriceEl.textContent = listPrice ? `${listPrice} ${o.currency || ""} (标价)` : "—";
+    const payEl = $("payAmount");
+    if (payEl) {
+      if (displayAmount) {
+        const pieces = displayAmount.split(".");
+        payEl.innerHTML = pieces.length === 2
+          ? `${pieces[0]}.<span class="amount-tail">${pieces[1]}</span>`
+          : `${displayAmount}`;
+      } else {
+        payEl.textContent = "—";
+      }
+    }
+
+    const addr =
+      o.usdtPayment?.address ||
+      o.usdtPaymentAddress ||
+      (o._h5Extra && o._h5Extra.address) ||
+      "";
+    if (addr && addr !== lastAddress) {
+      lastAddress = addr;
+      const addrEl = $("addrText");
+      if (addrEl) addrEl.textContent = addr;
+      const uri = `tron:${addr}?amount=${displayAmount || 0}&token=USDT`;
+      drawQr(uri);
+    }
+
+    const confirmations = o.usdtPayment?.confirmationsTarget || 3;
+    const confEl = $("confirmNum");
+    if (confEl) confEl.textContent = confirmations;
+
+    setStatus(o.status);
+
+    if (o.status === "pending") setStep(1);
+    else if (o.status === "processing") setStep(2);
+    else if (o.status === "paid") setStep(3);
+    else if (["expired", "cancelled", "failed"].includes(o.status)) {
+      setStep(1);
+    }
+  }
+
+  function formatDate(iso) {
+    if (!iso) return "-";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function statusLabel(s) {
+    return {
+      pending: "待支付",
+      processing: "处理中",
+      paid: "已支付",
+      expired: "已过期",
+      cancelled: "已取消",
+      failed: "失败",
+      refunded: "已退款",
+    }[s] || s;
+  }
+
+  function setChipAuthed(user) {
+    const chip = $("userChip");
+    const text = $("userChipText");
+    if (!chip || !text) return;
+    chip.classList.remove("off");
+    const nick = user?.telegramFirstName
+      || user?.telegramUsername
+      || user?.nickname
+      || (user?.telegramUserId ? `TG#${user.telegramUserId}` : "已登录");
+    text.textContent = nick;
+    chip.title = `已登录：${nick}`;
+  }
+  function setChipUnauth() {
+    const chip = $("userChip");
+    const text = $("userChipText");
+    if (!chip || !text) return;
+    chip.classList.add("off");
+    text.textContent = "未登录";
+    chip.title = "未登录：请在 Telegram Mini App 中打开本页";
+  }
+
+  function setDeepLink() {
+    const btn = $("tgDeepLinkBtn");
+    if (!btn) return;
+    const token = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const h5Return = encodeURIComponent(location.pathname + location.search + location.hash);
+    const href = `tg://resolve?domain=${BOT_USERNAME_FALLBACK}&start=h5_${token}_${h5Return}`;
+    btn.href = href;
+  }
+
+  async function boot() {
+    const qs = new URLSearchParams(location.search);
+    const loginSuccess = qs.get("login") === "success";
+    if (loginSuccess) {
+      history.replaceState(null, "", `${location.pathname}${location.hash || ""}`);
+      setTimeout(() => {
+        const t = document.createElement("div");
+        t.setAttribute("style", "position:fixed; left:50%; top:24px; transform:translateX(-50%); z-index:9999; padding:10px 16px; background:rgba(80,200,120,.15); border:1px solid rgba(80,200,120,.3); color:#c6ffd8; border-radius:12px; font-size:13px; backdrop-filter:blur(6px); box-shadow:0 10px 30px rgba(0,0,0,.4);");
+        t.textContent = "✅ 登录成功 · 已绑定 Telegram 身份（订单与 VIP 频道权益可长期找回）";
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 4200);
+      }, 400);
+    }
+
+    setDeepLink();
+    setChipUnauth();
+
+    const qsOrder = currentOrderNoFromQs();
+    const qsProd = currentProductIdFromQs();
+    if (qsOrder) $("orderNo").value = qsOrder;
+    if (qsProd) $("productId").value = qsProd;
+
+    // ============== P0-7-A: 首屏 GET /session，失败则 POST /guest-session 创匿名访客 ==============
+    let established = false;
+    try {
+      const sess = await api("/api/auth/h5/session", {});
+      if (sess && typeof sess.identity === "string") {
+        currentIdentitySession = sess;
+        established = true;
+      }
+    } catch (_) { /* ignore 401 */ }
+
+    if (!established) {
+      try {
+        const gs = await api("/api/auth/h5/guest-session", { method: "POST", body: JSON.stringify({}) });
+        if (gs && typeof gs.identity === "string") {
+          currentIdentitySession = gs;
+          established = true;
+        }
+      } catch (e) {
+        showError("访客会话创建失败：" + zhMsg(e));
+        return;
+      }
+    }
+
+    if (!established) {
+      const returnTo = encodeURIComponent(location.pathname + location.search + location.hash);
+      window.location.assign(`/login.html?redirect=${returnTo}`);
+      return;
+    }
+
+    if (currentIdentitySession?.telegramBound) {
+      setChipAuthed({
+        nickname: currentIdentitySession.displayName,
+      });
+    } else {
+      const chip = $("userChip");
+      const text = $("userChipText");
+      if (chip && text) {
+        chip.classList.remove("off");
+        text.textContent = "访客模式 · 点击登录绑定 Telegram";
+        chip.title = "当前为访客模式（可浏览、创建 USDT 待支付订单）；支付前或获取 VIP 邀请前会要求绑定 Telegram，避免权益丢失。";
+        let bound = false;
+        chip.onclick = () => {
+          if (bound) return;
+          const returnTo = encodeURIComponent(location.pathname + location.search + location.hash);
+          window.location.assign(`/login.html?redirect=${returnTo}`);
+        };
+      }
+    }
+
+    const logoutBtn = document.getElementById("logoutBtn") as HTMLElement | null;
+    if (logoutBtn) {
+      logoutBtn.style.display = currentIdentitySession?.telegramBound ? "" : "none";
+      logoutBtn.onclick = async () => {
+        try { await api("/api/auth/h5/logout", { method: "POST", body: JSON.stringify({}) }); } catch (_) {}
+        window.location.reload();
+      };
+    }
+
+    if (qsOrder) {
+      await handleQueryOrder(qsOrder);
+      return;
+    }
+    if (qsProd) {
+      await handleCreateOrder(qsProd);
+      return;
+    }
+    showView("orders");
+    await Promise.all([
+      loadOrders().catch(() => {}),
+      loadEntitlements().catch(() => {}),
+      loadChannels().catch(() => {}),
+    ]);
+  }
+
+  function ensureTelegramBound(userErrorKey: string): boolean {
+    if (currentIdentitySession?.telegramBound) return true;
+    const returnTo = encodeURIComponent(location.pathname + location.search + location.hash);
+    const errText = H5_ERROR_ZH[userErrorKey as keyof typeof H5_ERROR_ZH] || "需要先绑定 Telegram 身份。";
+    try { sessionStorage.setItem("h5_pending_action_reason", userErrorKey + "|" + errText); } catch (_) {}
+    window.location.assign(`/login.html?redirect=${returnTo}`);
+    return false;
+  }
+
+  function disableAllPayButtons() {
+    ["btnCreateOrder", "btnGotoOrder"].forEach((id) => {
+      const b = $(id);
+      if (b) { b.disabled = true; b.title = "未登录，禁止发起/查询支付"; }
+    });
+  }
+
+  async function loadOrders() {
+    const box = $("ordersList");
+    if (!box) return;
+    try {
+      const list = await api(`/api/user/orders?page=1&pageSize=50`);
+      const items = list?.items || [];
+      if (items.length === 0) {
+        box.innerHTML = `<div class="empty-hint"><h4>暂无订单</h4><div style="color:#8e7fb0; font-size:12px; margin-top:6px;">在 Telegram Mini App 中或本页创建支付后会出现在这里。</div></div>`;
+        return;
+      }
+      box.innerHTML = items.map((o) => {
+        const amount = o.currency === "USDT" ? minorToDecimalUsdt(o.amountMinor) :
+          o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : o.amountMinor;
+        const isUsdt = o.currency === "USDT" || o.paymentMethod === "usdt_trc20";
+        const isStars = o.currency === "XTR" || o.paymentMethod === "telegram_stars" || o.paymentProvider === "telegram_stars";
+        const canContinueUsdt = ["pending", "processing"].includes(o.status) && isUsdt;
+        const canContinueStars = ["pending", "processing"].includes(o.status) && isStars;
+        const canContinue = canContinueUsdt || canContinueStars;
+        const canViewPaid = ["paid", "expired", "cancelled", "failed", "refunded"].includes(o.status);
+        const payBtnLabel = canContinueStars ? "继续 Stars 支付" : "继续支付";
+        return `
+          <div class="order-list-item">
+            <div class="oli-head">
+              <div>
+                <div class="oli-title">${o.product?.title || "商品"} <span style="color:#8e7fb0; font-weight:500; margin-left:6px;">· ${o.currency || ""}</span></div>
+                <div class="oli-meta">${o.orderNo}</div>
+              </div>
+              <div>
+                <div class="oli-price">${amount ? amount + " " + (o.currency || "") : "-"}</div>
+                <div class="oli-meta" style="text-align:right">${formatDate(o.createdAt)} · ${statusLabel(o.status)}</div>
+              </div>
+            </div>
+            ${o._h5QuickNote ? `<div class="ent-sub" style="margin-bottom:8px;">${o._h5QuickNote}</div>` : ""}
+            <div class="oli-cta">
+              ${canContinue ? `<button class="btn btn-primary" data-act="pay" data-pay="${canContinueStars ? "stars" : "usdt"}" data-no="${o.orderNo}">${payBtnLabel}</button>` : ""}
+              ${canViewPaid ? `<button class="btn btn-ghost" data-act="view" data-no="${o.orderNo}">查看详情</button>` : ""}
+              <button class="btn btn-ghost" data-act="copy" data-no="${o.orderNo}" title="复制订单号">复制单号</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+      box.querySelectorAll("button[data-act]").forEach((b) => {
+        const act = b.dataset.act;
+        const no = b.dataset.no;
+        const pay = b.dataset.pay || "usdt";
+        b.addEventListener("click", () => {
+          if (act === "pay") {
+            if (pay === "stars") handleContinueStars(no);
+            else handleQueryOrder(no);
+          }
+          else if (act === "view") handleQueryOrder(no);
+          else if (act === "copy") { if (copyText(no)) flashBtnEl(b, "✓ 已复制"); }
+        });
+      });
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">加载订单失败：${zhMsg(err)}</div>`;
+    }
+  }
+
+  async function loadEntitlements() {
+    const box = $("entitlementsList");
+    if (!box) return;
+    try {
+      const data = await api(`/api/user/entitlements?page=1&pageSize=50`);
+      const memberships = Array.isArray(data?.memberships) ? data.memberships : [];
+      const packages = Array.isArray(data?.packages) ? data.packages : [];
+      const contents = Array.isArray(data?.contents) ? data.contents : [];
+      const others = Array.isArray(data?.others) ? data.others : [];
+      const total = memberships.length + packages.length + contents.length + others.length;
+      const summary = data?.summary || {};
+      if (total === 0) {
+        box.innerHTML = `<div class="empty-hint"><h4>暂无权益</h4><div style="color:#8e7fb0; font-size:12px; margin-top:6px;">完成首笔支付后，你的会员 / 内容包 / 单条内容权益会自动出现在这里。点击下方「去购买」查看在售商品。</div><div style="margin-top:14px;"><a class="btn btn-primary" href="./h5-pay.html?product=list">去购买</a></div></div>`;
+        return;
+      }
+      const activeStatus = summary?.membership?.status === "active" ? "会员生效中" : "暂无有效会员";
+      const expireHint = summary?.membership?.expiresAt ? ` · 会员到期：${formatDate(summary.membership.expiresAt)}` : "";
+      const totalHint = `当前共 ${total} 项权益`;
+      const groups = [
+        { key: "memberships", list: memberships, label: "会员主权益", tag: ["VIP 会员", "rgba(255,180,80,.10)", "#ffc98a", "rgba(255,180,80,.28)"] },
+        { key: "packages", list: packages, label: "内容包交付权益", tag: ["内容包", "rgba(180,112,255,.12)", "#d7b9ff", "rgba(180,112,255,.3)"] },
+        { key: "contents", list: contents, label: "单条内容交付权益", tag: ["内容", "rgba(80,180,255,.12)", "#aad9ff", "rgba(80,180,255,.3)"] },
+        { key: "others", list: others, label: "其他权益", tag: ["其他", "rgba(120,120,120,.10)", "#cfcfcf", "rgba(120,120,120,.25)"] },
+      ];
+      const renderItem = (e, groupTag) => {
+        if (!e) return "";
+        const [tagText, tagBg, tagColor, tagBorder] = groupTag;
+        const status = e.status || "unknown";
+        const statusTag =
+          status === "active"
+            ? `<span class="tag" style="background:rgba(80,200,160,.12); color:#8fe0bd; border-color:rgba(80,200,160,.3)">有效</span>`
+            : `<span class="tag" style="background:rgba(255,102,102,.1); color:#ff9191; border-color:rgba(255,102,102,.2)">${escapeHtml(status)}</span>`;
+        const kindTag = `<span class="tag" style="background:${tagBg}; color:${tagColor}; border-color:${tagBorder}">${tagText}</span>`;
+        let title = "权益项";
+        let sub = "";
+        if (e?.resourceType === "membership_channel") {
+          title = "VIP 会员主频道 · 不限量观看";
+          sub = `类型：会员主频道`;
+        } else if (e?.resourceType === "package") {
+          const meta = e?.meta || {};
+          title = meta?.title || `内容包权益 #${(e?.resourceId || "").slice(0, 8)}`;
+          const cnt = typeof meta?.itemsCount === "number" ? ` · 内含 ${meta.itemsCount} 条内容` : "";
+          sub = `类型：内容包交付${cnt}`;
+        } else if (e?.resourceType === "content") {
+          const meta = e?.meta || {};
+          title = meta?.title || `单条内容 #${(e?.resourceId || "").slice(0, 8)}`;
+          sub = `类型：单条内容交付`;
+        } else {
+          title = `其他：${e?.resourceType || e?.referenceCode || "未命名"}`;
+          sub = `类型：${escapeHtml(e?.resourceType || "other")}`;
+        }
+        const lines = [sub];
+        if (e?.grantedAt) lines.push(`发放：${formatDate(e.grantedAt)}`);
+        if (e?.expiresAt) lines.push(`过期：${formatDate(e.expiresAt)}`);
+        else if (status === "active") lines.push("过期：长期有效");
+        if (e?.orderNo) lines.push(`来源订单：${escapeHtml(e.orderNo)}`);
+        return `
+          <div class="ent-item">
+            <div>
+              <div class="ent-title">${escapeHtml(title)}</div>
+              <div class="ent-sub">${escapeHtml(lines.filter(Boolean).join(" · "))}</div>
+              <div class="ent-badges">${kindTag}${statusTag}</div>
+            </div>
+          </div>
+        `;
+      };
+      const sectionHtml = groups
+        .map((g) => {
+          if (!g.list || g.list.length === 0) return "";
+          const itemsHtml = g.list.map((e) => renderItem(e, g.tag)).join("");
+          return `
+            <div class="ent-group">
+              <div class="ent-group-label">${escapeHtml(g.label)}（${g.list.length}）</div>
+              ${itemsHtml}
+            </div>
+          `;
+        })
+        .filter(Boolean)
+        .join("");
+      box.innerHTML = `
+        <div class="summary-card" style="padding:14px 16px; border-radius:14px; background:linear-gradient(135deg,rgba(255,180,80,.12),rgba(180,112,255,.10)); border:1px solid rgba(255,255,255,.06); margin-bottom:16px;">
+          <div style="font-size:13px; color:#e7dcff;">权益总览 · ${escapeHtml(totalHint)}</div>
+          <div style="font-size:15px; font-weight:600; color:#fff; margin-top:6px;">${escapeHtml(activeStatus)}${escapeHtml(expireHint)}</div>
+          <div style="font-size:12px; color:#a99ad4; margin-top:4px;">已发放：会员 ${memberships.length} · 内容包 ${packages.length} · 单条 ${contents.length} · 其他 ${others.length}</div>
+        </div>
+        ${sectionHtml}
+      `;
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">加载权益失败：${zhMsg(err)}</div>`;
+    }
+  }
+
+  async function loadChannels() {
+    const box = $("channelsList");
+    if (!box) return;
+    try {
+      const data = await api(`/api/user/channels`);
+      const items = data?.items || [];
+      if (items.length === 0) {
+        box.innerHTML = `<div class="empty-hint"><h4>暂无可进入的频道</h4><div style="color:#8e7fb0; font-size:12px; margin-top:6px;">完成支付并激活权益后，会在这里列出对应的 Telegram 私密频道。</div></div>`;
+        return;
+      }
+      const kindTagMap = {
+        public: ["免费公开", "rgba(80,200,160,.12)", "#8fe0bd", "rgba(80,200,160,.3)"],
+        membership: ["VIP 会员", "rgba(255,180,80,.10)", "#ffc98a", "rgba(255,180,80,.28)"],
+        package: ["内容包", "rgba(180,112,255,.12)", "#d7b9ff", "rgba(180,112,255,.3)"],
+      };
+      box.innerHTML = items.map((c) => {
+        const tag = kindTagMap[c.kind] || ["频道", "rgba(180,112,255,.10)", "#cfa8ff", "rgba(180,112,255,.26)"];
+        const [tagText, tagBg, tagColor, tagBorder] = tag;
+        let ctaHtml = "";
+        if (!c.available) {
+          const reason = c.reason ? ` title="${escapeHtml(c.reason)}"` : "";
+          ctaHtml = `<button class="btn btn-ghost" disabled${reason}>暂未配置</button>`;
+        } else if (c.accessMode === "public_link" && c.link) {
+          ctaHtml = `<a class="btn btn-primary" href="${escapeHtml(c.link)}" target="_blank" rel="noopener noreferrer">打开公开链接</a>`;
+        } else if (c.accessMode === "invite_link_on_demand" && c.resourceId) {
+          ctaHtml = `<button class="btn btn-primary" data-act="get-access" data-rid="${encodeURIComponent(c.resourceId)}">获取进入链接</button>`;
+        } else {
+          ctaHtml = `<button class="btn btn-ghost" disabled>暂不可用</button>`;
+        }
+        return `
+          <div class="ent-item" data-channel-id="${escapeHtml(c.id)}">
+            <div>
+              <div class="ent-title">${escapeHtml(c.label)}</div>
+              <div class="ent-sub">${escapeHtml(c.subtitle || "")}</div>
+              <div class="ent-badges"><span class="tag" style="background:${tagBg}; color:${tagColor}; border-color:${tagBorder};">${tagText}</span></div>
+            </div>
+            <div>
+              ${ctaHtml}
+            </div>
+          </div>
+        `;
+      }).join("");
+      box.querySelectorAll('button[data-act="get-access"]').forEach((b) => {
+        const rid = (b as HTMLElement).dataset.rid || "";
+        if (!rid) return;
+        (b as HTMLElement).addEventListener("click", () => {
+          if (!ensureTelegramBound("h5_login_required_for_channel_access")) return;
+          try {
+            const w = window.open(`/api/resources/${rid}/access-link`, "_blank", "noopener,noreferrer");
+            if (!w) { location.href = `/api/resources/${rid}/access-link`; }
+          } catch (_) {
+            location.href = `/api/resources/${rid}/access-link`;
+          }
+        });
+      });
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">加载我的频道失败：${zhMsg(err)}</div>`;
+    }
+  }
+
+  async function handleContinueStars(orderNo) {
+    if (!ensureTelegramBound("h5_login_required_for_payment")) return;
+    showView("payDetail");
+    const card = $("activatedCard");
+    if (card) card.style.display = "none";
+    setStatus("processing", "检查 Stars 续付条件…");
+    const meta = $("orderMeta");
+    if (meta) meta.textContent = "订单号 " + orderNo;
+
+    let resp;
+    try {
+      resp = await api(`/api/orders/${encodeURIComponent(orderNo)}/continue-stars`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+    } catch (err) {
+      if (err.status === 401) {
+        showView("unauth");
+        return;
+      }
+      showError("Stars 续付失败：" + zhMsg(err));
+      return;
+    }
+
+    if (!resp?.ok || !resp?.order?.invoiceLink) {
+      showError("Stars 订单无法续付（订单可能已过期或不是 Stars 支付）：请回到 Telegram Mini App 中重新创建订单。");
+      return;
+    }
+
+    const link = resp.order.invoiceLink;
+    applyOrderData(resp.order);
+    setStep(2);
+    setStatus("warning", "已取得 Stars 发票链接");
+
+    const titleEl = $("payTitle");
+    const subEl = $("paySubtitle");
+    const addrWrap = $("addressWrap");
+    const amountWrap = $("amountWrap");
+    const pollWrap = $("pollingWrap");
+    const stepText = $("paySteps");
+    if (titleEl) titleEl.textContent = "Stars 发票已就绪（H5 无法直接唤起）";
+    if (subEl) subEl.textContent = "请在 Telegram Mini App 内打开本页面，或复制下方链接到 Telegram 内访问以完成支付。";
+    if (stepText) stepText.textContent = "步骤 1 / 2 · 复制链接 → 步骤 2 / 2 · 在 Telegram Mini App 中打开完成支付";
+    if (addrWrap) {
+      addrWrap.style.display = "block";
+      addrWrap.innerHTML = `
+        <div style="margin-bottom:8px; font-size:13px; color:#b9a7e6;">★ Stars 发票链接：</div>
+        <div class="card-row" id="starsLinkRow" style="word-break:break-all; padding:10px 12px; font-size:12px; color:#e8dfff; background:rgba(180,112,255,.08); border:1px solid rgba(180,112,255,.2); border-radius:10px; user-select:text;">${escapeHtml(link)}</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px;">
+          <button class="btn btn-primary" id="btnCopyStarsLink" type="button">📋 复制发票链接</button>
+          <button class="btn btn-ghost" id="btnGotoMiniApp" type="button">📱 打开 Mini App 支付</button>
+        </div>
+        <div style="margin-top:10px; padding:8px 10px; border-radius:8px; background:rgba(255,170,90,.08); border:1px solid rgba(255,170,90,.18); color:#ffc98a; font-size:12px; line-height:1.5;">
+          说明：由于当前是 H5 站外页面，浏览器无法直接调用 Telegram Stars 原生支付弹窗。请回到 Telegram 内，通过 Mini App 或复制上面的链接到 Telegram 对话中打开，即可唤起 Stars 支付。
+        </div>
+      `;
+      const row = $("starsLinkRow");
+      const copyBtn = $("btnCopyStarsLink");
+      const gotoBtn = $("btnGotoMiniApp");
+      if (copyBtn) copyBtn.addEventListener("click", () => { if (copyText(link)) flashBtnEl(copyBtn, "✓ 已复制"); });
+      if (row) row.addEventListener("click", () => { if (copyText(link)) flashBtnEl(copyBtn || row, "✓ 已复制"); });
+      if (gotoBtn) gotoBtn.addEventListener("click", () => {
+        const qs = new URLSearchParams(location.search);
+        qs.set("orderNo", orderNo);
+        location.href = `./index.html?${qs.toString()}#view=orders`;
+      });
+    }
+    if (amountWrap) amountWrap.style.display = "none";
+    if (pollWrap) pollWrap.style.display = "block";
+    startPolling(orderNo);
+  }
+
+  async function handleQueryOrder(orderNo) {
+    showView("payDetail");
+    const card = $("activatedCard");
+    if (card) card.style.display = "none";
+    setStatus("processing", "查询中…");
+    const meta = $("orderMeta");
+    if (meta) meta.textContent = "订单号 " + orderNo;
+    try {
+      const data = await api(`/api/user/orders?page=1&pageSize=100`);
+      const order = (data?.items || []).find((o) => o.orderNo === orderNo);
+      if (!order) {
+        return showError(
+          "未找到该订单（或未登录导致无法读取你的订单）。请回到 Telegram Mini App 中打开本页，或确认订单号正确。",
+        );
+      }
+      applyOrderData(order);
+      if (["pending", "processing"].includes(order.status)) startPolling(orderNo);
+      if (order.status === "paid") {
+        setStep(4);
+        if (card) card.style.display = "block";
+      }
+    } catch (err) {
+      if (err.status === 401) {
+        showView("unauth");
+        return;
+      }
+      showError("查询订单失败：" + zhMsg(err));
+    }
+  }
+
+  async function handleCreateOrder(productId) {
+    if (!ensureTelegramBound("h5_login_required_for_payment")) return;
+    showView("payDetail");
+    const card = $("activatedCard");
+    if (card) card.style.display = "none";
+    setStatus("processing", "创建中…");
+    const meta = $("orderMeta");
+    if (meta) meta.textContent = `商品 ID：${productId}`;
+    try {
+      const created = await api("/api/orders/usdt", {
+        method: "POST",
+        body: JSON.stringify({ productId }),
+      });
+      const order = Object.assign({}, created, {
+        _h5Extra: { address: created.address },
+        usdtPayment: created.usdtPayment || null,
+      });
+      applyOrderData(order);
+      if (order.orderNo) {
+        const qs = new URLSearchParams(location.search);
+        qs.set("orderNo", order.orderNo);
+        history.replaceState(null, "", `${location.pathname}?${qs.toString()}`);
+        $("orderNo").value = order.orderNo;
+      }
+      if (["pending", "processing"].includes(order.status || "pending")) {
+        startPolling(created.orderNo);
+      }
+      if (order.status === "paid") {
+        setStep(4);
+        if (card) card.style.display = "block";
+      }
+    } catch (err) {
+      if (err.status === 401) {
+        showView("unauth");
+        return;
+      }
+      showError("创建 USDT 支付订单失败：" + zhMsg(err));
+    }
+  }
+
+  function flashBtnEl(btn, txt) {
+    if (!btn) return;
+    const old = btn.textContent;
+    btn.textContent = txt;
+    setTimeout(() => (btn.textContent = old), 1500);
+  }
+  function flashBtnById(id, txt) {
+    flashBtnEl($(id), txt);
+  }
+
+  function bindCopyAndNav() {
+    const addr = $("addrText");
+    function copyAddrFn() {
+      if (copyText(lastAddress || (addr && addr.textContent) || "")) {
+        flashBtnById("btnCopyAddr", "✓ 已复制");
+      }
+    }
+    function copyAmountFn() {
+      const amtEl = document.getElementById("payAmount");
+      const t = amtEl?.innerText?.replace(/[^0-9.]/g, "") || "";
+      if (!t) return;
+      if (copyText(t)) flashBtnById("btnCopyAmount", "✓ 已复制");
+    }
+    if (addr) addr.addEventListener("click", copyAddrFn);
+    $("btnCopyAddr")?.addEventListener("click", copyAddrFn);
+    $("btnCopyAmount")?.addEventListener("click", copyAmountFn);
+    $("copyAmountBtn")?.addEventListener("click", copyAmountFn);
+
+    $("btnRefreshStatus")?.addEventListener("click", () => {
+      const qs = new URLSearchParams(location.search);
+      const on = qs.get("orderNo") || ($("orderNo") && $("orderNo").value.trim());
+      if (on) handleQueryOrder(on);
+    });
+
+    $("btnBackProfile")?.addEventListener("click", () => {
+      stopPolling();
+      showView("orders");
+    });
+    $("btnBackMiniApp")?.addEventListener("click", () => {
+      location.href = "./index.html#view=entitlements";
+    });
+  }
+
+  function bindTabBar() {
+    const bar = $("tabBar");
+    if (!bar) return;
+    bar.querySelectorAll(".t").forEach((t) => {
+      t.addEventListener("click", () => {
+        const tab = t.dataset.tab;
+        if (tab === "orders") showView("orders");
+        else if (tab === "entitlements") { showView("entitlements"); loadEntitlements().catch(() => {}); }
+        else if (tab === "channels") { showView("channels"); loadChannels().catch(() => {}); }
+        else if (tab === "pay") {
+          const qs = new URLSearchParams(location.search);
+          const on = qs.get("orderNo") || ($("orderNo") && $("orderNo").value.trim());
+          if (on) handleQueryOrder(on);
+          else showView("payDetail");
+        }
+      });
+    });
+  }
+
+  function bindQuickActions() {
+    $("btnCreateOrder")?.addEventListener("click", () => {
+      const p = ($("productId") && $("productId").value.trim()) || "";
+      if (!p) {
+        showError("请先填写产品 ID。");
+        return;
+      }
+      handleCreateOrder(p);
+    });
+    $("btnGotoOrder")?.addEventListener("click", () => {
+      const on = ($("orderNo") && $("orderNo").value.trim()) || "";
+      if (!on) {
+        showError("请先填写订单号。");
+        return;
+      }
+      handleQueryOrder(on);
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", async () => {
+    bindCopyAndNav();
+    bindTabBar();
+    bindQuickActions();
+    await boot();
+  });
+})();

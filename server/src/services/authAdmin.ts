@@ -13,6 +13,7 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "homepage:edit",
     "user:view",
     "entitlement:view",
+    "dashboard:view",
   ],
   finance: [
     "order:view",
@@ -22,6 +23,7 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "finance.view",
     "finance.manage_pools",
     "entitlement:view",
+    "dashboard:view",
   ],
   customer_service: [
     "user:view",
@@ -29,6 +31,7 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "order:view",
     "entitlement:view",
     "entitlement:resend_invite",
+    "entitlement:retry_removal",
     "ticket:view",
     "ticket:assign_self",
     "ticket:note",
@@ -46,6 +49,7 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "homepage:publish",
     "entitlement:view",
     "ticket:view",
+    "dashboard:view",
   ],
   auditor: [
     "content:view",
@@ -56,6 +60,7 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "entitlement:view",
     "audit:view",
     "ticket:view",
+    "dashboard:view",
   ],
 };
 

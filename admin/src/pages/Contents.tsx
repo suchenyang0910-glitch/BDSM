@@ -15,26 +15,169 @@ import {
   message,
   Modal,
   DatePicker,
+  Alert,
+  Tooltip,
+  Segmented,
+  Upload,
+  Progress,
+  Checkbox,
+  Tabs,
+  Badge,
 } from "antd";
-import { PlusOutlined, EditOutlined, SendOutlined, UpCircleOutlined, DownCircleOutlined } from "@ant-design/icons";
+import type { UploadProps } from "antd";
+import {
+  PlusOutlined,
+  EditOutlined,
+  SendOutlined,
+  UpCircleOutlined,
+  DownCircleOutlined,
+  InfoCircleOutlined,
+  UploadOutlined,
+  ReloadOutlined,
+  CloseCircleOutlined,
+  CheckCircleTwoTone,
+  ExclamationCircleTwoTone,
+  ClockCircleOutlined,
+} from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import {
+import http, {
   listAdminContents,
+  getAdminContent,
   createAdminContent,
   updateAdminContent,
   submitContentForReview,
   publishAdminContent,
   unpublishAdminContent,
   listAdminCategories,
+  listAdminPackages,
   adminMe,
+  listFreeChannels,
+  registerTelegramPublishContent,
   errMsg,
 } from "../api/client";
-import type { ContentItem, ContentStatus, CategoryItem, AdminMe } from "../api/types";
+import type {
+  ContentItem,
+  ContentStatus,
+  CategoryItem,
+  AdminMe,
+  AdminPackageItem,
+  FreeChannelOption,
+  RegisterTelegramPublishResult,
+} from "../api/types";
 
 const { Title } = Typography;
 const { TextArea } = Input;
 const { Option } = Select;
+
+// ================== 新增类型：素材 & 发布任务 ==================
+export type MediaAssetKind = "cover_image" | "preview_video" | "full_video";
+export type MediaAssetStatus = "pending_upload" | "uploading" | "ready" | "failed" | "deleted";
+
+export type MediaAssetItem = {
+  id: string;
+  kind: MediaAssetKind;
+  originalFilename: string;
+  mimeType: string;
+  contentLength: number;
+  status: MediaAssetStatus;
+  storagePublicUrl?: string | null;
+  durationSeconds?: number | null;
+  widthPixels?: number | null;
+  heightPixels?: number | null;
+  hasWatermark?: boolean | null;
+  lastErrorClass?: string | null;
+  lastErrorNote?: string | null;
+  lastVerifiedAt?: string | null;
+  createdAt?: string;
+};
+
+export type TelegramPublishJobStatus =
+  | "queued" | "processing" | "sent" | "failed"
+  | "retried_exhausted" | "cancelled" | "race_locked_by_another_worker";
+
+export type TelegramPublishJobItem = {
+  id: string;
+  contentId: string;
+  packageId?: string | null;
+  channelKind: "public_free_preview" | "membership_full" | "package_full";
+  targetFreeChannelCode?: string | null;
+  targetChatMasked?: string | null;
+  status: TelegramPublishJobStatus;
+  attempt: number;
+  maxAttempts: number;
+  telegramMessageId?: string | null;
+  telegramMethod?: string | null;
+  lastErrorClass?: string | null;
+  lastErrorNote?: string | null;
+  lastAttemptedAt?: string | null;
+  nextRetryAt?: string | null;
+  sentAt?: string | null;
+  cancelledAt?: string | null;
+  createdAt: string;
+  mediaAsset?: MediaAssetItem | null;
+  admin?: { id: string; displayName?: string | null; email?: string } | null;
+  cancelledByAdmin?: { id: string; displayName?: string | null; email?: string } | null;
+};
+
+// ================== 新增素材 & 发布 API 封装 ==================
+type InitMediaUploadReq = {
+  kind: MediaAssetKind;
+  originalFilename: string;
+  mimeType: string;
+  contentLength: number;
+  expectedChecksumSha256?: string | null;
+};
+type InitMediaUploadResp = {
+  ok: true;
+  mediaAsset: MediaAssetItem;
+  uploadUrl: string;
+  expectedHttpHeaders: Record<string, string>;
+};
+type CompleteMediaUploadReq = { ok: boolean; reportedLength?: number | null; etag?: string | null; errorNote?: string | null };
+type StartTelegramPublishReq = { channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">; reason?: string };
+type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }> };
+
+export async function initMediaUpload(req: InitMediaUploadReq): Promise<InitMediaUploadResp> {
+  const res = await http.post("/admin/media/init-upload", req, { timeout: 20_000 });
+  return res.data;
+}
+export async function completeMediaUpload(id: string, req: CompleteMediaUploadReq): Promise<{ ok: true; mediaAsset: MediaAssetItem }> {
+  const res = await http.post(`/admin/media/${encodeURIComponent(id)}/complete`, req, { timeout: 30_000 });
+  return res.data;
+}
+export async function getMediaAsset(id: string): Promise<{ ok: true; mediaAsset: MediaAssetItem }> {
+  const res = await http.get(`/admin/media/${encodeURIComponent(id)}`);
+  return res.data;
+}
+export async function startTelegramPublish(contentId: string, req: StartTelegramPublishReq): Promise<StartTelegramPublishResp> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/start-telegram-publish`, req, { timeout: 40_000 });
+  return res.data;
+}
+export async function listTelegramPublishJobs(contentId: string): Promise<{ ok: true; items: TelegramPublishJobItem[] }> {
+  const res = await http.get(`/admin/contents/${encodeURIComponent(contentId)}/publish-jobs`);
+  return res.data;
+}
+export async function cancelTelegramPublishJob(jobId: string, reason?: string): Promise<{ ok: true; id: string; status: TelegramPublishJobStatus; cancelledAt?: string }> {
+  const res = await http.post(`/admin/telegram-publish-jobs/${encodeURIComponent(jobId)}/cancel`, { reason: reason || "运营手动取消" });
+  return res.data;
+}
+
+const CHANNEL_KIND_LABEL: Record<TelegramPublishJobItem["channelKind"], { label: string; color: string }> = {
+  public_free_preview: { label: "免费频道试看", color: "blue" },
+  membership_full: { label: "会员主频道完整", color: "purple" },
+  package_full: { label: "内容包独立频道完整", color: "geekblue" },
+};
+
+const PUBLISH_JOB_STATUS_TAG: Record<TelegramPublishJobStatus, { label: string; color: string }> = {
+  queued: { label: "排队中", color: "default" },
+  processing: { label: "发送中", color: "processing" },
+  sent: { label: "已发送", color: "green" },
+  failed: { label: "失败（可重试）", color: "orange" },
+  retried_exhausted: { label: "重试耗尽", color: "red" },
+  cancelled: { label: "已取消", color: "grey" },
+  race_locked_by_another_worker: { label: "并发锁冲突（稍后重试）", color: "warning" },
+};
 
 const STATUS_TAG: Record<ContentStatus, { color: string; label: string }> = {
   draft: { color: "default", label: "草稿" },
@@ -46,10 +189,12 @@ const STATUS_TAG: Record<ContentStatus, { color: string; label: string }> = {
 
 const ACCESS_TYPE_OPTIONS = [
   { value: "public", label: "公开免费" },
-  { value: "single", label: "单篇购买" },
   { value: "membership", label: "会员专享" },
   { value: "package", label: "打包内含" },
 ];
+
+type AccessTypeForSelect = "public" | "membership" | "package" | "single";
+type OpsTagFilter = "recommended" | "featured" | "new" | undefined;
 
 const ContentsPage: React.FC = () => {
   const [rows, setRows] = React.useState<ContentItem[]>([]);
@@ -58,6 +203,8 @@ const ContentsPage: React.FC = () => {
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(10);
   const [statusFilter, setStatusFilter] = React.useState<ContentStatus | undefined>();
+  const [accessTypeFilter, setAccessTypeFilter] = React.useState<string | undefined>();
+  const [opsTagFilter, setOpsTagFilter] = React.useState<OpsTagFilter>();
   const [q, setQ] = React.useState("");
 
   const [drawerOpen, setDrawerOpen] = React.useState(false);
@@ -66,7 +213,35 @@ const ContentsPage: React.FC = () => {
   const [submitting, setSubmitting] = React.useState(false);
 
   const [categories, setCategories] = React.useState<CategoryItem[]>([]);
+  const [packages, setPackages] = React.useState<AdminPackageItem[]>([]);
+  const [freeChannels, setFreeChannels] = React.useState<FreeChannelOption[]>([]);
   const [me, setMe] = React.useState<AdminMe | null>(null);
+  const [publishingTg, setPublishingTg] = React.useState(false);
+  const [registerForm] = Form.useForm();
+  const [lastPublishResult, setLastPublishResult] = React.useState<RegisterTelegramPublishResult | null>(null);
+
+  // ================== 素材上传 state ==================
+  const [coverAssetId, setCoverAssetId] = React.useState<string | null>(null);
+  const [coverAsset, setCoverAsset] = React.useState<MediaAssetItem | null>(null);
+  const [coverProgress, setCoverProgress] = React.useState<number>(0);
+  const [coverUploading, setCoverUploading] = React.useState(false);
+
+  const [previewAssetId, setPreviewAssetId] = React.useState<string | null>(null);
+  const [previewAsset, setPreviewAsset] = React.useState<MediaAssetItem | null>(null);
+  const [previewProgress, setPreviewProgress] = React.useState<number>(0);
+  const [previewUploading, setPreviewUploading] = React.useState(false);
+
+  const [fullVideoAssetId, setFullVideoAssetId] = React.useState<string | null>(null);
+  const [fullVideoAsset, setFullVideoAsset] = React.useState<MediaAssetItem | null>(null);
+  const [fullVideoProgress, setFullVideoProgress] = React.useState<number>(0);
+  const [fullVideoUploading, setFullVideoUploading] = React.useState(false);
+
+  // ================== 发布任务 state ==================
+  const [channelKinds, setChannelKinds] = React.useState<Array<TelegramPublishJobItem["channelKind"]>>([]);
+  const [publishJobs, setPublishJobs] = React.useState<TelegramPublishJobItem[]>([]);
+  const [publishJobsLoading, setPublishJobsLoading] = React.useState(false);
+  const [startPublishing, setStartPublishing] = React.useState(false);
+  const [publishJobsRefreshTimer, setPublishJobsRefreshTimer] = React.useState<number | null>(null);
 
   const fetchList = React.useCallback(async () => {
     setLoading(true);
@@ -75,6 +250,7 @@ const ContentsPage: React.FC = () => {
         page,
         limit: pageSize,
         status: statusFilter,
+        accessType: accessTypeFilter,
         q: q || undefined,
       });
       setRows(resp.data);
@@ -84,7 +260,7 @@ const ContentsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, statusFilter, q]);
+  }, [page, pageSize, statusFilter, accessTypeFilter, q]);
 
   React.useEffect(() => {
     fetchList();
@@ -92,8 +268,24 @@ const ContentsPage: React.FC = () => {
 
   React.useEffect(() => {
     listAdminCategories().then((r) => setCategories(r.data)).catch(() => {});
+    listAdminPackages().then((r) => setPackages(r.data)).catch(() => {});
+    listFreeChannels().then((r) => setFreeChannels(r.data)).catch(() => {});
     adminMe().then(setMe).catch(() => {});
   }, []);
+
+  const accessTypeValue = Form.useWatch("accessType", form);
+  const packageIdValue = Form.useWatch("packageId", form);
+  const freeChannelCodeValue = Form.useWatch("freeChannelCode", form);
+
+  const selectedPackage = React.useMemo(
+    () => packages.find((p) => p.id === packageIdValue) || null,
+    [packages, packageIdValue],
+  );
+
+  const publishablePackages = React.useMemo(
+    () => packages.filter((p) => p.status === "published" && p.channelConfigured && p.productActive),
+    [packages],
+  );
 
   const canPublish = React.useMemo(() => {
     if (!me) return false;
@@ -105,11 +297,136 @@ const ContentsPage: React.FC = () => {
     return ["super_admin", "operator", "editor"].includes(me.role);
   }, [me]);
 
+  const displayRows = React.useMemo(() => {
+    if (!opsTagFilter) return rows;
+    return rows.filter((r) => {
+      if (opsTagFilter === "recommended") return r.isRecommended;
+      if (opsTagFilter === "featured") return r.isFeatured;
+      if (opsTagFilter === "new") return r.isNewArrival;
+      return true;
+    });
+  }, [rows, opsTagFilter]);
+
+  const prePublishChecklist = React.useMemo(() => {
+    const title: string | undefined = form.getFieldValue("title");
+    const categoryIds: string[] | undefined = form.getFieldValue("categoryIds");
+    const durationSeconds: number | undefined = form.getFieldValue("durationSeconds");
+    const checks: Array<{ key: string; label: string; passed: boolean; detail?: string }> = [];
+    checks.push({
+      key: "title",
+      label: "标题已填",
+      passed: !!(title && title.trim().length > 0),
+      detail: !title ? "请输入 1-200 字的标题" : undefined,
+    });
+    checks.push({
+      key: "accessType",
+      label: "访问类型合法",
+      passed: accessTypeValue === "public" || accessTypeValue === "membership" || accessTypeValue === "package",
+      detail: accessTypeValue === "single" ? "single（单篇购买）首期不支持，需改为 membership 或 package" : undefined,
+    });
+    checks.push({
+      key: "categories",
+      label: "已关联分类",
+      passed: Array.isArray(categoryIds) && categoryIds.length > 0,
+      detail: "建议至少关联 1 个分类，保证 Mini App 列表可见",
+    });
+    checks.push({
+      key: "duration",
+      label: "内容时长已填",
+      passed: typeof durationSeconds === "number" && durationSeconds > 0,
+      detail: "时长将在列表展示为「X分Y秒」",
+    });
+    if (accessTypeValue === "public") {
+      const fccOk =
+        typeof freeChannelCodeValue === "string" &&
+        freeChannelCodeValue.length > 0 &&
+        freeChannels.some((f) => f.code === freeChannelCodeValue);
+      checks.push({
+        key: "freeChannelCode",
+        label: "公开内容已选择免费频道",
+        passed: fccOk,
+        detail: !freeChannelCodeValue
+          ? "请选择免费频道白名单（由服务端受控，不可自填）"
+          : !freeChannels.some((f) => f.code === freeChannelCodeValue)
+            ? "所选 freeChannelCode 不在当前白名单中，请刷新或更换"
+            : undefined,
+      });
+    }
+    if (accessTypeValue === "package") {
+      const pkgOk =
+        !!selectedPackage &&
+        selectedPackage.status === "published" &&
+        selectedPackage.channelConfigured &&
+        selectedPackage.productActive;
+      checks.push({
+        key: "pkg",
+        label: "已绑定可交付内容包",
+        passed: pkgOk,
+        detail: !selectedPackage
+          ? "请选择内容包；需满足：已发布 + 已配置受控频道 + 对应商品已启用"
+          : `当前包 ${selectedPackage.title}：status=${selectedPackage.status} / channelConfigured=${selectedPackage.channelConfigured} / productActive=${selectedPackage.productActive}`,
+      });
+    }
+    return checks;
+  }, [accessTypeValue, selectedPackage, form, freeChannelCodeValue, freeChannels]);
+
+  const prePublishAllPassed = React.useMemo(
+    () => prePublishChecklist.every((c) => c.passed),
+    [prePublishChecklist],
+  );
+
+  // 刷新内容发布任务列表
+  const refreshPublishJobs = React.useCallback(async (contentId: string) => {
+    try {
+      setPublishJobsLoading(true);
+      const r = await listTelegramPublishJobs(contentId);
+      setPublishJobs(r.items || []);
+    } catch (e) {
+      // 失败不阻挡操作
+      setPublishJobs([]);
+    } finally {
+      setPublishJobsLoading(false);
+    }
+  }, []);
+
+  // Drawer 打开后启动定时刷新 publish-jobs（后台异步发送任务 8s 轮询一次 UI）
+  React.useEffect(() => {
+    if (drawerOpen && editing?.id) {
+      refreshPublishJobs(editing.id);
+      if (publishJobsRefreshTimer) window.clearInterval(publishJobsRefreshTimer);
+      const timer = window.setInterval(() => {
+        refreshPublishJobs(editing.id);
+      }, 8000);
+      setPublishJobsRefreshTimer(timer);
+    } else {
+      if (publishJobsRefreshTimer) {
+        window.clearInterval(publishJobsRefreshTimer);
+        setPublishJobsRefreshTimer(null);
+      }
+      setPublishJobs([]);
+    }
+    return () => {
+      if (publishJobsRefreshTimer) {
+        window.clearInterval(publishJobsRefreshTimer);
+      }
+    };
+  }, [drawerOpen, editing?.id, refreshPublishJobs]);
+
+  const resetMediaState = React.useCallback(() => {
+    setCoverAssetId(null); setCoverAsset(null); setCoverProgress(0); setCoverUploading(false);
+    setPreviewAssetId(null); setPreviewAsset(null); setPreviewProgress(0); setPreviewUploading(false);
+    setFullVideoAssetId(null); setFullVideoAsset(null); setFullVideoProgress(0); setFullVideoUploading(false);
+  }, []);
+
   const openCreate = () => {
     setEditing(null);
+    setChannelKinds([]);
+    resetMediaState();
     form.resetFields();
+    registerForm.resetFields();
+    setLastPublishResult(null);
     form.setFieldsValue({
-      accessType: "public",
+      accessType: "public" as AccessTypeForSelect,
       status: "draft",
       sortOrder: 0,
       isRecommended: false,
@@ -117,12 +434,23 @@ const ContentsPage: React.FC = () => {
       isNewArrival: false,
       tags: [],
       categoryIds: [],
+      freeChannelCode: freeChannels[0]?.code ?? null,
     });
     setDrawerOpen(true);
   };
 
   const openEdit = (row: ContentItem) => {
     setEditing(row);
+    resetMediaState();
+    setChannelKinds([]);
+    registerForm.resetFields();
+    setLastPublishResult(null);
+    // 默认勾选与 accessType 匹配的 channel kinds
+    const defaultKinds: Array<TelegramPublishJobItem["channelKind"]> = [];
+    if (row.accessType === "public") defaultKinds.push("public_free_preview");
+    if (row.accessType === "membership") { defaultKinds.push("public_free_preview"); defaultKinds.push("membership_full"); }
+    if (row.accessType === "package") { defaultKinds.push("public_free_preview"); defaultKinds.push("package_full"); }
+    setChannelKinds(defaultKinds);
     form.setFieldsValue({
       title: row.title,
       description: row.description,
@@ -130,7 +458,7 @@ const ContentsPage: React.FC = () => {
       thumbnailUrl: row.thumbnailUrl,
       previewUrl: row.previewUrl,
       durationSeconds: row.durationSeconds,
-      accessType: row.accessType,
+      accessType: row.accessType as AccessTypeForSelect,
       sortOrder: row.sortOrder,
       isRecommended: row.isRecommended,
       isFeatured: row.isFeatured,
@@ -141,16 +469,107 @@ const ContentsPage: React.FC = () => {
       recommendStartsAt: row.recommendStartsAt ? dayjs(row.recommendStartsAt) : null,
       recommendEndsAt: row.recommendEndsAt ? dayjs(row.recommendEndsAt) : null,
       scheduledAt: row.scheduledAt ? dayjs(row.scheduledAt) : null,
-      channelId: row.channelId,
       productId: row.productId,
       packageId: row.packageId,
+      freeChannelCode: row.freeChannelCode,
     });
+    // 拉取素材 FK 关联（若服务端返回了 coverAsset/previewAsset/fullVideoAsset，后续 getAdminContent 可能补充；这里先简单只拿已存在 FK，若已建 assetId，则刷新状态）
+    const rawAny = row as any;
+    const caId = rawAny.coverAssetId || rawAny.cover_asset_id || null;
+    const paId = rawAny.previewAssetId || rawAny.preview_asset_id || null;
+    const faId = rawAny.fullVideoAssetId || rawAny.full_video_asset_id || null;
+    if (caId) { setCoverAssetId(caId); getMediaAsset(caId).then(r => setCoverAsset(r.mediaAsset)).catch(() => {}); }
+    if (paId) { setPreviewAssetId(paId); getMediaAsset(paId).then(r => setPreviewAsset(r.mediaAsset)).catch(() => {}); }
+    if (faId) { setFullVideoAssetId(faId); getMediaAsset(faId).then(r => setFullVideoAsset(r.mediaAsset)).catch(() => {}); }
     setDrawerOpen(true);
   };
+
+  // ================== 自定义：浏览器直传对象存储（不经过 Web 服务器） ==================
+  const doDirectUpload = React.useCallback(async (
+    file: File,
+    kind: MediaAssetKind,
+    setters: {
+      setAssetId: (id: string | null) => void;
+      setAsset: (a: MediaAssetItem | null) => void;
+      setProgress: (n: number) => void;
+      setUploading: (b: boolean) => void;
+    },
+    hardMaxBytes: number,
+  ) => {
+    if (!canEdit) {
+      message.error("当前角色无 content:edit 权限，不能上传素材");
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size > hardMaxBytes) {
+      const mb = hardMaxBytes >= 1024 * 1024 * 1024 ? `${(hardMaxBytes / 1024 / 1024 / 1024).toFixed(1)}GB` : `${Math.round(hardMaxBytes / 1024 / 1024)}MB`;
+      message.error(`文件超过最大限制（${mb}）`);
+      return Upload.LIST_IGNORE;
+    }
+    setters.setProgress(0);
+    setters.setUploading(true);
+    try {
+      // Step 1: init-upload 拿预签名 PUT URL + 事务内写 mediaAsset
+      const init = await initMediaUpload({
+        kind,
+        originalFilename: file.name,
+        mimeType: file.type || "application/octet-stream",
+        contentLength: file.size,
+      });
+      setters.setAssetId(init.mediaAsset.id);
+      setters.setAsset(init.mediaAsset);
+      // Step 2: XHR PUT 到对象存储（支持 onprogress）
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", init.uploadUrl, true);
+        Object.entries(init.expectedHttpHeaders || {}).forEach(([k, v]) => {
+          try { xhr.setRequestHeader(k, v); } catch {}
+        });
+        xhr.upload.onprogress = (evt) => {
+          if (evt.lengthComputable && evt.total > 0) {
+            setters.setProgress(Math.min(99, Math.round((evt.loaded / evt.total) * 100)));
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) { resolve(); }
+          else { reject(new Error(`HTTP ${xhr.status} ${xhr.statusText || ""}`)); }
+        };
+        xhr.onerror = () => reject(new Error("网络错误：上传到对象存储失败"));
+        xhr.onabort = () => reject(new Error("上传已取消"));
+        xhr.send(file);
+      });
+      setters.setProgress(100);
+      // Step 3: 调 complete 让服务端 HeadObject 校验
+      const comp = await completeMediaUpload(init.mediaAsset.id, { ok: true, reportedLength: file.size, etag: "" });
+      setters.setAsset(comp.mediaAsset);
+      if (comp.mediaAsset.status !== "ready") {
+        message.error(`对象存储校验失败：${comp.mediaAsset.lastErrorClass || comp.mediaAsset.status}${comp.mediaAsset.lastErrorNote ? `（${comp.mediaAsset.lastErrorNote}）` : ""}`);
+      } else {
+        message.success(`${kind === "cover_image" ? "封面" : kind === "preview_video" ? "试看视频" : "完整视频"}上传完成`);
+      }
+    } catch (e) {
+      setters.setProgress(0);
+      const id = coverAssetId || previewAssetId || fullVideoAssetId;
+      if (id) {
+        try {
+          const comp = await completeMediaUpload(id, { ok: false, errorNote: e instanceof Error ? e.message.slice(0, 180) : "upload_aborted" });
+          setters.setAsset(comp.mediaAsset);
+        } catch {}
+      }
+      message.error(errMsg(e, kind === "cover_image" ? "封面上传失败" : kind === "preview_video" ? "试看上传失败" : "完整视频上传失败"));
+    } finally {
+      setters.setUploading(false);
+    }
+    return Upload.LIST_IGNORE;
+  }, [canEdit, coverAssetId, previewAssetId, fullVideoAssetId]);
 
   const onDrawerSubmit = async () => {
     try {
       const values = await form.validateFields();
+      const at: AccessTypeForSelect = values.accessType;
+      if (at === "single") {
+        message.error("单篇购买（single）首期不支持新建或编辑，请改为会员专享或内容包内含");
+        return;
+      }
       setSubmitting(true);
       const payload: any = {
         ...values,
@@ -159,11 +578,17 @@ const ContentsPage: React.FC = () => {
         recommendStartsAt: values.recommendStartsAt ? values.recommendStartsAt.toISOString() : null,
         recommendEndsAt: values.recommendEndsAt ? values.recommendEndsAt.toISOString() : null,
         scheduledAt: values.scheduledAt ? values.scheduledAt.toISOString() : null,
+        coverAssetId: coverAssetId ?? undefined,
+        previewAssetId: previewAssetId ?? undefined,
+        fullVideoAssetId: fullVideoAssetId ?? undefined,
         reason: editing ? `编辑内容：${editing.title}` : `新建内容：${values.title}`,
       };
       if (editing) {
         await updateAdminContent(editing.id, payload);
         message.success("内容已更新");
+        const refreshed = await getAdminContent(editing.id);
+        setEditing(refreshed);
+        refreshPublishJobs(editing.id);
       } else {
         await createAdminContent(payload);
         message.success("内容已创建");
@@ -176,6 +601,64 @@ const ContentsPage: React.FC = () => {
       setSubmitting(false);
     }
   };
+
+  const onRegisterTelegramPublish = async () => {
+    if (!editing?.id) return;
+    try {
+      const vals = await registerForm.validateFields();
+      setPublishingTg(true);
+      const midRaw = vals.telegramMessageId;
+      const mid = typeof midRaw === "number" ? String(midRaw) : String(midRaw || "").trim();
+      const result = await registerTelegramPublishContent(editing.id, {
+        telegramMessageId: mid,
+        telegramChatFingerprint: vals.telegramChatFingerprint ? String(vals.telegramChatFingerprint).trim() : null,
+        freeChannelCode: vals.freeChannelCode ? String(vals.freeChannelCode).trim() : null,
+        videoFileIdRemark: vals.videoFileIdRemark ? String(vals.videoFileIdRemark).trim() : null,
+        caption: vals.caption ?? null,
+        reason: vals.reason?.trim() || `后台登记 Telegram 已发布视频（messageId=${mid}）`,
+      });
+      setLastPublishResult(result);
+      if (!result.ok) {
+        message.error("登记失败：请检查字段合法性或查看服务端结构化事件日志");
+      } else {
+        message.success(
+          `已完成人工登记 · 未由系统校验视频是否实际发布在目标频道（${result.channelLabel || "目标频道"}，messageId=${result.messageId}）`,
+        );
+        const refreshed = await getAdminContent(editing.id);
+        setEditing(refreshed);
+        fetchList();
+      }
+    } catch (e) {
+      message.error(errMsg(e, "登记 Telegram 已发布视频失败"));
+    } finally {
+      setPublishingTg(false);
+    }
+  };
+
+  const publishedTelegramCard = React.useMemo(() => {
+    if (!editing) return null;
+    const m = editing.telegramMessageId;
+    const t = editing.telegramSentAt;
+    const fp = editing.telegramChatFingerprint;
+    if (!m && !t && !fp) return null;
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message={m ? "已人工登记 Telegram 消息 ID（未由系统校验视频是否实际发布在目标频道）" : "该内容已关联过 Telegram 发布上下文（未校验）"}
+        description={
+          <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
+            <Space size={4} style={{ marginBottom: 4 }}>
+              <Tag color="orange">人工登记 · 未校验</Tag>
+            </Space>
+            {m && <span>· 运营声明的 messageId：{m}</span>}
+            {t && <span>· 登记时间（运营声明）：{dayjs(t).format("YYYY-MM-DD HH:mm:ss")}</span>}
+            {fp && <span>· 频道指纹（chatFingerprint，用于审计比对，不可逆）：{fp}</span>}
+          </Space>
+        }
+      />
+    );
+  }, [editing]);
 
   const confirmSubmitReview = (row: ContentItem) => {
     Modal.confirm({
@@ -196,13 +679,28 @@ const ContentsPage: React.FC = () => {
   };
 
   const confirmPublish = (row: ContentItem) => {
+    const extraWarnings: string[] = [];
+    if (row.accessType === "single") {
+      extraWarnings.push("· 该内容为 single（单篇购买），首期已禁止发布此类型");
+    }
+    if (row.accessType === "package") {
+      if (!row.packageId) extraWarnings.push("· package 类型未绑定内容包");
+    }
     Modal.confirm({
       title: "发布内容",
-      content: `确定发布「${row.title}」？发布后 Mini App 用户立即可见。`,
+      content: (
+        <Space direction="vertical" size={12}>
+          <span>确定发布「{row.title}」？发布后 Mini App 用户立即可见。</span>
+          {extraWarnings.length > 0 && (
+            <Alert type="error" showIcon message="发布前检查未通过" description={extraWarnings.map((t, i) => <div key={i}>{t}</div>)} />
+          )}
+        </Space>
+      ),
       okText: "发布",
-      okButtonProps: { danger: true },
+      okButtonProps: { danger: true, disabled: extraWarnings.length > 0 },
       cancelText: "取消",
       onOk: async () => {
+        if (extraWarnings.length > 0) return;
         try {
           await publishAdminContent(row.id, "管理员发布内容");
           message.success("已发布");
@@ -230,6 +728,32 @@ const ContentsPage: React.FC = () => {
         }
       },
     });
+  };
+
+  const renderAccessTypeTag = (v: string) => {
+    if (v === "single") {
+      return <Tag color="red">单篇购买 · 旧数据（不支持新建）</Tag>;
+    }
+    const m = ACCESS_TYPE_OPTIONS.find((o) => o.value === v);
+    return <Tag color="blue">{m ? m.label : v}</Tag>;
+  };
+
+  const renderPackageConfigBadge = () => {
+    if (accessTypeValue !== "package") return null;
+    if (!packageIdValue) {
+      return <Alert type="warning" showIcon icon={<InfoCircleOutlined />} message="请选择所属内容包（必填）" />;
+    }
+    if (!selectedPackage) {
+      return <Alert type="error" showIcon message="内容包不存在" />;
+    }
+    const issues: string[] = [];
+    if (selectedPackage.status !== "published") issues.push("· 内容包未发布");
+    if (!selectedPackage.channelConfigured) issues.push("· 内容包未配置交付频道（需服务端完成受控映射）");
+    if (!selectedPackage.productActive) issues.push("· 内容包对应商品未启用");
+    if (issues.length === 0) {
+      return <Alert type="success" showIcon message={`已绑定：${selectedPackage.title}（可交付）`} />;
+    }
+    return <Alert type="error" showIcon message={`${selectedPackage.title} 暂不可交付`} description={issues.map((t, i) => <div key={i}>{t}</div>)} />;
   };
 
   const columns: ColumnsType<ContentItem> = [
@@ -266,11 +790,20 @@ const ContentsPage: React.FC = () => {
       title: "访问类型",
       dataIndex: "accessType",
       key: "accessType",
-      width: 100,
-      render: (v: string) => {
-        const m = ACCESS_TYPE_OPTIONS.find((o) => o.value === v);
-        return m ? m.label : v;
-      },
+      width: 180,
+      render: (v: string) => renderAccessTypeTag(v),
+    },
+    {
+      title: "关联包/商品",
+      key: "refs",
+      width: 220,
+      render: (_: any, r) => (
+        <Space size={4} wrap>
+          {r.package?.title && <Tag color="geekblue">包：{r.package.title}</Tag>}
+          {r.product?.title && <Tag color="purple">商品：{r.product.title}</Tag>}
+          {!r.package?.title && !r.product?.title && r.accessType !== "public" && <Tag color="default">未绑定</Tag>}
+        </Space>
+      ),
     },
     {
       title: "状态",
@@ -327,12 +860,17 @@ const ContentsPage: React.FC = () => {
           <Button
             size="small"
             icon={<EditOutlined />}
-            disabled={!canEdit}
+            disabled={!canEdit || r.accessType === "single"}
             onClick={() => openEdit(r)}
           >
             编辑
           </Button>
-          {r.status === "draft" && canEdit && (
+          {r.accessType === "single" && (
+            <Tooltip title="single 类型首期不支持，请修改 accessType 为 membership 或 package">
+              <Tag color="red">已锁定</Tag>
+            </Tooltip>
+          )}
+          {r.status === "draft" && canEdit && r.accessType !== "single" && (
             <Button
               size="small"
               icon={<SendOutlined />}
@@ -341,7 +879,7 @@ const ContentsPage: React.FC = () => {
               提交审核
             </Button>
           )}
-          {(r.status === "draft" || r.status === "in_review" || r.status === "scheduled") && canPublish && (
+          {(r.status === "draft" || r.status === "in_review" || r.status === "scheduled") && canPublish && r.accessType !== "single" && (
             <Button
               size="small"
               type="primary"
@@ -368,10 +906,24 @@ const ContentsPage: React.FC = () => {
 
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Alert
+        type="info"
+        showIcon
+        icon={<InfoCircleOutlined />}
+        message="内容交付说明（阶段一）"
+        description={
+          <Space direction="vertical" size={4}>
+            <span>· 完整视频由运营手工发布到 Telegram 私密频道，后台只维护内容卡、分类和权益。</span>
+            <span>· 会员内容 → 统一交付至服务端配置的 VIP 会员频道；内容包内容 → 交付到对应包的受控频道；公开内容 → 预览 URL 展示。</span>
+            <span>· 单条售卖（single）首期关闭，避免共享频道造成权益越界。</span>
+          </Space>
+        }
+      />
+
       <Card
         title={<Title level={5} style={{ margin: 0 }}>内容列表</Title>}
         extra={
-          <Space>
+          <Space wrap>
             <Input.Search
               placeholder="搜索标题/描述"
               allowClear
@@ -389,6 +941,28 @@ const ContentsPage: React.FC = () => {
                 <Option key={k} value={k}>{v.label}</Option>
               ))}
             </Select>
+            <Select
+              placeholder="访问类型筛选"
+              allowClear
+              style={{ width: 180 }}
+              value={accessTypeFilter}
+              onChange={(v) => { setAccessTypeFilter(v); setPage(1); }}
+            >
+              {ACCESS_TYPE_OPTIONS.map((o) => (
+                <Option key={o.value} value={o.value}>{o.label}</Option>
+              ))}
+              <Option value="single">单篇购买 · 旧数据</Option>
+            </Select>
+            <Segmented<OpsTagFilter>
+              options={[
+                { label: "全部标签", value: undefined },
+                { label: "推荐", value: "recommended" },
+                { label: "精选", value: "featured" },
+                { label: "新品", value: "new" },
+              ]}
+              value={opsTagFilter}
+              onChange={(v) => setOpsTagFilter(v)}
+            />
             <Button icon={<PlusOutlined />} type="primary" onClick={openCreate} disabled={!canEdit}>
               新建内容
             </Button>
@@ -400,13 +974,13 @@ const ContentsPage: React.FC = () => {
           size="middle"
           loading={loading}
           columns={columns}
-          dataSource={rows}
+          dataSource={displayRows}
           pagination={{
             current: page,
             pageSize,
-            total,
+            total: opsTagFilter ? displayRows.length : total,
             showSizeChanger: true,
-            showTotal: (t) => `共 ${t} 条`,
+            showTotal: (t) => `共 ${t} 条${opsTagFilter ? `（后台原始 ${total} 条，当前按运营标签筛选）` : ""}`,
             onChange: (p, ps) => { setPage(p); setPageSize(ps); },
           }}
         />
@@ -416,7 +990,7 @@ const ContentsPage: React.FC = () => {
         title={editing ? `编辑内容：${editing.title}` : "新建内容"}
         open={drawerOpen}
         onClose={() => !submitting && setDrawerOpen(false)}
-        width={720}
+        width={760}
         destroyOnClose
         extra={
           <Space>
@@ -427,82 +1001,897 @@ const ContentsPage: React.FC = () => {
           </Space>
         }
       >
-        <Form form={form} layout="vertical" preserve={false}>
-          <Form.Item name="title" label="标题" rules={[{ required: true, message: "请输入标题" }]}>
-            <Input placeholder="例如：呼吸与身体扫描入门" maxLength={200} />
-          </Form.Item>
-          <Form.Item name="description" label="描述">
-            <TextArea rows={3} placeholder="在 Mini App 列表展示的简短描述" maxLength={1000} />
-          </Form.Item>
-          <Space size={16} style={{ width: "100%" }}>
-            <Form.Item name="coverUrl" label="封面图 URL" style={{ flex: 1 }}>
-              <Input placeholder="https://..." />
-            </Form.Item>
-            <Form.Item name="thumbnailUrl" label="缩略图 URL" style={{ flex: 1 }}>
-              <Input placeholder="https://..." />
-            </Form.Item>
-          </Space>
-          <Space size={16} style={{ width: "100%" }}>
-            <Form.Item name="accessType" label="访问类型" rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Select options={ACCESS_TYPE_OPTIONS} />
-            </Form.Item>
-            <Form.Item name="durationSeconds" label="时长（秒）" style={{ flex: 1 }}>
-              <InputNumber min={0} style={{ width: "100%" }} placeholder="例如：600" />
-            </Form.Item>
-            <Form.Item name="sortOrder" label="排序值" style={{ flex: 1 }}>
-              <InputNumber style={{ width: "100%" }} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="categoryIds" label="关联分类（可多选）">
-            <Select mode="multiple" placeholder="选择分类">
-              {categories.map((c) => (
-                <Option key={c.id} value={c.id}>{c.name}</Option>
-              ))}
-            </Select>
-          </Form.Item>
-          <Form.Item name="tags" label="标签">
-            <Select mode="tags" placeholder="输入标签后回车" />
-          </Form.Item>
-          <Space size={16} style={{ width: "100%" }} align="start">
-            <Form.Item name="isRecommended" label="推荐位" valuePropName="checked" style={{ marginBottom: 0 }}>
-              <Switch />
-            </Form.Item>
-            <Form.Item name="isFeatured" label="精选位" valuePropName="checked" style={{ marginBottom: 0 }}>
-              <Switch />
-            </Form.Item>
-            <Form.Item name="isNewArrival" label="新品标" valuePropName="checked" style={{ marginBottom: 0 }}>
-              <Switch />
-            </Form.Item>
-            <Form.Item name="featuredSort" label="精选排序" style={{ flex: 1, marginBottom: 0 }}>
-              <InputNumber style={{ width: "100%" }} placeholder="越小越靠前" />
-            </Form.Item>
-          </Space>
-          <Space size={16} style={{ width: "100%" }}>
-            <Form.Item name="recommendStartsAt" label="推荐开始" style={{ flex: 1 }}>
-              <DatePicker showTime style={{ width: "100%" }} />
-            </Form.Item>
-            <Form.Item name="recommendEndsAt" label="推荐结束" style={{ flex: 1 }}>
-              <DatePicker showTime style={{ width: "100%" }} />
-            </Form.Item>
-            <Form.Item name="scheduledAt" label="定时发布" style={{ flex: 1 }}>
-              <DatePicker showTime style={{ width: "100%" }} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="previewUrl" label="试听/预览 URL">
-            <Input placeholder="https://...（公开预览片段）" />
-          </Form.Item>
-          <Space size={16} style={{ width: "100%" }}>
-            <Form.Item name="channelId" label="关联频道 ID" style={{ flex: 1 }}>
-              <Input placeholder="Telegram 频道 ID（如 -100xxxx）" />
-            </Form.Item>
-            <Form.Item name="productId" label="关联产品 ID" style={{ flex: 1 }}>
-              <Input placeholder="单篇购买对应产品 ID" />
-            </Form.Item>
-            <Form.Item name="packageId" label="关联内容包 ID" style={{ flex: 1 }}>
-              <Input placeholder="归属内容包 ID" />
-            </Form.Item>
-          </Space>
-        </Form>
+        <Tabs
+          defaultActiveKey="basic"
+          items={[
+            // ==================== Tab 1：基本信息（原 Form + 发布前检查） ====================
+            {
+              key: "basic",
+              label: <Space><span>基本信息</span>{accessTypeValue === "single" && <Tag color="red">single·硬禁</Tag>}</Space>,
+              children: (
+                <Form form={form} layout="vertical" preserve={false}>
+                  <Form.Item name="title" label="标题" rules={[{ required: true, message: "请输入标题" }]}>
+                    <Input placeholder="例如：呼吸与身体扫描入门" maxLength={200} />
+                  </Form.Item>
+                  <Form.Item name="description" label="描述">
+                    <TextArea rows={3} placeholder="在 Mini App 列表展示的简短描述" maxLength={1000} />
+                  </Form.Item>
+                  <Alert
+                    type="info"
+                    showIcon
+                    icon={<InfoCircleOutlined />}
+                    message="素材文件请切换到「素材上传」Tab 上传（浏览器直传对象存储，不经 Web 服务器）；此处 URL 字段为兼容老数据的兜底，如已上传素材会由系统自动回填。"
+                    style={{ marginBottom: 16 }}
+                  />
+                  <Space size={16} style={{ width: "100%" }}>
+                    <Form.Item name="coverUrl" label="封面图 URL（旧字段，可留空）" style={{ flex: 1 }}>
+                      <Input placeholder="https://...（推荐在「素材上传」Tab 传封面，系统会自动回填此字段）" />
+                    </Form.Item>
+                    <Form.Item name="thumbnailUrl" label="缩略图 URL（旧字段，可留空）" style={{ flex: 1 }}>
+                      <Input placeholder="https://..." />
+                    </Form.Item>
+                  </Space>
+                  <Space size={16} style={{ width: "100%" }}>
+                    <Form.Item
+                      name="accessType"
+                      label="访问类型"
+                      rules={[{ required: true }]}
+                      style={{ flex: 1 }}
+                    >
+                      <Select
+                        disabled={!!editing && editing.accessType === "single"}
+                      >
+                        {ACCESS_TYPE_OPTIONS.map((o) => (
+                          <Option key={o.value} value={o.value}>{o.label}</Option>
+                        ))}
+                        <Option value="single" disabled>
+                          <Tooltip title="首期已硬禁 single，不能通过共享频道交付单条视频。请改用 membership 或 package。">
+                            <span style={{ color: "#999", textDecoration: "line-through" }}>单篇购买（single · 已禁用）</span>
+                          </Tooltip>
+                        </Option>
+                      </Select>
+                    </Form.Item>
+                    <Form.Item name="durationSeconds" label="时长（秒）" style={{ flex: 1 }}>
+                      <InputNumber min={0} style={{ width: "100%" }} placeholder="素材校验后会自动回填，可手动覆盖" />
+                    </Form.Item>
+                    <Form.Item name="sortOrder" label="排序值" style={{ flex: 1 }}>
+                      <InputNumber style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Space>
+
+                  {accessTypeValue === "membership" && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      icon={<InfoCircleOutlined />}
+                      message="完整内容将统一交付至服务端配置的会员私密频道（不需要在此处指定频道）"
+                      style={{ marginBottom: 24 }}
+                    />
+                  )}
+
+                  {accessTypeValue === "public" && (
+                    <Space direction="vertical" size={12} style={{ width: "100%", marginBottom: 12 }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        icon={<InfoCircleOutlined />}
+                        message="公开内容：用户点击卡片后，将直接跳转到所选免费频道（由服务端映射 chatId，不允许运营自填）"
+                      />
+                      <Form.Item
+                        name="freeChannelCode"
+                        label="选择免费频道（必填，只能从白名单选择）"
+                        rules={[
+                          { required: true, message: "公开内容必须选择一个免费频道（由服务端受控白名单）" },
+                          {
+                            validator: (_, value) => {
+                              if (!value) return Promise.resolve();
+                              if (freeChannels.length === 0) {
+                                return Promise.reject(new Error("免费频道白名单尚未加载；请稍后重试或检查服务端配置"));
+                              }
+                              if (!freeChannels.some((f) => f.code === value)) {
+                                return Promise.reject(new Error("该 code 不在白名单中；请从下拉选择"));
+                              }
+                              return Promise.resolve();
+                            },
+                          },
+                        ]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Select
+                          placeholder="选择服务端受控的免费频道"
+                          showSearch
+                          optionFilterProp="label"
+                          disabled={!canEdit}
+                          loading={freeChannels.length === 0}
+                          options={freeChannels.map((f) => ({
+                            value: f.code,
+                            label: `${f.label}  （${f.code}）`,
+                            title: f.description,
+                          }))}
+                        />
+                      </Form.Item>
+                    </Space>
+                  )}
+
+                  {accessTypeValue === "package" && (
+                    <Space direction="vertical" size={12} style={{ width: "100%", marginBottom: 12 }}>
+                      {renderPackageConfigBadge()}
+                    </Space>
+                  )}
+
+                  <Form.Item name="categoryIds" label="关联分类（可多选）">
+                    <Select mode="multiple" placeholder="选择分类">
+                      {categories.map((c) => (
+                        <Option key={c.id} value={c.id}>{c.name}</Option>
+                      ))}
+                    </Select>
+                  </Form.Item>
+                  <Form.Item name="tags" label="标签">
+                    <Select mode="tags" placeholder="输入标签后回车" />
+                  </Form.Item>
+                  <Space size={16} style={{ width: "100%" }} align="start">
+                    <Form.Item name="isRecommended" label="推荐位" valuePropName="checked" style={{ marginBottom: 0 }}>
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item name="isFeatured" label="精选位" valuePropName="checked" style={{ marginBottom: 0 }}>
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item name="isNewArrival" label="新品标" valuePropName="checked" style={{ marginBottom: 0 }}>
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item name="featuredSort" label="精选排序" style={{ flex: 1, marginBottom: 0 }}>
+                      <InputNumber style={{ width: "100%" }} placeholder="越小越靠前" />
+                    </Form.Item>
+                  </Space>
+                  <Space size={16} style={{ width: "100%", marginTop: 24 }}>
+                    <Form.Item name="recommendStartsAt" label="推荐开始" style={{ flex: 1 }}>
+                      <DatePicker showTime style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item name="recommendEndsAt" label="推荐结束" style={{ flex: 1 }}>
+                      <DatePicker showTime style={{ width: "100%" }} />
+                    </Form.Item>
+                    <Form.Item name="scheduledAt" label="定时发布" style={{ flex: 1 }}>
+                      <DatePicker showTime style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Space>
+                  <Form.Item name="previewUrl" label="试听/预览 URL（旧字段，可留空）">
+                    <Input placeholder="https://...（推荐在「素材上传」Tab 传试看视频，系统自动回填此字段）" />
+                  </Form.Item>
+                  <Space size={16} style={{ width: "100%" }}>
+                    {accessTypeValue === "package" ? (
+                      <Form.Item
+                        name="packageId"
+                        label="所属内容包（必填）"
+                        rules={[{ required: true, message: "package 类型必须绑定内容包" }]}
+                        style={{ flex: 1 }}
+                      >
+                        <Select
+                          placeholder="选择可交付的内容包（已发布 + 已配频道 + 商品启用）"
+                          showSearch
+                          optionFilterProp="label"
+                        >
+                          {publishablePackages.length === 0 && packages.length > 0 && (
+                            <Option value="" disabled>暂无可交付的内容包（请先在服务端完成频道映射）</Option>
+                          )}
+                          {publishablePackages.map((p) => (
+                            <Option key={p.id} value={p.id} label={p.title}>
+                              <Space>
+                                <span>{p.title}</span>
+                                <Tag color="green">已发布</Tag>
+                                <Tag color="cyan">{p.contentsCount} 条</Tag>
+                              </Space>
+                            </Option>
+                          ))}
+                          {packages
+                            .filter((p) => !publishablePackages.find((pp) => pp.id === p.id))
+                            .map((p) => (
+                              <Option key={p.id} value={p.id} disabled label={p.title}>
+                                <Space>
+                                  <span style={{ textDecoration: "line-through", color: "#999" }}>{p.title}</span>
+                                  {p.status !== "published" && <Tag color="default">{p.status}</Tag>}
+                                  {!p.channelConfigured && <Tag color="red">未配频道</Tag>}
+                                  {!p.productActive && <Tag color="orange">商品未启用</Tag>}
+                                </Space>
+                              </Option>
+                            ))}
+                        </Select>
+                      </Form.Item>
+                    ) : null}
+
+                    {(accessTypeValue === "membership" || accessTypeValue === "public") ? (
+                      <Form.Item name="productId" label="关联商品 ID（可选，分析用）" style={{ flex: 1 }}>
+                        <Input placeholder={accessTypeValue === "membership" ? "对应会员商品 UUID" : "public 通常留空"} />
+                      </Form.Item>
+                    ) : null}
+
+                    {accessTypeValue === "single" && editing && editing.accessType === "single" ? (
+                      <Alert type="error" showIcon message="single（单篇购买）首期已停止，请先将访问类型改为 membership 或 package" style={{ flex: 1 }} />
+                    ) : null}
+                  </Space>
+
+                  {editing?.accessType === "single" && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      icon={<InfoCircleOutlined />}
+                      message="该内容为历史 single 数据"
+                      description="为避免共享 VIP 频道造成权益越界，首期不再支持 single 交付。建议改为 membership 或 package 后重新发布。"
+                    />
+                  )}
+
+                  <Card
+                    size="small"
+                    title={
+                      <Space>
+                        <span>发布前检查 · 运营自检区</span>
+                        {prePublishAllPassed ? (
+                          <Tag color="green" icon={<InfoCircleOutlined />}>全部通过（仍需服务端最终校验）</Tag>
+                        ) : (
+                          <Tag color="orange">有未通过项</Tag>
+                        )}
+                      </Space>
+                    }
+                    style={{ marginTop: 24, borderColor: prePublishAllPassed ? "#b7eb8f" : "#ffd591" }}
+                  >
+                    <Space direction="vertical" size={10} style={{ width: "100%" }}>
+                      {prePublishChecklist.map((c) => (
+                        <div key={c.key} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                          {c.passed ? (
+                            <Tag color="green" style={{ minWidth: 76, textAlign: "center" }}>✓ 通过</Tag>
+                          ) : (
+                            <Tag color="red" style={{ minWidth: 76, textAlign: "center" }}>✗ 未通过</Tag>
+                          )}
+                          <div style={{ flex: 1 }}>
+                            <span style={{ fontWeight: 500 }}>{c.label}</span>
+                            {c.detail && (
+                              <div style={{ color: "#666", fontSize: 12, marginTop: 2, lineHeight: 1.5 }}>
+                                {c.detail}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      <Alert
+                        type="info"
+                        showIcon
+                        style={{ marginTop: 8 }}
+                        message="前端自检仅为提示；保存/提交审核/发布时，服务端会再次严格校验（含跨字段一致性、受控频道映射状态等），以服务端返回为准。"
+                      />
+                    </Space>
+                  </Card>
+                </Form>
+              ),
+            },
+            // ==================== Tab 2：素材上传（三 Upload + 尺寸限制 + 水印 + public 禁完整视频） ====================
+            {
+              key: "media",
+              label: <Space><span>素材上传</span>{coverAssetId && previewAssetId ? <Badge count={2} /> : null}</Space>,
+              children: (
+                <Space direction="vertical" size={20} style={{ width: "100%" }}>
+                  <Alert
+                    type="info"
+                    showIcon
+                    icon={<InfoCircleOutlined />}
+                    message="所有素材浏览器直传对象存储（DigitalOcean Spaces 等 S3 兼容服务），不经过普通 Web 服务器；因此封面 20MB / 试看 800MB / 完整视频 8GB 可稳定上传，仅需按下方按钮即可。"
+                  />
+                  {/* 封面 */}
+                  <Card
+                    size="small"
+                    title={
+                      <Space>
+                        <span>① 封面图片（必填，建议 16:9，Mini App 卡片首图）</span>
+                        {coverAsset?.status === "ready" ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : coverAsset?.status === "failed" ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
+                      </Space>
+                    }
+                    extra={<Tag color="blue">≤ 20MB</Tag>}
+                  >
+                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                      <Upload
+                        multiple={false}
+                        maxCount={1}
+                        accept="image/jpeg,image/png,image/webp,image/jpg"
+                        disabled={!canEdit || coverUploading}
+                        showUploadList={false}
+                        beforeUpload={(f) => doDirectUpload(f as File, "cover_image", {
+                          setAssetId: setCoverAssetId, setAsset: setCoverAsset,
+                          setProgress: setCoverProgress, setUploading: setCoverUploading,
+                        }, 20 * 1024 * 1024)}
+                      >
+                        <Button icon={<UploadOutlined />} loading={coverUploading} disabled={!canEdit}>
+                          {coverAssetId ? (coverAsset?.status === "ready" ? "重新上传封面" : "重新上传（上次未完成）") : "上传封面图片"}
+                        </Button>
+                      </Upload>
+                      <Progress percent={coverProgress} status={coverAsset?.status === "failed" ? "exception" : coverProgress === 100 ? "success" : coverUploading ? "active" : undefined} />
+                      {coverAsset && (
+                        <Space direction="vertical" size={4} style={{ fontSize: 12 }}>
+                          <span>文件名：{coverAsset.originalFilename}</span>
+                          <span>大小：{(coverAsset.contentLength / 1024 / 1024).toFixed(2)} MB</span>
+                          {coverAsset.widthPixels && coverAsset.heightPixels && <span>尺寸：{coverAsset.widthPixels}×{coverAsset.heightPixels}</span>}
+                          {coverAsset.status && <span>状态：<Tag color={coverAsset.status === "ready" ? "green" : coverAsset.status === "failed" ? "red" : "default"}>{coverAsset.status}</Tag></span>}
+                          {coverAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>失败原因：{coverAsset.lastErrorClass}{coverAsset.lastErrorNote ? `（${coverAsset.lastErrorNote}）` : ""}</span>}
+                          {coverAsset.storagePublicUrl && <span>公开 URL：<a href={coverAsset.storagePublicUrl} target="_blank" rel="noreferrer">{coverAsset.storagePublicUrl.slice(0, 60)}…</a></span>}
+                        </Space>
+                      )}
+                    </Space>
+                  </Card>
+                  {/* 试看视频 */}
+                  <Card
+                    size="small"
+                    title={
+                      <Space>
+                        <span>② 试看视频（必填，30–60 秒 · 必须有水印，发送到免费频道）</span>
+                        {previewAsset?.status === "ready" ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : previewAsset?.status === "failed" ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
+                      </Space>
+                    }
+                    extra={<Tag color="geekblue">≤ 800MB</Tag>}
+                  >
+                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                      <Alert
+                        type="error"
+                        showIcon
+                        message="运营流程硬约束：试看视频必须加水印（30–60 秒）；系统当前无法自动检测水印，仅能在审核时人工确认。若发布到免费频道后被投诉无水印，由运营侧负责。"
+                      />
+                      <Upload
+                        multiple={false}
+                        maxCount={1}
+                        accept="video/*"
+                        disabled={!canEdit || previewUploading}
+                        showUploadList={false}
+                        beforeUpload={(f) => doDirectUpload(f as File, "preview_video", {
+                          setAssetId: setPreviewAssetId, setAsset: setPreviewAsset,
+                          setProgress: setPreviewProgress, setUploading: setPreviewUploading,
+                        }, 800 * 1024 * 1024)}
+                      >
+                        <Button icon={<UploadOutlined />} loading={previewUploading} disabled={!canEdit}>
+                          {previewAssetId ? (previewAsset?.status === "ready" ? "重新上传试看" : "重新上传（上次未完成）") : "上传试看视频（30–60 秒 · 必须带水印）"}
+                        </Button>
+                      </Upload>
+                      <Progress percent={previewProgress} status={previewAsset?.status === "failed" ? "exception" : previewProgress === 100 ? "success" : previewUploading ? "active" : undefined} />
+                      {previewAsset && (
+                        <Space direction="vertical" size={4} style={{ fontSize: 12 }}>
+                          <span>文件名：{previewAsset.originalFilename}</span>
+                          <span>大小：{(previewAsset.contentLength / 1024 / 1024).toFixed(2)} MB</span>
+                          {previewAsset.durationSeconds && <span>时长：{Math.floor(previewAsset.durationSeconds / 60)}分{previewAsset.durationSeconds % 60}秒</span>}
+                          {previewAsset.widthPixels && previewAsset.heightPixels && <span>尺寸：{previewAsset.widthPixels}×{previewAsset.heightPixels}</span>}
+                          {previewAsset.hasWatermark ? (
+                            <span>水印：<Tag color="green">声明已加水印</Tag></span>
+                          ) : (
+                            <span>水印：<Tag color="orange">未声明（审核需人工核验）</Tag></span>
+                          )}
+                          <span>状态：<Tag color={previewAsset.status === "ready" ? "green" : previewAsset.status === "failed" ? "red" : "default"}>{previewAsset.status}</Tag></span>
+                          {previewAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>失败原因：{previewAsset.lastErrorClass}{previewAsset.lastErrorNote ? `（${previewAsset.lastErrorNote}）` : ""}</span>}
+                        </Space>
+                      )}
+                    </Space>
+                  </Card>
+                  {/* 完整视频 */}
+                  <Card
+                    size="small"
+                    title={
+                      <Space>
+                        <span>③ 完整视频（{accessTypeValue === "public" ? "public 类型禁止上传，请改用 membership/package" : `会员/内容包必填 · 发送到${accessTypeValue === "package" ? "内容包独立" : "会员主"}私密频道`}）</span>
+                        {fullVideoAsset?.status === "ready" ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : fullVideoAsset?.status === "failed" ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
+                      </Space>
+                    }
+                    extra={<Tag color={accessTypeValue === "public" ? "default" : "purple"}>≤ 8GB</Tag>}
+                  >
+                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                      {accessTypeValue === "public" ? (
+                        <Alert type="info" showIcon message="public 内容仅用于免费频道引流，完整视频交付需升级为 membership 或 package。" />
+                      ) : null}
+                      <Upload
+                        multiple={false}
+                        maxCount={1}
+                        accept="video/*"
+                        disabled={!canEdit || fullVideoUploading || accessTypeValue === "public"}
+                        showUploadList={false}
+                        beforeUpload={(f) => doDirectUpload(f as File, "full_video", {
+                          setAssetId: setFullVideoAssetId, setAsset: setFullVideoAsset,
+                          setProgress: setFullVideoProgress, setUploading: setFullVideoUploading,
+                        }, 8 * 1024 * 1024 * 1024)}
+                      >
+                        <Button icon={<UploadOutlined />} loading={fullVideoUploading} disabled={!canEdit || accessTypeValue === "public"}>
+                          {fullVideoAssetId ? (fullVideoAsset?.status === "ready" ? "重新上传完整视频" : "重新上传（上次未完成）") : "上传完整视频（会员/内容包私密频道交付）"}
+                        </Button>
+                      </Upload>
+                      <Progress percent={fullVideoProgress} status={fullVideoAsset?.status === "failed" ? "exception" : fullVideoProgress === 100 ? "success" : fullVideoUploading ? "active" : undefined} />
+                      {fullVideoAsset && (
+                        <Space direction="vertical" size={4} style={{ fontSize: 12 }}>
+                          <span>文件名：{fullVideoAsset.originalFilename}</span>
+                          <span>大小：{(fullVideoAsset.contentLength / 1024 / 1024 / 1024).toFixed(3)} GB</span>
+                          {fullVideoAsset.durationSeconds && <span>时长：{Math.floor(fullVideoAsset.durationSeconds / 60)}分{fullVideoAsset.durationSeconds % 60}秒</span>}
+                          {fullVideoAsset.widthPixels && fullVideoAsset.heightPixels && <span>尺寸：{fullVideoAsset.widthPixels}×{fullVideoAsset.heightPixels}</span>}
+                          <span>状态：<Tag color={fullVideoAsset.status === "ready" ? "green" : fullVideoAsset.status === "failed" ? "red" : "default"}>{fullVideoAsset.status}</Tag></span>
+                          {fullVideoAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>失败原因：{fullVideoAsset.lastErrorClass}{fullVideoAsset.lastErrorNote ? `（${fullVideoAsset.lastErrorNote}）` : ""}</span>}
+                        </Space>
+                      )}
+                      <Alert
+                        type="warning"
+                        showIcon
+                        message="完整视频仅发会员主频道 / 内容包独立私密频道，绝不能发送到免费频道。此约束由服务端在 start-telegram-publish 时二次强校验，尝试绕过会返回 400。"
+                      />
+                    </Space>
+                  </Card>
+                </Space>
+              ),
+            },
+            // ==================== Tab 3：发布进度（Bot 异步任务队列 + 进度表） ====================
+            {
+              key: "publish",
+              label: <Space><span>发布进度（Bot 异步队列）</span>{publishJobs.filter(j => j.status === "processing" || j.status === "queued").length > 0 && <Badge color="processing" count={publishJobs.filter(j => j.status === "processing" || j.status === "queued").length} />}</Space>,
+              children: (
+                <Space direction="vertical" size={20} style={{ width: "100%" }}>
+                  {!editing?.id ? (
+                    <Alert type="info" showIcon message="新建内容请先在「基本信息」Tab 点击「创建」保存后，再回到此处触发发布到 Telegram。" />
+                  ) : (
+                    <>
+                      <Card size="small" title="① 选择要发布的目标（可多选）">
+                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                          <Alert
+                            type="info"
+                            showIcon
+                            icon={<InfoCircleOutlined />}
+                            message="频道 chatId 完全由服务端控制，前端仅能选择「渠道类型」；运营绝对不能直接提交 chatId，也无法在 UI 看到明文 chatId。"
+                          />
+                          <Checkbox.Group
+                            value={channelKinds}
+                            onChange={(v) => setChannelKinds(v as TelegramPublishJobItem["channelKind"][])}
+                            style={{ width: "100%" }}
+                          >
+                            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                              <Checkbox
+                                value="public_free_preview"
+                                disabled={
+                                  !canPublish ||
+                                  accessTypeValue === "single" ||
+                                  !!previewAssetId === false ||
+                                  previewAsset?.status !== "ready"
+                                }
+                              >
+                                <Space>
+                                  <Tag color={CHANNEL_KIND_LABEL.public_free_preview.color}>{CHANNEL_KIND_LABEL.public_free_preview.label}</Tag>
+                                  <span style={{ color: "#666", fontSize: 12 }}>
+                                    {
+                                      !previewAssetId || previewAsset?.status !== "ready"
+                                        ? "（未满足：先在「素材上传」Tab 成功上传试看视频，且需 freeChannelCode 已选）"
+                                        : "✅ 试看素材已就绪；将发送到上方所选免费频道（白名单）并附带 Mini App 跳转链接"
+                                    }
+                                  </span>
+                                </Space>
+                              </Checkbox>
+                              <Checkbox
+                                value="membership_full"
+                                disabled={
+                                  !canPublish ||
+                                  accessTypeValue !== "membership" ||
+                                  !!fullVideoAssetId === false ||
+                                  fullVideoAsset?.status !== "ready"
+                                }
+                              >
+                                <Space>
+                                  <Tag color={CHANNEL_KIND_LABEL.membership_full.color}>{CHANNEL_KIND_LABEL.membership_full.label}</Tag>
+                                  <span style={{ color: "#666", fontSize: 12 }}>
+                                    {
+                                      accessTypeValue !== "membership"
+                                        ? "（未满足：仅 accessType=membership 可选）"
+                                        : !fullVideoAssetId || fullVideoAsset?.status !== "ready"
+                                          ? "（未满足：先在「素材上传」Tab 成功上传完整视频）"
+                                          : "✅ 将发送到服务端配置的 TELEGRAM_CHANNEL_MEMBERSHIP 私密主频道（用户交付时自动获取邀请）"
+                                    }
+                                  </span>
+                                </Space>
+                              </Checkbox>
+                              <Checkbox
+                                value="package_full"
+                                disabled={
+                                  !canPublish ||
+                                  accessTypeValue !== "package" ||
+                                  !packageIdValue ||
+                                  !!fullVideoAssetId === false ||
+                                  fullVideoAsset?.status !== "ready" ||
+                                  (!!selectedPackage && !selectedPackage.channelConfigured)
+                                }
+                              >
+                                <Space>
+                                  <Tag color={CHANNEL_KIND_LABEL.package_full.color}>{CHANNEL_KIND_LABEL.package_full.label}</Tag>
+                                  <span style={{ color: "#666", fontSize: 12 }}>
+                                    {
+                                      accessTypeValue !== "package"
+                                        ? "（未满足：仅 accessType=package 可选）"
+                                        : !packageIdValue
+                                          ? "（未满足：请在基本信息选择一个内容包）"
+                                          : !fullVideoAssetId || fullVideoAsset?.status !== "ready"
+                                            ? "（未满足：先上传完整视频）"
+                                            : selectedPackage && !selectedPackage.channelConfigured
+                                              ? `（未满足：内容包 ${selectedPackage.title} 尚未在服务端配置加密 channelId，请先完成频道映射）`
+                                              : "✅ 将发送到所选内容包对应的独立私密频道（购买后一次性邀请进包频道）"
+                                    }
+                                  </span>
+                                </Space>
+                              </Checkbox>
+                            </Space>
+                          </Checkbox.Group>
+                          <Space wrap>
+                            <Button
+                              type="primary"
+                              icon={<SendOutlined />}
+                              loading={startPublishing}
+                              disabled={
+                                !canPublish ||
+                                !editing?.id ||
+                                channelKinds.length === 0 ||
+                                accessTypeValue === "single"
+                              }
+                              onClick={async () => {
+                                if (!editing?.id) return;
+                                setStartPublishing(true);
+                                try {
+                                  const r = await startTelegramPublish(editing.id, {
+                                    channelKinds,
+                                    reason: `运营点击发布：${channelKinds.join("+")}`,
+                                  });
+                                  message.success(`已入队 ${r.jobs.length} 条 Bot 发送任务（异步执行，约每 8 秒刷新一次进度）`);
+                                  refreshPublishJobs(editing.id);
+                                } catch (e) {
+                                  message.error(errMsg(e, "入队失败"));
+                                } finally {
+                                  setStartPublishing(false);
+                                }
+                              }}
+                            >
+                              📤 发布到 Telegram（异步入队）
+                            </Button>
+                            <Button icon={<ReloadOutlined />} onClick={() => editing?.id && refreshPublishJobs(editing.id)} disabled={publishJobsLoading}>
+                              刷新进度
+                            </Button>
+                          </Space>
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="发布模式说明"
+                            description={
+                              <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
+                                <span>· 当前为 P0 「任务队列 · 从未启用真实发送」阶段：即便入队成功，也需要运维完成：S3 env 配置、REDIS_URL、Bot Token、频道 chatId 加密写入、migration 0014 deploy、BullMQ Worker 启动后才会真正发 Telegram。</span>
+                                <span>· 即便运维部署完成，Bot 发送也为异步：大视频 8GB 级可能需要 10 分钟以上（TG 大文件带宽限制），请耐心查看下表 attempt / nextRetryAt。</span>
+                                <span>· 最大重试 3 次，指数退避（5s / 10s / 20s），重试耗尽后可手动点击「重试」按钮重新入队。</span>
+                              </Space>
+                            }
+                          />
+                        </Space>
+                      </Card>
+                      <Card
+                        size="small"
+                        title={
+                          <Space>
+                            <span>② 发送任务进度</span>
+                            {publishJobs.length > 0 && <Tag color="processing">{publishJobs.length} 条</Tag>}
+                            <Tooltip title="默认每 8 秒自动刷新，或点击上方按钮立即刷新">
+                              <InfoCircleOutlined style={{ color: "#888" }} />
+                            </Tooltip>
+                          </Space>
+                        }
+                      >
+                        <Table<TelegramPublishJobItem>
+                          rowKey="id"
+                          size="small"
+                          loading={publishJobsLoading}
+                          dataSource={publishJobs}
+                          pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                          locale={{ emptyText: editing?.id ? "尚未入队任何 Bot 发送任务" : "创建内容后才可查看任务" }}
+                          columns={[
+                            {
+                              title: "目标", dataIndex: "channelKind", key: "ck", width: 190,
+                              render: (ck: TelegramPublishJobItem["channelKind"], r) => (
+                                <Space direction="vertical" size={0}>
+                                  <Tag color={CHANNEL_KIND_LABEL[ck]?.color || "default"}>{CHANNEL_KIND_LABEL[ck]?.label || ck}</Tag>
+                                  {r.targetFreeChannelCode && <span style={{ fontSize: 12, color: "#666" }}>freeChannelCode: {r.targetFreeChannelCode}</span>}
+                                  {r.targetChatMasked && <span style={{ fontSize: 12, color: "#999" }}>目标掩码：{r.targetChatMasked}</span>}
+                                </Space>
+                              ),
+                            },
+                            {
+                              title: "状态 / 进度", key: "st", width: 200,
+                              render: (_, r) => {
+                                const pct = Math.max(0, Math.min(100, Math.round((r.attempt / Math.max(1, r.maxAttempts)) * 100)));
+                                const s = PUBLISH_JOB_STATUS_TAG[r.status];
+                                return (
+                                  <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                                    <Tag color={s?.color || "default"}>{s?.label || r.status}</Tag>
+                                    <Progress percent={pct} size="small" format={() => `attempt ${r.attempt || 0}/${r.maxAttempts || 3}`} />
+                                    {r.lastErrorClass && <span style={{ color: "#ff4d4f", fontSize: 12 }}>失败类：{r.lastErrorClass}</span>}
+                                  </Space>
+                                );
+                              },
+                            },
+                            {
+                              title: "素材", dataIndex: ["mediaAsset", "originalFilename"], key: "md",
+                              render: (_: any, r) => (
+                                <Space direction="vertical" size={0}>
+                                  <span style={{ fontSize: 12 }}>{r.mediaAsset?.originalFilename || "-"}</span>
+                                  {r.mediaAsset && (
+                                    <span style={{ color: "#666", fontSize: 11 }}>
+                                      {(r.mediaAsset.contentLength / 1024 / 1024).toFixed(2)} MB
+                                      {r.mediaAsset.durationSeconds ? ` · ${Math.floor(r.mediaAsset.durationSeconds / 60)}分${r.mediaAsset.durationSeconds % 60}秒` : ""}
+                                    </span>
+                                  )}
+                                </Space>
+                              ),
+                            },
+                            {
+                              title: "结果（如有）", key: "rs", width: 170,
+                              render: (_, r) => (
+                                <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
+                                  {r.telegramMessageId && <span>messageId: <b>{r.telegramMessageId}</b></span>}
+                                  {r.sentAt && <span style={{ color: "#52c41a" }}>发送完成：{dayjs(r.sentAt).format("MM-DD HH:mm:ss")}</span>}
+                                  {r.nextRetryAt && r.status === "failed" && <span style={{ color: "#faad14" }}>下次重试：{dayjs(r.nextRetryAt).format("HH:mm:ss")}</span>}
+                                  {r.cancelledAt && <span style={{ color: "#888" }}>取消：{dayjs(r.cancelledAt).format("MM-DD HH:mm")}</span>}
+                                  {r.admin?.displayName && <span style={{ color: "#666" }}>创建：{r.admin.displayName}</span>}
+                                </Space>
+                              ),
+                            },
+                            {
+                              title: "操作", key: "op", width: 170, fixed: "right",
+                              render: (_, r) => {
+                                const canCancel = r.status === "queued" || r.status === "failed" || r.status === "retried_exhausted";
+                                const canRetry = r.status === "failed" || r.status === "retried_exhausted";
+                                return (
+                                  <Space size={4}>
+                                    <Button
+                                      size="small"
+                                      type="primary"
+                                      ghost
+                                      icon={<ReloadOutlined />}
+                                      disabled={!canRetry || !canPublish}
+                                      onClick={async () => {
+                                        if (!editing?.id) return;
+                                        setStartPublishing(true);
+                                        try {
+                                          const r2 = await startTelegramPublish(editing.id, {
+                                            channelKinds: [r.channelKind],
+                                            reason: `运营手动重试运行任务 id=${r.id.slice(0, 8)}（lastStatus=${r.status}）`,
+                                          });
+                                          message.success(`已重新入队 ${r2.jobs.length} 条任务`);
+                                          refreshPublishJobs(editing.id);
+                                        } catch (e) {
+                                          message.error(errMsg(e, "重试入队失败"));
+                                        } finally {
+                                          setStartPublishing(false);
+                                        }
+                                      }}
+                                    >重试</Button>
+                                    <Button
+                                      size="small"
+                                      danger
+                                      icon={<CloseCircleOutlined />}
+                                      disabled={!canCancel || !canPublish}
+                                      onClick={async () => {
+                                        Modal.confirm({
+                                          title: `取消发送任务 ${r.id.slice(0, 8)}…`,
+                                          content: "取消后任务将标记为 cancelled，BullMQ 若已入队也会从队列移除。若 Telegram 已在发送中，取消不会撤回已在途中的视频。",
+                                          okText: "确认取消",
+                                          cancelText: "再想想",
+                                          onOk: async () => {
+                                            try {
+                                              await cancelTelegramPublishJob(r.id, "运营点击取消按钮");
+                                              message.success("已取消任务");
+                                              if (editing?.id) refreshPublishJobs(editing.id);
+                                            } catch (e) {
+                                              message.error(errMsg(e, "取消失败"));
+                                            }
+                                          },
+                                        });
+                                      }}
+                                    >取消</Button>
+                                  </Space>
+                                );
+                              },
+                            },
+                          ]}
+                        />
+                      </Card>
+                    </>
+                  )}
+                </Space>
+              ),
+            },
+            // ==================== Tab 4：人工登记（旧模式，不推荐） ====================
+            {
+              key: "manual",
+              label: <Space><Tag color="default" style={{ opacity: 0.8 }}>不推荐</Tag><span>人工登记（旧模式）</span></Space>,
+              children: (
+                <Card
+                  size="small"
+                  style={{ marginTop: 8 }}
+                  title={
+                    <Space>
+                      <span>📝 登记 Telegram 已发布视频（旧兜底模式）</span>
+                      <Tooltip title="首期保留但不推荐：运营在 Telegram 客户端中手动上传/转发视频到对应频道后，在此手工登记 messageId 等元信息用于交付上下文。需要 content:publish 权限。">
+                        <InfoCircleOutlined style={{ color: "#888" }} />
+                      </Tooltip>
+                      {!canPublish && (
+                        <Tag color="red">当前角色无 content:publish 权限（仅 editor / super_admin）</Tag>
+                      )}
+                    </Space>
+                  }
+                >
+                  <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                    <Alert
+                      type="warning"
+                      showIcon
+                      icon={<InfoCircleOutlined />}
+                      message="人工登记仅记录运营声明的 messageId，不会校验视频是否真实发布在目标频道；所有登记信息在 UI/审计日志/返回值里一律标注「未校验」。"
+                    />
+                    <Alert
+                      type={(editing?.accessType === "public" || editing?.accessType === "membership" || editing?.accessType === "package") ? "info" : "error"}
+                      showIcon
+                      icon={<InfoCircleOutlined />}
+                      message={
+                        !editing
+                          ? "新建内容先「创建」后，本区域才可用（需要内容 id 回写到发布记录）"
+                          : editing.accessType === "public"
+                            ? "公开内容：请先手动上传/转发视频到免费频道（对应 freeChannelCode 白名单），再在此登记 messageId"
+                            : editing.accessType === "membership"
+                              ? "会员内容：请先手动上传/转发视频到会员主私密频道，再在此登记 messageId"
+                              : editing.accessType === "package"
+                                ? "打包内含：请先手动上传/转发视频到内容包对应的受控交付频道（需要 channelConfigured=true），再在此登记 messageId"
+                                : "single（单篇购买）首期已禁止，请先改为 membership/package。"
+                      }
+                      description={
+                        editing?.accessType === "package" && selectedPackage && !selectedPackage.channelConfigured
+                          ? "当前内容包未配置频道映射；请先在服务端完成 ContentPackage 加密列写入后再登记，否则无法解析对应频道。"
+                          : undefined
+                      }
+                    />
+
+                    {publishedTelegramCard}
+
+                    {lastPublishResult && (
+                      <Alert
+                        type={lastPublishResult.ok ? "warning" : "error"}
+                        showIcon
+                        message={lastPublishResult.ok ? `上次登记结果：已完成人工登记 · 未由系统校验视频是否实际发布在目标频道（mode=${lastPublishResult.registerMode || "manual"}）` : "上次登记结果：失败"}
+                        description={
+                          <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
+                            {lastPublishResult.ok && (
+                              <Space size={4} style={{ marginBottom: 4 }}>
+                                <Tag color="orange">人工登记 · 未校验</Tag>
+                              </Space>
+                            )}
+                            {lastPublishResult.channelLabel && <span>· 运营声明目标频道：{lastPublishResult.channelLabel}</span>}
+                            {lastPublishResult.freeChannelCode && <span>· freeChannelCode：{lastPublishResult.freeChannelCode}</span>}
+                            {lastPublishResult.chatMasked && <span>· 频道脱敏 ID：{lastPublishResult.chatMasked}</span>}
+                            {lastPublishResult.messageId != null && <span>· 运营声明 messageId：{String(lastPublishResult.messageId)}</span>}
+                            {lastPublishResult.sentAt && <span>· 登记时间（运营声明）：{dayjs(lastPublishResult.sentAt).format("YYYY-MM-DD HH:mm:ss")}</span>}
+                            {lastPublishResult.chatFingerprint && <span>· 频道指纹：{lastPublishResult.chatFingerprint}</span>}
+                            {lastPublishResult.videoFileIdRemark && <span>· videoFileId 备注：{lastPublishResult.videoFileIdRemark}</span>}
+                          </Space>
+                        }
+                      />
+                    )}
+
+                    <Form
+                      form={registerForm}
+                      layout="vertical"
+                      preserve={false}
+                    >
+                      <Form.Item
+                        name="telegramMessageId"
+                        label="Telegram 消息 ID（messageId，必填）"
+                        rules={[{ required: true, message: "请填入 Telegram 客户端中已发送视频的消息 ID（纯数字）" }]}
+                        extra="在 Telegram 频道中右键视频消息 → 复制消息链接 / Copy Message Link，链接末尾的数字就是 messageId。例如 https://t.me/c/1234567890/42 → messageId=42。"
+                      >
+                        <Input
+                          placeholder="例如：42（或复制消息链接中末尾的纯数字）"
+                          maxLength={32}
+                          disabled={!canPublish || !editing?.id}
+                        />
+                      </Form.Item>
+
+                      <Space size={16} style={{ width: "100%" }} align="start">
+                        <Form.Item
+                          name="telegramChatFingerprint"
+                          label="频道指纹（可选，建议填）"
+                          style={{ flex: 1, marginBottom: 0 }}
+                          extra="服务端 /admin/channels 列表会展示每个频道的 16hex HMAC fingerprint；填写用于审计对账。"
+                        >
+                          <Input
+                            placeholder="16hex 指纹（如 a1b2c3d4e5f67890），可选但建议填写"
+                            maxLength={128}
+                            disabled={!canPublish || !editing?.id}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          name="freeChannelCode"
+                          label="免费频道编码（仅公开内容可选填）"
+                          style={{ width: 240, marginBottom: 0 }}
+                          extra="公开内容若要覆盖/重选白名单可在此选择；通常跟随上方基本信息的免费频道即可。"
+                        >
+                          <Select
+                            allowClear
+                            disabled={!canPublish || !editing?.id || editing?.accessType !== "public"}
+                            placeholder={editing?.accessType !== "public" ? "仅公开内容可选择" : "选择 freeChannelCode（可留空跟随内容卡）"}
+                          >
+                            {freeChannels.map((f) => (
+                              <Option key={f.code} value={f.code}>
+                                {f.label}（{f.code}）
+                              </Option>
+                            ))}
+                          </Select>
+                        </Form.Item>
+                      </Space>
+
+                      <Form.Item
+                        name="videoFileIdRemark"
+                        label="videoFileId 备注（可选）"
+                        style={{ marginTop: 16 }}
+                        extra="若你已向 Bot 发送过该视频并拿到 file_id，可在这里粘贴作为记录备查；服务端不主动调用 Bot。长度 ≤512。"
+                      >
+                        <Input
+                          placeholder="BAACAgUAAxk...（可选，仅登记备忘用）"
+                          maxLength={512}
+                          disabled={!canPublish || !editing?.id}
+                        />
+                      </Form.Item>
+
+                      <Form.Item
+                        name="caption"
+                        label="视频说明文案（caption，可选）"
+                        extra="仅作为该条发布上下文的审计记录写入 afterValue._publishContext.caption，不会重新发送消息。"
+                      >
+                        <TextArea rows={3} maxLength={2048} placeholder="可选：该条视频 caption 备忘…" disabled={!canPublish || !editing?.id} />
+                      </Form.Item>
+
+                      <Form.Item
+                        name="reason"
+                        label="登记原因（推荐填写）"
+                        extra="写入 adminAuditLog.reason，便于后续审计；不填会使用默认文案。"
+                      >
+                        <TextArea rows={2} maxLength={500} placeholder="例如：2026-08-23 运营 Alice 手动上传到会员频道，messageId=42；视频名 xxx.mp4。" disabled={!canPublish || !editing?.id} />
+                      </Form.Item>
+
+                      <Space style={{ marginTop: 12 }}>
+                        <Button
+                          type="primary"
+                          icon={<SendOutlined />}
+                          loading={publishingTg}
+                          disabled={
+                            !canPublish ||
+                            !editing?.id ||
+                            editing.accessType === "single" ||
+                            (editing.accessType === "package" && (!selectedPackage || !selectedPackage.channelConfigured))
+                          }
+                          onClick={onRegisterTelegramPublish}
+                        >
+                          登记 Telegram 已发布视频
+                        </Button>
+                        <Button onClick={() => registerForm.resetFields()} disabled={publishingTg}>
+                          清空登记表单
+                        </Button>
+                        {editing && editing.accessType === "package" && (!selectedPackage || !selectedPackage.channelConfigured) && (
+                          <Tag color="red">内容包未配置交付频道，无法解析（登记后可能缺少 channelLabel）</Tag>
+                        )}
+                      </Space>
+
+                      <Alert
+                        type="warning"
+                        showIcon
+                        style={{ marginTop: 12 }}
+                        message="兜底模式说明 + 审计与脱敏保证"
+                        description={
+                          <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
+                            <span>· 运营流程：Telegram 客户端登录管理员 → 找到目标频道 → 手动上传或转发视频 → 右键复制 Message Link 取 messageId → 回到此表单提交登记。</span>
+                            <span>· 后台绝不展示明文 chatId；内容卡、列表、审计日志 afterValue 仅保留：freeChannelCode / messageId / chatFingerprint / chatMasked / videoFileIdRemark。</span>
+                            <span>· 登记失败不会在前端堆栈暴露 chatId 或 env 原始错误；请在 server 端 [safety] 结构化事件中查看（stderr，如 free_channel_env_resolve_failed / tg_publish_register_failed）。</span>
+                          </Space>
+                        }
+                      />
+                    </Form>
+                  </Space>
+                </Card>
+              ),
+            },
+          ]}
+        />
       </Drawer>
     </Space>
   );

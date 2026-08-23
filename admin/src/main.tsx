@@ -7,6 +7,7 @@ import { AuthProvider } from "./components/AuthProvider";
 import RequireAuth from "./components/RequireAuth";
 import AdminLayout from "./components/AdminLayout";
 import LoginPage from "./pages/Login";
+import DashboardPage from "./pages/Dashboard";
 import OrdersPage from "./pages/Orders";
 import EntitlementsPage from "./pages/Entitlements";
 import UsersPage from "./pages/Users";
@@ -45,7 +46,8 @@ const App: React.FC = () => (
                 </RequireAuth>
               }
             >
-              <Route index element={<Navigate to="/orders" replace />} />
+              <Route index element={<Navigate to="/dashboard" replace />} />
+              <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/orders" element={<OrdersPage />} />
               <Route path="/entitlements" element={<EntitlementsPage />} />
               <Route path="/users" element={<UsersPage />} />
@@ -56,7 +58,7 @@ const App: React.FC = () => (
               <Route path="/homepage" element={<HomepageConfigPage />} />
               <Route path="/channels" element={<ChannelsPage />} />
             </Route>
-            <Route path="*" element={<Navigate to="/orders" replace />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </BrowserRouter>
       </AuthProvider>

@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0e0c16" />
+    <title>同频 · USDT-TRC20 支付中心</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: linear-gradient(160deg, #0e0c16 0%, #141024 50%, #1a1430 100%);
+        color: #efeaf6;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+        min-height: 100vh;
+      }
+      .app-shell {
+        max-width: 560px;
+        margin: 0 auto;
+        padding: 20px 18px 110px;
+      }
+      .topbar {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 6px 0 16px;
+      }
+      .brand {
+        font-weight: 800; letter-spacing: 1.5px; color: #f3eaff; font-size: 13px;
+      }
+      .user-chip {
+        display: inline-flex; align-items: center; gap: 8px;
+        background: rgba(255,255,255,0.05);
+        padding: 6px 12px; border-radius: 999px;
+        font-size: 12px; border: 1px solid rgba(255,255,255,0.08);
+        color: #d1c3ef; cursor: pointer;
+      }
+      .user-chip .dot { width:8px; height:8px; border-radius:999px; background:#27d796; display:inline-block;}
+      .user-chip.off .dot { background:#ff9191; }
+      .back-btn { color: #b7a9d9; text-decoration: none; font-size: 14px; }
+
+      /* Tab 导航（个人中心） */
+      .tab-bar {
+        position: fixed; left: 0; right: 0; bottom: 0;
+        max-width: 560px; margin: 0 auto;
+        background: rgba(14, 12, 22, 0.85);
+        backdrop-filter: saturate(180%) blur(14px);
+        border-top: 1px solid rgba(255,255,255,0.06);
+        display: grid; grid-template-columns: repeat(4, 1fr);
+        padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
+        z-index: 100;
+      }
+      .tab-bar .t {
+        text-align: center; font-size: 12px; color: #8e7fb0;
+        padding: 6px 2px; border-radius: 10px; cursor: pointer;
+        display: flex; flex-direction: column; align-items: center; gap: 4px;
+      }
+      .tab-bar .t .ic { font-size: 18px; line-height: 1; }
+      .tab-bar .t.active { color: #fff; background: rgba(180, 112, 255, 0.16); }
+
+      .card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.07);
+        border-radius: 16px;
+        padding: 20px 18px;
+        margin-bottom: 14px;
+        backdrop-filter: blur(4px);
+      }
+      .card h2 { margin: 0 0 6px; font-size: 20px; }
+      .card .eyebrow {
+        text-transform: uppercase; letter-spacing: 2px; font-size: 11px;
+        color: #b470ff; font-weight: 700; margin-bottom: 6px;
+      }
+      .card .sub { color: #a595c7; font-size: 13px; line-height: 1.55; }
+
+      .status-pill {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 4px 12px; border-radius: 999px;
+        font-size: 12px; font-weight: 700;
+      }
+      .pill-pending { background: rgba(255, 183, 77, 0.15); color: #ffc061; }
+      .pill-paid { background: rgba(81, 207, 102, 0.15); color: #67e28a; }
+      .pill-checking { background: rgba(80, 154, 255, 0.15); color: #7fb4ff; }
+      .pill-expired { background: rgba(255, 102, 102, 0.15); color: #ff9191; }
+      .dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; display: inline-block; }
+
+      .amount-row {
+        display: flex; align-items: baseline; justify-content: space-between;
+        padding: 12px 0; border-bottom: 1px dashed rgba(255,255,255,0.08);
+      }
+      .amount-row:last-child { border-bottom: 0; }
+      .amount-label { color: #a595c7; font-size: 13px; }
+      .amount-value { font-weight: 800; font-variant-numeric: tabular-nums; font-size: 15px; }
+      .amount-big { font-size: 32px; font-weight: 900; color: #fff; letter-spacing: 0.5px; }
+      .amount-big .currency { color: #27d796; font-size: 16px; margin-right: 4px; font-weight: 800; }
+      .amount-tail { color: #b470ff; }
+
+      .address-card { display: flex; gap: 14px; align-items: center; }
+      .qr-box {
+        width: 120px; height: 120px; flex-shrink: 0;
+        background: #fff; border-radius: 12px; padding: 8px;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .qr-box canvas, .qr-box img { width: 100%; height: 100%; }
+      .addr-info { flex: 1; min-width: 0; }
+      .addr-label { color: #a595c7; font-size: 12px; margin-bottom: 4px; }
+      .addr-text {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        padding: 8px 12px;
+        border-radius: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        word-break: break-all;
+        line-height: 1.5;
+        user-select: all;
+      }
+      .btn-row { display: flex; gap: 10px; margin-top: 12px; }
+      .btn {
+        flex: 1; padding: 12px 16px; border-radius: 12px;
+        font-weight: 700; font-size: 14px;
+        border: 0; cursor: pointer;
+        transition: transform .08s ease, opacity .2s ease;
+      }
+      .btn:active { transform: scale(0.98); }
+      .btn-primary { background: linear-gradient(120deg, #632d73, #b470ff); color: #fff; }
+      .btn-ghost { background: rgba(255,255,255,0.06); color: #efeaf6; border: 1px solid rgba(255,255,255,0.1); }
+      .btn-warn { background: linear-gradient(120deg, #8b3838, #ff6363); color: #fff; }
+      .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+      .warn-list {
+        background: rgba(180, 112, 255, 0.07);
+        border-left: 3px solid #b470ff;
+        padding: 12px 16px;
+        border-radius: 8px;
+        color: #d8c7ef; font-size: 13px; line-height: 1.75;
+      }
+      .warn-list strong { color: #fff; }
+      .warn-list ol { margin: 4px 0 0; padding-left: 20px; }
+
+      .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 8px 0 0; }
+      .step {
+        padding: 10px 8px; border-radius: 10px; text-align: center;
+        font-size: 12px; font-weight: 700;
+        background: rgba(255,255,255,0.03);
+        color: #7c6e9c;
+        border: 1px solid rgba(255,255,255,0.05);
+      }
+      .step.active { color: #fff; background: rgba(180, 112, 255, 0.14); border-color: rgba(180, 112, 255, 0.4); }
+      .step.done { color: #67e28a; background: rgba(81, 207, 102, 0.09); border-color: rgba(81, 207, 102, 0.25); }
+      .step small { display: block; font-size: 10px; margin-top: 4px; font-weight: 500; opacity: .85; }
+
+      .activated-box { text-align: center; padding: 30px 20px; }
+      .activated-box .check {
+        width: 64px; height: 64px; margin: 0 auto 16px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #27d796, #5effb9);
+        color: #08221a;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 32px; font-weight: 900;
+        box-shadow: 0 10px 30px rgba(39, 215, 150, 0.3);
+      }
+      .activated-box h3 { margin: 0 0 6px; font-size: 22px; }
+      .activated-box p { margin: 0 0 18px; color: #a595c7; font-size: 14px; line-height: 1.6; }
+
+      .empty-hint { padding: 40px 20px; text-align: center; color: #a595c7; }
+      .empty-hint h4 { margin: 0 0 8px; color: #fff; }
+
+      .form-row { margin-bottom: 14px; }
+      .form-row label { display: block; font-size: 12px; color: #a595c7; margin-bottom: 6px; }
+      .form-row input, .form-row select {
+        width: 100%;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        color: #fff;
+        padding: 12px 14px;
+        border-radius: 10px;
+        font-size: 15px;
+        outline: none;
+        font-family: inherit;
+      }
+      .form-row input:focus, .form-row select:focus { border-color: #b470ff; }
+
+      .error-box {
+        background: rgba(255, 92, 92, 0.08);
+        border: 1px solid rgba(255, 92, 92, 0.25);
+        color: #ffb3b3;
+        padding: 12px 14px; border-radius: 10px;
+        font-size: 13px; line-height: 1.6;
+        margin-bottom: 14px;
+      }
+
+      /* 未登录引导卡 */
+      .login-cta-box {
+        text-align: center;
+        padding: 40px 24px;
+      }
+      .login-cta-box h3 { margin: 0 0 10px; font-size: 22px; }
+      .login-cta-box .desc { color: #a595c7; font-size: 14px; line-height: 1.6; margin: 0 0 20px; }
+      .tg-btn {
+        display: inline-flex; align-items: center; gap: 10px; justify-content: center;
+        background: linear-gradient(120deg, #229ED9, #40B7F0);
+        color: #fff; padding: 14px 22px; border-radius: 14px;
+        font-weight: 800; font-size: 15px; border: 0; cursor: pointer;
+        text-decoration: none;
+        box-shadow: 0 8px 20px rgba(34, 158, 217, 0.25);
+      }
+
+      /* 订单列表卡片（个人中心） */
+      .order-list-item {
+        padding: 14px 0; border-bottom: 1px dashed rgba(255,255,255,0.06);
+      }
+      .order-list-item:last-child { border-bottom: 0; }
+      .oli-head {
+        display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;
+      }
+      .oli-title { font-weight: 700; font-size: 14px; }
+      .oli-meta { color: #a595c7; font-size: 12px; font-family: ui-monospace, monospace; }
+      .oli-price { color: #27d796; font-weight: 800; font-variant-numeric: tabular-nums; }
+      .oli-cta { margin-top: 8px; display: flex; gap: 8px; }
+      .oli-cta .btn { padding: 8px 12px; font-size: 12px; flex: 0 0 auto; }
+
+      /* 权益列表 */
+      .ent-item {
+        display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
+        padding: 14px 0;
+        border-bottom: 1px dashed rgba(255,255,255,0.06);
+      }
+      .ent-item:last-child { border-bottom: 0; }
+      .ent-title { font-weight: 700; font-size: 14px; }
+      .ent-sub { color: #a595c7; font-size: 12px; margin-top: 2px; line-height: 1.5; }
+      .ent-badges { margin-top: 6px; }
+      .ent-badges .tag {
+        display: inline-block;
+        padding: 2px 8px; margin-right: 6px;
+        border-radius: 999px; font-size: 11px;
+        background: rgba(81, 207, 102, 0.1);
+        color: #67e28a;
+        border: 1px solid rgba(81, 207, 102, 0.2);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <div class="topbar">
+        <a href="./index.html" class="back-btn" id="backMiniAppLink">← 返回同频 Mini App</a>
+        <div id="userChip" class="user-chip off" title="未登录">
+          <span class="dot"></span>
+          <span id="userChipText">未登录</span>
+        </div>
+      </div>
+
+      <div id="viewUnauth" style="display:none">
+        <div class="card login-cta-box">
+          <div class="eyebrow">Telegram Login</div>
+          <h3>请先完成 Telegram 登录绑定</h3>
+          <p class="desc">
+            独立站外支付页（USDT-TRC20）必须先绑定你的 Telegram 账号后才能发放权益；
+            我们会通过 Bot 私信给你发送频道邀请。<br/><br/>
+            <strong>推荐方式（免手动登录）：</strong> 直接在 Telegram Mini App 中通过分享入口跳回本页，
+            系统会自动携带你的身份。
+          </p>
+          <a id="tgDeepLinkBtn" class="tg-btn" href="#">
+            <span style="font-size:18px">✈</span>
+            在 Telegram 中打开（自动携带身份）
+          </a>
+          <p style="color:#8e7fb0; margin-top:20px; font-size:12px; line-height:1.7;">
+            如果你是手动在浏览器输入此网址，没有经过 Mini App 打开，<br/>
+            你将无法被识别到 Telegram 账号，权益发放会失败。
+          </p>
+        </div>
+      </div>
+
+      <!-- 个人中心：订单 Tab -->
+      <div id="viewOrders" style="display:none">
+        <div class="card">
+          <div class="eyebrow">Me · Orders</div>
+          <h2>我的订单</h2>
+          <p class="sub">
+            这里汇总你的 USDT & Stars 所有订单；点击「继续支付」可回到该订单的支付详情页，
+            点击「进入频道」可前往已发放的私密频道。
+          </p>
+          <div id="ordersList" style="margin-top:10px">
+            <div class="empty-hint"><h4>加载中…</h4></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="eyebrow">Quick Action</div>
+          <h2>发起新的 USDT 支付</h2>
+          <p class="sub">如果你已经拿到商品 ID 或已有订单号，可直接粘贴下方：</p>
+          <div class="form-row">
+            <label for="productId">商品 ID（必填，向运营获取）</label>
+            <input id="productId" type="text" placeholder="如 prod-xxxxxx" autocomplete="off" />
+          </div>
+          <div class="form-row">
+            <label for="orderNo">已有订单号？（选填，粘贴后可直接继续支付）</label>
+            <input id="orderNo" type="text" placeholder="如 ORD-2025xxxx-xxxxx" autocomplete="off" />
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-ghost" id="btnGotoOrder">查询/继续支付</button>
+            <button class="btn btn-primary" id="btnCreateOrder">创建新支付订单</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 个人中心：权益 Tab -->
+      <div id="viewEntitlements" style="display:none">
+        <div class="card">
+          <div class="eyebrow">Me · Entitlements</div>
+          <h2>我的权益</h2>
+          <p class="sub">当前有效的会员/内容包/单条内容购买权益。</p>
+          <div id="entitlementsList" style="margin-top:10px">
+            <div class="empty-hint"><h4>加载中…</h4></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 个人中心：我的频道 Tab -->
+      <div id="viewChannels" style="display:none">
+        <div class="card">
+          <div class="eyebrow">Me · Channels</div>
+          <h2>我的私密频道</h2>
+          <p class="sub">点击频道卡片可直接跳转到 Telegram 邀请链接（权益有效时才显示进入按钮）。</p>
+          <div id="channelsList" style="margin-top:10px">
+            <div class="empty-hint"><h4>加载中…</h4></div>
+          </div>
+        </div>
+        <div class="warn-list">
+          <strong>进入频道前请先在 Telegram App 登录同一账号</strong>
+          <ol>
+            <li>系统会通过 Bot 私信邀请你加入，你也可以直接点击本页卡片进入。</li>
+            <li>若显示「无权限访问」，请确认当前浏览器访问的账号和你常用的 Telegram 账号一致。</li>
+          </ol>
+        </div>
+      </div>
+
+      <!-- 支付详情视图 -->
+      <div id="viewPayDetail" style="display:none">
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">
+            <div>
+              <div class="eyebrow">Payment Detail</div>
+              <h2 style="margin-bottom:0">USDT 支付订单</h2>
+            </div>
+            <span id="statusPill" class="status-pill pill-checking"><span class="dot"></span><span id="statusText">创建中</span></span>
+          </div>
+          <p class="sub" id="orderMeta">—</p>
+        </div>
+
+        <div class="card" id="amountCard">
+          <div class="steps" id="paySteps">
+            <div class="step active" data-step="1">待支付<small>生成地址</small></div>
+            <div class="step" data-step="2">检测中<small>链上广播</small></div>
+            <div class="step" data-step="3">已确认<small>区块确认</small></div>
+            <div class="step" data-step="4">已激活<small>权益发放</small></div>
+          </div>
+          <div class="amount-row">
+            <span class="amount-label">标价金额</span>
+            <span class="amount-value" id="listPrice">—</span>
+          </div>
+          <div class="amount-row">
+            <span class="amount-label">
+              实际应付（尾数唯一识别）
+              <span id="copyAmountBtn" style="color:#b470ff; cursor:pointer; margin-left:6px; font-weight:700;">[复制金额]</span>
+            </span>
+            <span class="amount-big"><span class="currency">USDT</span><span id="payAmount">—</span></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="eyebrow">Receiving Address · TRC-20</div>
+          <div class="address-card">
+            <div class="qr-box" id="qrBox">
+              <div id="qrPlaceholder" style="color:#632d73; font-weight:800; text-align:center; line-height:1.2; font-size:11px;">
+                加载中…<br/>二维码
+              </div>
+            </div>
+            <div class="addr-info">
+              <div class="addr-label">收款 TRON 地址（点击即可复制）</div>
+              <div class="addr-text" id="addrText" title="点击复制">T————————————</div>
+              <div class="btn-row">
+                <button class="btn btn-ghost" id="btnCopyAddr">复制地址</button>
+                <button class="btn btn-primary" id="btnCopyAmount">复制金额</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="warn-list">
+          <strong>到账与权益激活流程</strong>
+          <ol id="toFlow">
+            <li>按上方 <strong>精确金额 + 唯一尾数</strong>，使用 TRON (TRC-20) 钱包向显示的地址转账。</li>
+            <li>转账成功后本页会开始自动轮询；首次链上广播后状态变为「检测中」。</li>
+            <li>达到 <strong id="confirmNum">—</strong> 个区块确认后，系统立即发放权益；Telegram Bot 会私信你发送频道邀请。</li>
+            <li>权益激活后请点击下方「进入 Telegram 频道」按钮，或直接前往 Bot 的私信点击邀请。</li>
+          </ol>
+        </div>
+
+        <div class="card" id="activatedCard" style="display:none">
+          <div class="activated-box">
+            <div class="check">✓</div>
+            <h3>✅ 权益已激活</h3>
+            <p>
+              订单已确认支付成功，频道邀请已通过 Telegram Bot 私信发送给你。<br/>
+              请在 Telegram 中打开 Bot 邀请进入频道，或返回 Mini App 点击已解锁内容进入。
+            </p>
+            <div class="btn-row" style="justify-content:center; max-width:360px; margin:0 auto;">
+              <button class="btn btn-primary" id="btnBackMiniApp">返回 Telegram Mini App</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-row" style="position:sticky; bottom:8px;">
+          <button class="btn btn-ghost" id="btnRefreshStatus">刷新状态</button>
+          <button class="btn btn-ghost" id="btnBackProfile">返回个人中心</button>
+        </div>
+      </div>
+
+      <div id="viewError" style="display:none">
+        <div class="error-box" id="errorBox">—</div>
+      </div>
+    </div>
+
+    <!-- 底部 Tab Bar -->
+    <div class="tab-bar" id="tabBar" style="display:none">
+      <div class="t active" data-tab="orders"><div class="ic">📋</div><div>订单</div></div>
+      <div class="t" data-tab="entitlements"><div class="ic">🛡</div><div>权益</div></div>
+      <div class="t" data-tab="channels"><div class="ic">📺</div><div>我的频道</div></div>
+      <div class="t" data-tab="pay"><div class="ic">💳</div><div>支付详情</div></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+    <script src="./h5-pay.js"></script>
+  </body>
+</html>

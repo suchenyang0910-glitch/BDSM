@@ -14,6 +14,7 @@ import {
   MessageOutlined,
   SettingOutlined,
   ApiOutlined,
+  DashboardOutlined,
 } from "@ant-design/icons";
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { Modal } from "antd";
@@ -34,6 +35,7 @@ const ROLE_LABEL: Record<AdminRole, string> = {
 };
 
 const PAGE_TITLE_BY_PATH: Record<string, string> = {
+  "/dashboard": "运营概览 · 数据看板",
   "/orders": "订单与权益 · 订单管理",
   "/entitlements": "订单与权益 · 权益管理",
   "/users": "订单与权益 · 用户检索",
@@ -53,6 +55,7 @@ const AdminLayout: React.FC = () => {
 
   const selectedKey = (() => {
     const p = location.pathname;
+    if (p.startsWith("/dashboard")) return "/dashboard";
     if (p.startsWith("/contents")) return "/contents";
     if (p.startsWith("/categories")) return "/categories";
     if (p.startsWith("/banners")) return "/banners";
@@ -62,7 +65,7 @@ const AdminLayout: React.FC = () => {
     if (p.startsWith("/users")) return "/users";
     if (p.startsWith("/tickets")) return "/tickets";
     if (p.startsWith("/channels")) return "/channels";
-    return "/orders";
+    return "/dashboard";
   })();
   const openKeys = (() => {
     const p = location.pathname;
@@ -120,6 +123,11 @@ const AdminLayout: React.FC = () => {
           defaultOpenKeys={openKeys}
           onClick={({ key }) => navigate(key)}
           items={[
+            {
+              key: "/dashboard",
+              icon: <DashboardOutlined />,
+              label: "运营看板",
+            },
             {
               key: "content",
               icon: <AppstoreOutlined />,

@@ -1,288 +1,411 @@
-/**
- * Entitlements 过期 & 通知 Cron。
- *  - 每小时扫描一次；启动时立刻先跑一次，避免冷启动漏扫。
- *  - 所有外部调用（sendMessage / kick）失败只 warn、不 throw，保证 DB 状态更新不被 Telegram API 阻断。
- *  - 幂等由 DB 字段保证：
- *      notify3dAt      → 到期前 3 天提醒是否已发（NULL = 待提醒）
- *      notifyExpiredAt → 到期当日通知&踢人是否已执行（NULL = 待处理）
- *  - 【Security Boundary - 细节4】console.warn / console.error 日志中绝不包含明文 chatId、
- *    inviteLink、Bot Token 或用户资料（姓名/用户名/头像），仅保留 HMAC 指纹或脱敏标识。
- */
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient, Entitlement } from "@prisma/client";
 import {
   kickChannelMember,
   sendDirectMessage,
-  TELEGRAM_CONFIG,
-  refMembershipMain,
-  refPackageFeatured,
-  maskChatIdSafe,
-  chatIdFingerprint,
+  refManagedChat,
 } from "./telegramBot.js";
-import { userIdIndexKey } from "../utils/crypto.js";
+import { resolvePackageChannelId } from "./channelCrypto.js";
+import { decryptChatIdAesGcm, userIdIndexKey } from "../utils/crypto.js";
 import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
 
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
-const WARN_WINDOW_MS = 30 * 60 * 1000; // 30min 窗口，每小时扫肯定至少命中一次
-const GRACE_AFTER_EXPIRE_MS = 1 * 60 * 1000; // 过期 1 分钟后再通知&踢，给事务留时间
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const LOOKAHEAD_MS = FOUR_DAYS_MS();
+
+function FOUR_DAYS_MS() {
+  return 4 * 24 * 60 * 60 * 1000;
+}
 
 export type SweepResult = {
   markedExpired: number;
-  warned3d: number;
-  notifiedExpired: number;
-  kicked: number;
-  skippedMissingChannel: number;
-  externalErrors: number;
+  enteredGrace: number;
+  remindedExpired: number;
+  remindedPreGrace: number;
+  renewedSkipped: number;
+  removed: number;
+  failed: number;
   ranAt: string;
 };
 
-type ChannelRefForSweep =
-  | { kind: "membership_main" }
-  | { kind: "package_featured" };
+function maskTGUid(tgid: bigint | number | string): string {
+  return `uidfp:${userIdIndexKey(tgid).slice(0, 8)}…`;
+}
 
-function getChannelRefForResource(resourceType: string, resourceId: string): ChannelRefForSweep | null {
-  if (resourceType === "membership_channel" && resourceId === "membership-main") {
-    return { kind: "membership_main" };
+function safeCode(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : String(err || "");
+  const tg = raw.match(/\[(\d{3})\]/)?.[1];
+  return tg ? `tg_${tg}` : fallback;
+}
+
+function buildExpiredReminderText(ent: { resourceType: string; resourceId: string; expiresAt: Date; graceEndsAt: Date }): string {
+  const expires = ent.expiresAt.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  const grace = ent.graceEndsAt.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  if (ent.resourceType === "membership_channel") {
+    return `【同频 · 会员已到期】\n你的会员权益已于 ${expires} 到期，现已进入 3 天宽限期，宽限截止：${grace}。\n宽限期内频道访问暂时保留；若在截止前完成续费，将自动取消清理任务。\n请打开同频 Mini App 完成续费。`;
   }
-  if (resourceType === "package") {
-    return { kind: "package_featured" };
+  return `【同频 · 内容包已到期】\n你购买的内容包权益已于 ${expires} 到期，现已进入 3 天宽限期，宽限截止：${grace}。\n宽限期内频道访问暂时保留；若在截止前完成续费，将自动取消清理任务。\n请打开同频 Mini App 完成续费。`;
+}
+
+function buildPreGraceReminderText(ent: { resourceType: string; resourceId: string; graceEndsAt: Date }): string {
+  const grace = ent.graceEndsAt.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+  if (ent.resourceType === "membership_channel") {
+    return `【同频 · 会员宽限即将结束】\n你的会员权益宽限期将于 ${grace} 结束。\n如届时仍无新的有效会员权益，系统会自动移出会员主频道；完成续费后将取消清理。`;
+  }
+  return `【同频 · 内容包宽限即将结束】\n你的内容包宽限期将于 ${grace} 结束。\n如届时仍无新的有效内容包权益，系统会自动移出对应私密频道；完成续费后将取消清理。`;
+}
+
+async function resolveMembershipMainChatId(prisma: PrismaClient): Promise<bigint | null> {
+  const row = await prisma.adminManagedChannel.findFirst({
+    where: { purpose: "membership_main" },
+    select: { deprecatedChatIdBig: true, chatIdCiphertextB64: true },
+    orderBy: [{ updatedAt: "desc" }],
+  });
+  if (typeof row?.deprecatedChatIdBig === "bigint") return row.deprecatedChatIdBig;
+  if (row?.chatIdCiphertextB64) {
+    try { return decryptChatIdAesGcm(row.chatIdCiphertextB64); } catch { return null; }
   }
   return null;
 }
 
-function toChannelRef(ref: ChannelRefForSweep) {
-  if (ref.kind === "membership_main") return refMembershipMain();
-  return refPackageFeatured();
-}
-
-function maskTGUid(tgid: bigint | number | string): string {
-  const raw = String(tgid);
-  if (!raw) return "****";
-  const fprLocal = userIdIndexKey(tgid);
-  return `uidfp:${fprLocal.slice(0, 8)}…`;
-}
-
-function build3dWarningText(ent: { resourceType: string; resourceId: string; expiresAt: Date }): string {
-  const dateStr = ent.expiresAt.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
-  if (ent.resourceType === "membership_channel") {
-    return `【同频 · 会员即将到期】\n你的同频会员将于 ${dateStr} 到期，续费可无缝延长访问权益，无需担心被移出收费频道。\n打开同频 Mini App → 我的订单 → 选择会员续费即可。`;
+async function resolveCleanupChannelChatId(prisma: PrismaClient, ent: Pick<Entitlement, "resourceType" | "resourceId">): Promise<bigint | null> {
+  if (ent.resourceType === "membership_channel" && ent.resourceId === "membership-main") {
+    return resolveMembershipMainChatId(prisma);
   }
   if (ent.resourceType === "package") {
-    return `【同频 · 内容包即将到期】\n你购买的内容包将于 ${dateStr} 到期，到期后将自动移出对应内容包频道。续费可保持访问。`;
+    const pkg = await prisma.contentPackage.findUnique({
+      where: { id: ent.resourceId },
+      select: { channelId: true, channelIdCiphertext: true },
+    });
+    if (!pkg) return null;
+    return resolvePackageChannelId({ channelId: pkg.channelId, channelIdCiphertext: pkg.channelIdCiphertext });
   }
-  return `【同频 · 权益提醒】\n你购买的内容权益将于 ${dateStr} 到期，请注意续费。`;
+  return null;
 }
 
-function buildExpiredText(ent: { resourceType: string; resourceId: string }): string {
-  if (ent.resourceType === "membership_channel") {
-    return `【同频 · 会员已到期】\n你的同频会员权益已到期，已从收费会员频道移出。完成续费后将重新发送频道邀请链接，恢复所有会员内容访问。`;
-  }
-  if (ent.resourceType === "package") {
-    return `【同频 · 内容包已到期】\n你购买的内容包权益已到期，已从对应频道移出。续费后可重新进入。`;
-  }
-  return `【同频 · 权益已到期】\n你购买的内容权益已到期。续费可恢复对应访问。`;
+async function hasRenewedEntitlement(prisma: PrismaClient, ent: Pick<Entitlement, "id" | "userId" | "resourceType" | "resourceId">, now: Date): Promise<boolean> {
+  const renewed = await prisma.entitlement.findFirst({
+    where: {
+      id: { not: ent.id },
+      userId: ent.userId,
+      resourceType: ent.resourceType,
+      resourceId: ent.resourceId,
+      status: "active",
+      startsAt: { lte: now },
+      OR: [
+        { expiresAt: null },
+        { expiresAt: { gt: now } },
+      ],
+    },
+    select: { id: true },
+  });
+  return !!renewed;
 }
 
-export async function runEntitlementSweep(prisma: PrismaClient, opts?: { dryRun?: boolean }): Promise<SweepResult> {
+async function sendReminderAndUpdate(
+  prisma: PrismaClient,
+  ent: any,
+  field: "expiryReminderAt" | "preGraceReminderAt",
+  text: string,
+  now: Date,
+): Promise<{ sent: boolean; errorCode: string | null }> {
+  const tgid = ent.user?.telegramUserId;
+  if (!tgid) {
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: { lastRemovalErrorCode: "missing_telegram_user_id" },
+    });
+    return { sent: false, errorCode: "missing_telegram_user_id" };
+  }
+  try {
+    const dm = await sendDirectMessage({
+      telegramUserId: tgid.toString(),
+      text,
+      disableWebPagePreview: true,
+    });
+    if (!dm.success) {
+      const code = safeCode(dm.errorMessage || "dm_failed", "dm_failed");
+      await prisma.entitlement.update({
+        where: { id: ent.id },
+        data: { lastRemovalErrorCode: code },
+      });
+      return { sent: false, errorCode: code };
+    }
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        [field]: now,
+        expiryReminderCount: (ent.expiryReminderCount || 0) + 1,
+        lastRemovalErrorCode: null,
+      },
+    });
+    return { sent: true, errorCode: null };
+  } catch (err) {
+    const code = safeCode(err, "dm_request_failed");
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: { lastRemovalErrorCode: code },
+    });
+    return { sent: false, errorCode: code };
+  }
+}
+
+export async function processEntitlementGraceCleanup(
+  prisma: PrismaClient,
+  entitlementId: string,
+  opts?: { now?: Date },
+): Promise<{ ok: boolean; action: string; errorCode?: string | null }> {
+  const now = opts?.now ?? new Date();
+  const ent = await prisma.entitlement.findUnique({
+    where: { id: entitlementId },
+    include: {
+      user: { select: { telegramUserId: true, displayName: true } },
+    },
+  });
+  if (!ent) return { ok: false, action: "not_found", errorCode: "entitlement_not_found" };
+  if (!ent.expiresAt) return { ok: true, action: "skip_no_expiry" };
+  if (!["membership_channel", "package"].includes(ent.resourceType)) return { ok: true, action: "skip_resource_type" };
+
+  const graceEndsAt = ent.graceEndsAt ?? new Date(ent.expiresAt.getTime() + THREE_DAYS_MS);
+
+  if (ent.status === "active" && ent.expiresAt.getTime() <= now.getTime()) {
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        status: "expired",
+        graceEndsAt,
+        removalStatus: "grace_period",
+      },
+    });
+  } else if (!ent.graceEndsAt) {
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: { graceEndsAt },
+    });
+  }
+
+  const renewed = await hasRenewedEntitlement(prisma, ent, now);
+  if (renewed) {
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        removalStatus: "renewed_during_grace",
+        lastRemovalErrorCode: null,
+      },
+    });
+    return { ok: true, action: "renewed_during_grace" };
+  }
+
+  const fresh = await prisma.entitlement.findUnique({
+    where: { id: ent.id },
+    include: { user: { select: { telegramUserId: true, displayName: true } } },
+  });
+  if (!fresh) return { ok: false, action: "reload_failed", errorCode: "entitlement_reload_failed" };
+  if (!fresh.expiresAt) return { ok: true, action: "skip_no_expiry_after_reload" };
+
+  if (!fresh.expiryReminderAt && now.getTime() >= fresh.expiresAt.getTime()) {
+    const sent = await sendReminderAndUpdate(
+      prisma,
+      fresh,
+      "expiryReminderAt",
+      buildExpiredReminderText({ resourceType: fresh.resourceType, resourceId: fresh.resourceId, expiresAt: fresh.expiresAt, graceEndsAt }),
+      now,
+    );
+    if (!sent.sent) return { ok: false, action: "expiry_reminder_failed", errorCode: sent.errorCode };
+    return { ok: true, action: "expiry_reminded" };
+  }
+
+  if (!fresh.preGraceReminderAt && now.getTime() >= graceEndsAt.getTime() - ONE_DAY_MS && now.getTime() < graceEndsAt.getTime()) {
+    const sent = await sendReminderAndUpdate(
+      prisma,
+      fresh,
+      "preGraceReminderAt",
+      buildPreGraceReminderText({ resourceType: fresh.resourceType, resourceId: fresh.resourceId, graceEndsAt }),
+      now,
+    );
+    if (!sent.sent) return { ok: false, action: "pre_grace_reminder_failed", errorCode: sent.errorCode };
+    return { ok: true, action: "pre_grace_reminded" };
+  }
+
+  if (now.getTime() < graceEndsAt.getTime()) {
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        graceEndsAt,
+        removalStatus: "grace_period",
+      },
+    });
+    return { ok: true, action: "grace_waiting" };
+  }
+
+  const renewedAtFinalCheck = await hasRenewedEntitlement(prisma, ent, now);
+  if (renewedAtFinalCheck) {
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        removalStatus: "renewed_during_grace",
+        lastRemovalErrorCode: null,
+      },
+    });
+    return { ok: true, action: "renewed_before_kick" };
+  }
+
+  const channelChatId = await resolveCleanupChannelChatId(prisma, ent);
+  if (!channelChatId) {
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        graceEndsAt,
+        removalStatus: "removal_failed",
+        removalAttemptedAt: now,
+        lastRemovalErrorCode: "channel_not_configured",
+      },
+    });
+    return { ok: false, action: "channel_missing", errorCode: "channel_not_configured" };
+  }
+
+  const tgid = fresh.user?.telegramUserId;
+  if (!tgid) {
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        graceEndsAt,
+        removalStatus: "removal_failed",
+        removalAttemptedAt: now,
+        lastRemovalErrorCode: "missing_telegram_user_id",
+      },
+    });
+    return { ok: false, action: "user_missing_tgid", errorCode: "missing_telegram_user_id" };
+  }
+
+  try {
+    const kicked = await kickChannelMember({
+      channel: refManagedChat(channelChatId),
+      telegramUserId: tgid.toString(),
+      allowReinvite: true,
+    });
+    if (!kicked.success) {
+      const code = safeCode(kicked.errorMessage || "kick_failed", "kick_failed");
+      await prisma.entitlement.update({
+        where: { id: ent.id },
+        data: {
+          graceEndsAt,
+          removalStatus: "removal_failed",
+          removalAttemptedAt: now,
+          lastRemovalErrorCode: code,
+        },
+      });
+      return { ok: false, action: "kick_failed", errorCode: code };
+    }
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        graceEndsAt,
+        removalStatus: "removed",
+        removalAttemptedAt: now,
+        removedAt: now,
+        lastRemovalErrorCode: null,
+      },
+    });
+    return { ok: true, action: "removed" };
+  } catch (err) {
+    const code = safeCode(err, "kick_request_failed");
+    await prisma.entitlement.update({
+      where: { id: ent.id },
+      data: {
+        graceEndsAt,
+        removalStatus: "removal_failed",
+        removalAttemptedAt: now,
+        lastRemovalErrorCode: code,
+      },
+    });
+    return { ok: false, action: "kick_request_failed", errorCode: code };
+  }
+}
+
+export async function runEntitlementSweep(prisma: PrismaClient): Promise<SweepResult> {
   const now = new Date();
   const result: SweepResult = {
     markedExpired: 0,
-    warned3d: 0,
-    notifiedExpired: 0,
-    kicked: 0,
-    skippedMissingChannel: 0,
-    externalErrors: 0,
+    enteredGrace: 0,
+    remindedExpired: 0,
+    remindedPreGrace: 0,
+    renewedSkipped: 0,
+    removed: 0,
+    failed: 0,
     ranAt: now.toISOString(),
   };
 
   try {
-    // ====== 1) 过期状态切换（纯 DB，updateMany 原子幂等）======
-    if (!opts?.dryRun) {
-      const expiredRes = await prisma.entitlement.updateMany({
-        where: { status: "active", expiresAt: { not: null, lt: now } },
-        data: { status: "expired" },
-      });
-      result.markedExpired = expiredRes.count ?? 0;
+    const rows = await prisma.entitlement.findMany({
+      where: {
+        resourceType: { in: ["membership_channel", "package"] },
+        expiresAt: { not: null, lte: new Date(now.getTime() + LOOKAHEAD_MS) },
+        status: { in: ["active", "expired"] },
+      },
+      select: { id: true },
+      take: 500,
+      orderBy: [{ expiresAt: "asc" }],
+    });
+
+    for (const row of rows) {
+      const processed = await processEntitlementGraceCleanup(prisma, row.id, { now });
+      switch (processed.action) {
+        case "grace_waiting":
+          result.enteredGrace += 1;
+          break;
+        case "expiry_reminded":
+          result.markedExpired += 1;
+          result.remindedExpired += 1;
+          break;
+        case "pre_grace_reminded":
+          result.remindedPreGrace += 1;
+          break;
+        case "renewed_during_grace":
+        case "renewed_before_kick":
+          result.renewedSkipped += 1;
+          break;
+        case "removed":
+          result.removed += 1;
+          break;
+        default:
+          if (!processed.ok) result.failed += 1;
+          break;
+      }
     }
   } catch (err) {
     emitSafetyEvent(
       {
-        event: "entitlements_mark_expired_failed",
+        event: "entitlements_sweep_failed",
         errorClass: "db_error",
-        retryHint: 1,
-        note: "updateMany_entitlement_status_expired_failed",
+        note: "entitlement_grace_cleanup_sweep_failed",
       },
       err,
     );
-    result.externalErrors += 1;
+    result.failed += 1;
   }
 
-  // ====== 2) 到期前 3 天提醒（notify3dAt IS NULL 做幂等）======
-  try {
-    const warnLower = new Date(now.getTime() + THREE_DAYS_MS - WARN_WINDOW_MS);
-    const warnUpper = new Date(now.getTime() + THREE_DAYS_MS + WARN_WINDOW_MS);
-    const candidates3d = await prisma.entitlement.findMany({
-      where: {
-        status: "active",
-        notify3dAt: null,
-        expiresAt: { not: null, gte: warnLower, lte: warnUpper },
-      },
-      include: { user: { select: { telegramUserId: true, displayName: true } } },
-    });
-    for (const ent of candidates3d) {
-      if (!ent.expiresAt) continue;
-      const tgid = ent.user.telegramUserId;
-      if (!tgid) {
-        result.externalErrors += 1;
-        console.warn(
-          `[entitlements-sweep] warn3d skipped: entitlement ${ent.id} user has no telegramUserId (masked=${maskTGUid(0)})`,
-        );
-        continue;
-      }
-      let sent = true;
-      if (!opts?.dryRun) {
-        try {
-          const r = await sendDirectMessage({ telegramUserId: tgid.toString(), text: build3dWarningText(ent as any), disableWebPagePreview: true });
-          sent = r.success;
-          if (!sent) {
-            result.externalErrors += 1;
-            console.warn(
-              `[entitlements-sweep] warn3d sendMessage failed for user=${maskTGUid(tgid)}: code=dm_failed`,
-            );
-          }
-        } catch (err) {
-          sent = false;
-          result.externalErrors += 1;
-          console.warn(
-            `[entitlements-sweep] warn3d sendMessage threw for user=${maskTGUid(tgid)}: code=dm_request_failed`,
-          );
-        }
-      }
-      if (sent && !opts?.dryRun) {
-        await prisma.entitlement.update({ where: { id: ent.id }, data: { notify3dAt: now } });
-      }
-      if (sent) result.warned3d += 1;
-    }
-  } catch (err) {
-    emitSafetyEvent(
-      {
-        event: "entitlements_warn3d_pass_failed",
-        errorClass: "unknown",
-        retryHint: 1,
-        note: "3d_warning_pass_failed_may_include_db_or_dm",
-      },
-      err,
-    );
-    result.externalErrors += 1;
-  }
-
-  // ====== 3) 到期当日：通知 + 踢人（notifyExpiredAt IS NULL 做幂等）======
-  try {
-    const expiredCutoff = new Date(now.getTime() - GRACE_AFTER_EXPIRE_MS);
-    const expiredPending = await prisma.entitlement.findMany({
-      where: {
-        status: "expired",
-        notifyExpiredAt: null,
-        expiresAt: { not: null, lt: expiredCutoff },
-      },
-      include: { user: { select: { telegramUserId: true, displayName: true } } },
-    });
-    for (const ent of expiredPending) {
-      const tgid = ent.user.telegramUserId;
-      let notified = true;
-      if (tgid && !opts?.dryRun) {
-        try {
-          const r = await sendDirectMessage({ telegramUserId: tgid.toString(), text: buildExpiredText(ent as any), disableWebPagePreview: true });
-          notified = r.success;
-          if (!notified) {
-            result.externalErrors += 1;
-            console.warn(
-              `[entitlements-sweep] expired sendMessage failed for user=${maskTGUid(tgid)}: code=dm_failed`,
-            );
-          }
-        } catch (err) {
-          notified = false;
-          result.externalErrors += 1;
-          console.warn(
-            `[entitlements-sweep] expired sendMessage threw for user=${maskTGUid(tgid)}: code=dm_request_failed`,
-          );
-        }
-      } else if (!tgid) {
-        notified = true;
-      }
-
-      // kick 仅在有频道映射 + 有 tgid 时执行
-      let kickedThis = false;
-      const channelRef = getChannelRefForResource(ent.resourceType, ent.resourceId);
-      if (!channelRef) {
-        result.skippedMissingChannel += 1;
-      } else if (!tgid) {
-        result.externalErrors += 1;
-        console.warn(
-          `[entitlements-sweep] kick skipped: entitlement ${ent.id} user has no telegramUserId (masked=${maskTGUid(0)})`,
-        );
-      } else if (!opts?.dryRun) {
-        try {
-          const r = await kickChannelMember({ channel: toChannelRef(channelRef), telegramUserId: tgid.toString() });
-          if (r.success) {
-            kickedThis = true;
-          } else {
-            result.externalErrors += 1;
-            console.warn(
-              `[entitlements-sweep] kick failed for user=${maskTGUid(tgid)} on resource=${ent.resourceType}:${ent.resourceId.slice(0,8)}…: code=kick_failed`,
-            );
-          }
-        } catch (err) {
-          result.externalErrors += 1;
-          console.warn(
-            `[entitlements-sweep] kick threw for user=${maskTGUid(tgid)} on resource=${ent.resourceType}:${ent.resourceId.slice(0,8)}…: code=kick_request_failed`,
-          );
-        }
-      }
-      if (kickedThis) result.kicked += 1;
-
-      // 只要不是所有外部步骤都硬失败（通知或踢人至少一个尝试过），就把 notifyExpiredAt 落库防重复
-      // 若两者都没做（dry run 或都失败），保持 NULL 留待下次重试
-      const didSomething = opts?.dryRun || notified || kickedThis || !channelRef;
-      if (didSomething && !opts?.dryRun) {
-        await prisma.entitlement.update({ where: { id: ent.id }, data: { notifyExpiredAt: now } });
-      }
-      if (notified) result.notifiedExpired += 1;
-    }
-  } catch (err) {
-    emitSafetyEvent(
-      {
-        event: "entitlements_expired_notify_kick_failed",
-        errorClass: "unknown",
-        retryHint: 1,
-        note: "expired_notify_plus_kick_pass_failed_may_include_db_or_dm_or_kick",
-      },
-      err,
-    );
-    result.externalErrors += 1;
-  }
-
-  const summary =
-    `[entitlements-sweep] done @ ${result.ranAt}: expired=${result.markedExpired}, warn3d=${result.warned3d}, ` +
-    `expired-notified=${result.notifiedExpired}, kicked=${result.kicked}, skipped-no-channel=${result.skippedMissingChannel}, errors=${result.externalErrors}`;
   emitStructuredLog({
     event: "entitlements_sweep_done",
-    errorClass: result.externalErrors > 0 ? "db_error" : "business",
-    retryHint: 0,
-    note: result.externalErrors > 0 ? "sweep_done_with_errors" : "sweep_done_clean",
+    errorClass: result.failed > 0 ? "db_error" : "business",
+    note: result.failed > 0 ? "grace_cleanup_done_with_failures" : "grace_cleanup_done_clean",
     counts: {
-      markedExpired: result.markedExpired,
-      warned3d: result.warned3d,
-      notifiedExpired: result.notifiedExpired,
-      kicked: result.kicked,
-      skippedNoChannel: result.skippedMissingChannel,
-      errors: result.externalErrors,
+      enteredGrace: result.enteredGrace,
+      remindedExpired: result.remindedExpired,
+      remindedPreGrace: result.remindedPreGrace,
+      renewedSkipped: result.renewedSkipped,
+      removed: result.removed,
+      failed: result.failed,
     },
   });
   return result;
 }
 
-export function startEntitlementsCron(prisma: PrismaClient, opts?: { intervalMs?: number; runImmediately?: boolean }): { stop: () => void; runOnce: () => Promise<SweepResult> } {
-  const intervalMs = opts?.intervalMs ?? 60 * 60 * 1000; // 默认 1 小时
+export function startEntitlementsCron(
+  prisma: PrismaClient,
+  opts?: { intervalMs?: number; runImmediately?: boolean },
+): { stop: () => void; runOnce: () => Promise<SweepResult> } {
+  const intervalMs = opts?.intervalMs ?? SIX_HOURS_MS;
   let stopped = false;
 
   const runOnce = () => runEntitlementSweep(prisma).catch((err) => {
@@ -290,25 +413,28 @@ export function startEntitlementsCron(prisma: PrismaClient, opts?: { intervalMs?
       {
         event: "entitlements_runonce_unhandled",
         errorClass: "unknown",
-        retryHint: 1,
-        note: "entitlements_runOnce_outer_catch_swallowed_unhandled",
+        note: "grace_cleanup_run_once_unhandled",
       },
       err,
     );
-    return { markedExpired: 0, warned3d: 0, notifiedExpired: 0, kicked: 0, skippedMissingChannel: 0, externalErrors: 1, ranAt: new Date().toISOString() } as SweepResult;
+    return {
+      markedExpired: 0,
+      enteredGrace: 0,
+      remindedExpired: 0,
+      remindedPreGrace: 0,
+      renewedSkipped: 0,
+      removed: 0,
+      failed: 1,
+      ranAt: new Date().toISOString(),
+    };
   });
 
   if (opts?.runImmediately !== false) {
-    // 启动后 5s 跑第一次（给 DB/网络 留冷启动缓冲）
-    setTimeout(() => { if (!stopped) runOnce(); }, 5000);
+    setTimeout(() => { if (!stopped) void runOnce(); }, 5000);
   }
-  const timer = setInterval(() => { if (!stopped) runOnce(); }, intervalMs);
-  // 防止 node:test 在 setInterval 挂着无法退出；只在生产才 unref（测试环境保留 ref）
-  if (typeof (timer as any).unref === "function" && process.env.NODE_ENV === "production") {
-    (timer as any).unref();
-  }
+  const timer = setInterval(() => { if (!stopped) void runOnce(); }, intervalMs);
+  try { (timer as any).unref?.(); } catch {}
 
-  console.log(`[entitlements-sweep] cron scheduled: interval=${Math.round(intervalMs / 60000)}min, public-channel-hint=${TELEGRAM_CONFIG.publicChannelUrl}`);
   return {
     stop: () => { stopped = true; clearInterval(timer); },
     runOnce,

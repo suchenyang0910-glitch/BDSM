@@ -51,8 +51,10 @@ const adminOrdersQuerySchema = z.object({
   productId: z.string().min(1).optional(),
 });
 
-function orderResponse(o: any) {
-  return {
+const STARS_CONTINUE_WINDOW_MS = Math.min(STARS_ORDER_EXPIRES_MS, 30 * 60 * 1000); // 续付窗口（30min，不超过订单本身过期时间）
+
+function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null }) {
+  const out: any = {
     id: o.id,
     orderNo: o.orderNo,
     status: o.status,
@@ -95,6 +97,26 @@ function orderResponse(o: any) {
         }))
       : [],
   };
+  // 安全暴露 invoiceLink：
+  //   - 订单本人
+  //   - 支付方式 telegram_stars
+  //   - 当前状态 pending/processing
+  //   - 创建时间 <= 30min
+  //   - 列非空
+  if (
+    opts?.exposeInvoiceIfOwnedBy &&
+    typeof o.userId === "string" &&
+    o.userId === opts.exposeInvoiceIfOwnedBy &&
+    (o.paymentMethod === "telegram_stars" || o.paymentProvider === "telegram_stars") &&
+    (o.status === "pending" || o.status === "processing") &&
+    typeof o.telegramStarsInvoiceLink === "string" &&
+    o.telegramStarsInvoiceLink.length > 0 &&
+    Date.now() - new Date(o.createdAt).getTime() < STARS_CONTINUE_WINDOW_MS
+  ) {
+    out.invoiceLink = o.telegramStarsInvoiceLink;
+    out.invoiceVia = o.telegramStarsInvoiceVia ?? null;
+  }
+  return out;
 }
 
 function adminOrderResponse(o: any) {
@@ -239,7 +261,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     }
     if (!order) return reply.status(500).send({ error: "order_create_failed", message: "订单创建冲突，请稍后重试" });
 
-    // 生成 Stars Invoice：优先 Mini App createInvoiceLink
+    // 生成 Stars Invoice（createInvoiceLink）
     const title = product.title?.slice(0, 128) || "InTune 数字内容";
     const descLines: string[] = [];
     if (product.type === "membership" && product.durationDays) descLines.push(`会员时长：${product.durationDays} 天`);
@@ -249,44 +271,87 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     const description = descLines.join(" · ").slice(0, 255);
     const prices = [{ label: product.title?.slice(0, 60) || "数字内容", amount: Number(amountMinor) }];
 
-    let inv: CreateStarsInvoiceResult | null = null;
-    // DM 模式优先（Bot sendInvoice 直接推到 Telegram 聊天）
-    if (tgid) {
-      const r = await createStarsInvoice({
-        title, description, payload: payloadPlain, currency: "XTR", prices,
-        sendToTelegramUserId: tgid,
+    // ============= P0-#1-C FIX：强制 createInvoiceLink，禁止 DM 模式返回占位 =============
+    // telegramBot.ts 内部会：若传了 sendToTelegramUserId，则「额外」私信一张发票给用户（仅提醒，不影响主链接）；
+    // 这里只调用一次 createStarsInvoice，并在路由层再校验前缀 https://t.me/ 以 Fail-Closed。
+    let inv: CreateStarsInvoiceResult;
+    try {
+      inv = await createStarsInvoice({
+        title,
+        description,
+        payload: payloadPlain,
+        currency: "XTR",
+        prices,
+        sendToTelegramUserId: tgid ?? undefined, // 仅作额外私信提醒，不决定 invoiceLink
       });
-      inv = r;
-    }
-    // 如果不发 DM 或 DM 失败（比如用户还没发过 /start），回退 createInvoiceLink（Mini App 内部 tg.openInvoice）
-    if (!inv || !inv.ok) {
-      inv = await createStarsInvoice({ title, description, payload: payloadPlain, currency: "XTR", prices });
+    } catch (e: any) {
+      inv = { ok: false, errorClass: "stars_invoice_unexpected_exception", reason: e?.message || String(e) };
     }
 
     const base: any = orderResponse(order);
     base.expiresAt = expiresAt.toISOString();
     base.paymentMethod = "telegram_stars";
 
-    if (!inv.ok) {
-      // 503: Bot 配置错导致无法开发票（返回语义化错误，非泛化 500）
+    // 路由层二次 Fail-Closed 校验：链接必须是 https://t.me/
+    if (!inv.ok || typeof (inv as any).invoiceLink !== "string" || !(inv as any).invoiceLink.startsWith("https://t.me/")) {
+      const reason = inv.ok
+        ? `stars_invoice_link_malformed:len=${(inv as any).invoiceLink?.length || 0}`
+        : (inv as any).reason?.slice?.(0, 120) || "create_stars_invoice_failed";
+      emitSafetyEvent(
+        {
+          event: "stars_create_invoice_failed",
+          errorClass: "business",
+          userId: uid,
+          productId: product.id,
+          orderNo,
+          note: reason,
+          counts: { attempt: 1 },
+        },
+      );
       return reply.status(503).send({
         ...base,
         ok: false,
-        error: "service_unavailable",
-        detail: { errorClass: inv.errorClass, reason: inv.reason, doc: "https://core.telegram.org/bots/payments-stars" },
+        error: "stars_invoice_service_unavailable",
+        userError: "stars_invoice_service_unavailable",
+        message: "Stars 发票服务暂时不可用（Bot 未配置或 API 失败），请稍后重试或联系运营。",
       });
     }
+
+    // 保存 invoiceLink 到 DB，保证 /api/user/orders 返回的本人待支付订单包含 invoiceLink（续付用）
+    try {
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          telegramStarsInvoiceLink: inv.invoiceLink,
+          telegramStarsInvoiceVia: inv.via || null,
+        },
+      });
+    } catch (e) {
+      emitSafetyEvent(
+        {
+          event: "stars_save_invoice_failed",
+          errorClass: "db_error",
+          prismaCode: (e as any)?.code,
+          orderNo,
+          userId: uid,
+        },
+        e,
+      );
+      // 不中断主流程：返回 invoiceLink 给前端（但列表就查不到续付了，所以失败需要告警）
+    }
+
+    const withInvoice = { ...base, invoiceLink: inv.invoiceLink, invoiceVia: inv.via || null };
+
     return reply.status(201).send({
-      ...base,
       ok: true,
-      invoice: {
+      paymentMethod: "telegram_stars",
+      created: withInvoice,       // <=== 前端 created.invoiceLink 主读取
+      invoice: {                 // <=== 向后兼容
         via: inv.via,
         invoiceLink: inv.invoiceLink,
       },
       expiresAt: expiresAt.toISOString(),
-      tip: inv.via === "sendInvoice"
-        ? "发票已发送到您与 Bot 的私信会话，请在 Telegram 内打开完成支付。"
-        : "请在 Mini App 中使用 tg.openInvoice(invoiceLink) 完成 Stars 支付。",
+      tip: "请在 Telegram Mini App 中使用 tg.openInvoice(invoiceLink) 完成 Stars 支付；若在站外 H5，请点击提供的发票链接跳转支付。",
     });
   });
 
@@ -622,7 +687,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     ]);
 
     return {
-      items: rows.map(orderResponse),
+      items: rows.map((o: any) => orderResponse(o, { exposeInvoiceIfOwnedBy: uid })),
       pagination: {
         page: query.page,
         pageSize: query.pageSize,
@@ -641,7 +706,140 @@ export default async function orderRoutes(fastify: FastifyInstance) {
       include: { product: true, entitlements: true },
     });
     if (!order || order.userId !== uid) return reply.status(404).send({ error: "not_found" });
-    return orderResponse(order);
+    return orderResponse(order, { exposeInvoiceIfOwnedBy: uid });
+  });
+
+  // ============================================================
+  // P0 修复：Stars 订单「安全续付」接口
+  // 严格前置校验（任何一条不满足立即返回结构化中文错误，绝不新建订单）：
+  //   1) 本人 (req.userId === order.userId)
+  //   2) 支付方式 telegram_stars
+  //   3) 状态 pending / processing
+  //   4) 创建时间 <= STARS_CONTINUE_WINDOW_MS (30min，不超过订单本身 expiresAt)
+  //   5) telegramStarsInvoiceLink 非空
+  //   6) 订单本身 expiresAt 未过期
+  // 命中则返回 { ok:true, order:{ invoiceLink }, orderNo, remainMs }
+  // 未命中按下列业务错误码（已在前端 CLIENT_ERROR_ZH/H5_ERROR_ZH 对应用户友好中文）：
+  //   stars_continue_not_pending / stars_continue_expired / stars_continue_no_invoice / not_found / forbidden
+  // ============================================================
+  fastify.post<{ Params: { orderNo: string } }>("/orders/:orderNo/continue-stars", async (req, reply) => {
+    const uid = (req as any).userId as string | undefined;
+    if (!uid) return reply.status(401).send({ error: "unauthorized", message: "请先在 Telegram Mini App 或 H5 登录后再续付订单" });
+
+    const orderNo = req.params.orderNo;
+    const order = await prisma.order.findUnique({
+      where: { orderNo },
+      include: { product: true, entitlements: true },
+    });
+    if (!order) return reply.status(404).send({ error: "not_found", userError: "stars_continue_not_found", message: "未找到该订单（可能已被删除或订单号错误）" });
+    if (order.userId !== uid) return reply.status(403).send({ error: "forbidden", userError: "stars_continue_not_owner", message: "该订单不是你的，无法续付（可在 Mini App 或 H5 中发起新单）" });
+
+    const isStars = order.paymentMethod === "telegram_stars" || order.paymentProvider === "telegram_stars" || (order.currency || "").toUpperCase() === "XTR";
+    if (!isStars) return reply.status(409).send({ error: "stars_continue_not_stars", userError: "stars_continue_not_stars", message: "该订单不是 Telegram Stars 支付，不能使用 Stars 续付接口（你可能需要使用 USDT 支付通道）" });
+    if (order.status !== "pending" && order.status !== "processing") {
+      const zhMap: Record<string, string> = {
+        paid: "该订单已支付完成，无需再次续付（可直接进入「我的频道」）。",
+        expired: "该订单已超过支付窗口，请重新创建订单。",
+        cancelled: "该订单已取消，不能续付。",
+        refunded: "该订单已退款，不能续付。",
+        failed: "该订单支付失败，请重新创建订单。",
+      };
+      return reply.status(409).send({
+        error: "stars_continue_not_pending",
+        userError: "stars_continue_not_pending",
+        message: zhMap[order.status as string] || "该订单已不处于待支付状态，请重新创建订单。",
+      });
+    }
+
+    const ageMs = Date.now() - new Date(order.createdAt).getTime();
+    if (ageMs > STARS_CONTINUE_WINDOW_MS) {
+      return reply.status(409).send({ error: "stars_continue_expired", userError: "stars_continue_expired", message: "Stars 续付窗口（30 分钟）已过，请重新创建订单（旧单将在订单本身过期时间后自动标记为过期）。" });
+    }
+    if (order.expiresAt && Date.now() > new Date(order.expiresAt).getTime()) {
+      return reply.status(409).send({ error: "payment_expired", userError: "payment_expired", message: "订单已过期，请重新创建订单。" });
+    }
+    if (!order.telegramStarsInvoiceLink || typeof order.telegramStarsInvoiceLink !== "string" || order.telegramStarsInvoiceLink.length === 0) {
+      return reply.status(409).send({ error: "stars_continue_no_invoice", userError: "stars_continue_no_invoice", message: "该旧单未保存发票链接（可能是旧版本创建的订单），请重新创建订单。" });
+    }
+
+    // ============= P0-#1-C FIX：脏数据兼容 + 强校验前缀 =============
+    // 若旧订单存的是 tg:invoice 占位（之前 sendInvoice 模式的 bug 产物），立刻重开一张 createInvoiceLink 并更新 DB。
+    // 所有返回必须是 https://t.me/ 开头的真实链接。
+    let useInvoiceLink = order.telegramStarsInvoiceLink;
+    let useVia: "createInvoiceLink" | null = order.telegramStarsInvoiceVia === "createInvoiceLink" ? "createInvoiceLink" : null;
+    if (!useInvoiceLink.startsWith("https://t.me/")) {
+      const product = order.product as any;
+      const amtMinor = String(order.amountMinor || "0");
+      const ttlTitle = product?.title?.slice?.(0, 128) || "InTune 数字内容";
+      const payloadPlain = (order as any).telegramStarsPayload || `${order.orderNo}:${amtMinor}:${uid}`;
+      const pricesArr = [{ label: (product?.title || "数字内容").slice(0, 60), amount: Number(amtMinor) }];
+      const tgid: bigint | null = order.user ? (order.user as any).telegramUserId : null;
+      const reinv: CreateStarsInvoiceResult = await createStarsInvoice({
+        title: ttlTitle,
+        description: `旧单 ${order.orderNo} 续付（已重新生成真实发票链接）`,
+        payload: payloadPlain,
+        currency: "XTR",
+        prices: pricesArr,
+        sendToTelegramUserId: tgid ?? undefined,
+      });
+      if (!reinv.ok || !reinv.invoiceLink.startsWith("https://t.me/")) {
+        emitSafetyEvent({
+          event: "stars_continue_re_invoice_failed",
+          errorClass: "business",
+          userId: uid,
+          productId: order.productId,
+          orderNo,
+          note: (reinv as any).reason?.slice?.(0, 120) || "recreate_stars_invoice_failed",
+        });
+        return reply.status(503).send({
+          ok: false,
+          orderNo: order.orderNo,
+          error: "stars_invoice_service_unavailable",
+          userError: "stars_invoice_service_unavailable",
+          message: "Stars 续付服务暂时不可用（旧单占位发票重开失败），请稍后重试。",
+        });
+      }
+      useInvoiceLink = reinv.invoiceLink;
+      useVia = "createInvoiceLink";
+      try {
+        await prisma.order.update({
+          where: { id: order.id },
+          data: { telegramStarsInvoiceLink: useInvoiceLink, telegramStarsInvoiceVia: useVia },
+        });
+      } catch (e: any) {
+        emitSafetyEvent({
+          event: "stars_continue_save_re_invoice_failed",
+          errorClass: "db_error",
+          prismaCode: e?.code,
+          orderNo,
+          userId: uid,
+        }, e);
+        // 保存失败不影响返回前端（返回新链接即可）
+      }
+    }
+
+    emitStructuredLog({
+      event: "stars_continue_hit",
+      userId: uid,
+      orderNo: order.orderNo,
+      productId: order.productId,
+      counts: { remainMs: Math.max(0, STARS_CONTINUE_WINDOW_MS - ageMs) },
+    });
+
+    // 用经校验的新链接包装订单响应：在 orderResponse 基础上覆盖 invoiceLink 字段（确保 exposeInvoiceIfOwnedBy 已允许后，强制用真实链接）
+    const baseOrder = orderResponse(order, { exposeInvoiceIfOwnedBy: uid }) as any;
+    if (typeof baseOrder === "object" && baseOrder !== null) {
+      baseOrder.invoiceLink = useInvoiceLink;
+      baseOrder.invoiceVia = useVia || baseOrder.invoiceVia;
+    }
+
+    return reply.status(200).send({
+      ok: true,
+      orderNo: order.orderNo,
+      order: baseOrder,
+      remainMs: Math.max(0, STARS_CONTINUE_WINDOW_MS - ageMs),
+      tip: "请在 Telegram Mini App 中打开返回的 invoiceLink，完成 Stars 支付；若在站外 H5，请点击提供的发票链接跳转支付。",
+    });
   });
 
   fastify.get(

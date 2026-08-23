@@ -16,7 +16,6 @@ import {
   Typography,
   Badge,
   Divider,
-  List,
 } from "antd";
 import {
   SearchOutlined,
@@ -34,11 +33,13 @@ import {
   listAdminEntitlements,
   getAdminEntitlement,
   adminResendEntitlementInvite,
+  adminRetryEntitlementRemoval,
   adminGrantEntitlement,
   listAdminUsers,
 } from "../api/client";
 import type {
   EntitlementItem,
+  EntitlementRemovalStatus,
   EntitlementStatus,
   ResourceType,
   AdminRole,
@@ -70,19 +71,36 @@ const RESOURCE_TYPE_LABEL: Record<ResourceType, string> = {
   membership_channel: "会员频道权益",
 };
 
+const REMOVAL_STATUS_META: Record<EntitlementRemovalStatus, { label: string; color: string }> = {
+  none: { label: "未进入撤权", color: "default" },
+  grace_period: { label: "宽限期中", color: "orange" },
+  removed: { label: "已移出频道", color: "green" },
+  removal_failed: { label: "移除失败", color: "red" },
+  renewed_during_grace: { label: "宽限期已续费", color: "blue" },
+};
+
 const VIEW_ROLES: AdminRole[] = ["super_admin", "customer_service", "operator", "finance", "auditor"];
 const RESEND_INVITE_ROLES: AdminRole[] = ["super_admin", "customer_service"];
+const RETRY_REMOVAL_ROLES: AdminRole[] = ["super_admin", "customer_service"];
 const GRANT_ROLES: AdminRole[] = ["super_admin"];
+
+function canRetryRemovalNow(ent: EntitlementItem): boolean {
+  if (!["membership_channel", "package"].includes(ent.resourceType)) return false;
+  if (ent.status !== "expired") return false;
+  return ent.removalStatus === "removal_failed" || ent.removalStatus === "grace_period" || !!ent.lastRemovalErrorCode;
+}
 
 const EntitlementsPage: React.FC = () => {
   const { me } = useAuth();
   const canView = !!me && VIEW_ROLES.includes(me.role);
   const canResendInvite = !!me && RESEND_INVITE_ROLES.includes(me.role);
+  const canRetryRemoval = !!me && RETRY_REMOVAL_ROLES.includes(me.role);
   const canGrant = !!me && GRANT_ROLES.includes(me.role);
 
   const [form] = Form.useForm<{
     status?: EntitlementStatus;
     resourceType?: ResourceType;
+    removalStatus?: EntitlementRemovalStatus;
     userId?: string;
     telegramUserId?: string;
     orderNo?: string;
@@ -97,6 +115,7 @@ const EntitlementsPage: React.FC = () => {
   const [detail, setDetail] = useState<EntitlementItem | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [resending, setResending] = useState(false);
+  const [retryingRemovalId, setRetryingRemovalId] = useState<string | null>(null);
   const [grantModalOpen, setGrantModalOpen] = useState(false);
   const [grantForm] = Form.useForm<{
     searchUser: string;
@@ -121,6 +140,7 @@ const EntitlementsPage: React.FC = () => {
         pageSize,
         status: v.status,
         resourceType: v.resourceType,
+        removalStatus: v.removalStatus,
         userId: v.userId?.trim() || undefined,
         telegramUserId: v.telegramUserId?.trim() || undefined,
         orderNo: v.orderNo?.trim() || undefined,
@@ -175,6 +195,29 @@ const EntitlementsPage: React.FC = () => {
       else antdMsg.error("补发失败：" + (body?.message || body?.error || err.message));
     } finally {
       setResending(false);
+    }
+  };
+
+  const handleRetryRemoval = async (e: EntitlementItem) => {
+    if (!canRetryRemoval) return;
+    setRetryingRemovalId(e.id);
+    try {
+      const res = await adminRetryEntitlementRemoval(e.id, "后台手动重试宽限撤权任务");
+      if (res.ok) {
+        antdMsg.success(`撤权任务已执行，结果：${res.action}`);
+      } else {
+        antdMsg.warning(`撤权任务未完成：${res.errorCode || res.action}`);
+      }
+      if (detail?.id === e.id) {
+        const latest = await getAdminEntitlement(e.id);
+        setDetail(latest);
+      }
+      await fetchData();
+    } catch (err: any) {
+      const body = err?.response?.data;
+      antdMsg.error("重试撤权失败：" + (body?.message || body?.error || err.message));
+    } finally {
+      setRetryingRemovalId(null);
     }
   };
 
@@ -347,6 +390,25 @@ const EntitlementsPage: React.FC = () => {
         ),
       },
       {
+        title: "宽限 / 撤权",
+        key: "removal",
+        width: 220,
+        render: (_: unknown, r: EntitlementItem) => (
+          <Space direction="vertical" size={2}>
+            <Tag color={REMOVAL_STATUS_META[r.removalStatus].color}>{REMOVAL_STATUS_META[r.removalStatus].label}</Tag>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              宽限止：{r.graceEndsAt ? dayjs(r.graceEndsAt).format("MM-DD HH:mm") : "—"}
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              提醒：{r.expiryReminderCount || 0} 次
+            </Text>
+            {r.lastRemovalErrorCode ? (
+              <Tag color="error">{r.lastRemovalErrorCode}</Tag>
+            ) : null}
+          </Space>
+        ),
+      },
+      {
         title: "频道邀请",
         key: "inv",
         width: 180,
@@ -385,6 +447,7 @@ const EntitlementsPage: React.FC = () => {
         render: (_: unknown, r: EntitlementItem) => {
           const canResend =
             canResendInvite && r.resourceType === "membership_channel" && r.status === "active";
+          const canRetry = canRetryRemoval && canRetryRemovalNow(r);
           return (
             <Space wrap>
               <Button size="small" icon={<EyeOutlined />} onClick={() => openDetail(r)}>
@@ -411,12 +474,32 @@ const EntitlementsPage: React.FC = () => {
                   补发邀请
                 </Button>
               </Tooltip>
+              <Tooltip
+                title={
+                  !canRetryRemoval
+                    ? `仅客服或超管可重试撤权（当前${me?.role ? ROLE_LABEL[me.role] : "未登录"}）`
+                    : !canRetry
+                    ? "仅已过期且处于宽限/移除失败状态的会员频道或内容包权益可重试"
+                    : "立即重跑一次宽限撤权任务，不回滚订单或权益事实状态"
+                }
+              >
+                <Button
+                  size="small"
+                  danger
+                  ghost
+                  disabled={!canRetry}
+                  loading={retryingRemovalId === r.id}
+                  onClick={() => handleRetryRemoval(r)}
+                >
+                  重试撤权
+                </Button>
+              </Tooltip>
             </Space>
           );
         },
       },
     ],
-    [canResendInvite, me?.role, resending, detail?.id],
+    [canResendInvite, canRetryRemoval, me?.role, resending, detail?.id, retryingRemovalId],
   );
 
   const pagination: TablePaginationConfig = {
@@ -459,6 +542,13 @@ const EntitlementsPage: React.FC = () => {
             <Select allowClear style={{ width: 170 }} placeholder="全部类型">
               {(Object.keys(RESOURCE_TYPE_LABEL) as ResourceType[]).map((s) => (
                 <Option key={s} value={s}>{RESOURCE_TYPE_LABEL[s]}</Option>
+              ))}
+            </Select>
+          </Form.Item>
+          <Form.Item name="removalStatus" label="撤权状态">
+            <Select allowClear style={{ width: 170 }} placeholder="全部">
+              {(Object.keys(REMOVAL_STATUS_META) as EntitlementRemovalStatus[]).map((s) => (
+                <Option key={s} value={s}>{REMOVAL_STATUS_META[s].label}</Option>
               ))}
             </Select>
           </Form.Item>
@@ -519,6 +609,17 @@ const EntitlementsPage: React.FC = () => {
                   补发邀请
                 </Button>
               ) : null}
+              {canRetryRemoval && canRetryRemovalNow(detail) ? (
+                <Button
+                  size="small"
+                  danger
+                  ghost
+                  loading={retryingRemovalId === detail.id}
+                  onClick={() => handleRetryRemoval(detail)}
+                >
+                  重试撤权
+                </Button>
+              ) : null}
             </Space>
           ) : null
         }
@@ -553,6 +654,21 @@ const EntitlementsPage: React.FC = () => {
               <Descriptions.Item label="生效时间">
                 <div>开始 {dayjs(detail.startsAt).format("YYYY-MM-DD HH:mm:ss")}</div>
                 <div>到期 {detail.expiresAt ? dayjs(detail.expiresAt).format("YYYY-MM-DD HH:mm:ss") : "永久"}</div>
+              </Descriptions.Item>
+              <Descriptions.Item label="宽限与撤权">
+                <div>
+                  撤权状态{" "}
+                  <Tag color={REMOVAL_STATUS_META[detail.removalStatus].color}>
+                    {REMOVAL_STATUS_META[detail.removalStatus].label}
+                  </Tag>
+                </div>
+                <div>宽限截止 {detail.graceEndsAt ? dayjs(detail.graceEndsAt).format("YYYY-MM-DD HH:mm:ss") : "—"}</div>
+                <div>到期提醒 {detail.expiryReminderAt ? dayjs(detail.expiryReminderAt).format("YYYY-MM-DD HH:mm:ss") : "未发送"}</div>
+                <div>宽限前提醒 {detail.preGraceReminderAt ? dayjs(detail.preGraceReminderAt).format("YYYY-MM-DD HH:mm:ss") : "未发送"}</div>
+                <div>提醒次数 {detail.expiryReminderCount || 0}</div>
+                <div>撤权尝试 {detail.removalAttemptedAt ? dayjs(detail.removalAttemptedAt).format("YYYY-MM-DD HH:mm:ss") : "未尝试"}</div>
+                <div>移出完成 {detail.removedAt ? dayjs(detail.removedAt).format("YYYY-MM-DD HH:mm:ss") : "未移出"}</div>
+                <div>最后失败码 {detail.lastRemovalErrorCode || "—"}</div>
               </Descriptions.Item>
               <Descriptions.Item label="创建 / 更新">
                 <div>创建 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm:ss")}</div>

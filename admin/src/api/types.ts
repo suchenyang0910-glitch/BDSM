@@ -144,6 +144,22 @@ export type PackageInContent = {
   title: string;
 };
 
+export type PackageStatus = "draft" | "published" | "offline";
+
+export type AdminPackageItem = {
+  id: string;
+  title: string;
+  coverUrl: string | null;
+  status: PackageStatus;
+  productId: string | null;
+  productTitle?: string | null;
+  productActive: boolean;
+  channelConfigured: boolean;
+  contentsCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type EditorBrief = {
   id: string;
   email: string;
@@ -169,10 +185,14 @@ export type ContentItem = {
   recommendStartsAt: string | null;
   recommendEndsAt: string | null;
   scheduledAt: string | null;
+  freeChannelCode: string | null;
   channelId: string | null;
   packageId: string | null;
   productId: string | null;
   publishedAt: string | null;
+  telegramMessageId: string | null;
+  telegramSentAt: string | null;
+  telegramChatFingerprint: string | null;
   lastEditorId: string | null;
   version: number;
   createdAt: string;
@@ -216,6 +236,7 @@ export type CreateContentInput = {
   recommendStartsAt?: string | null;
   recommendEndsAt?: string | null;
   scheduledAt?: string | null;
+  freeChannelCode?: string | null;
   packageId?: string | null;
   productId?: string | null;
   categoryIds?: string[];
@@ -225,6 +246,46 @@ export type CreateContentInput = {
 export type UpdateContentInput = Partial<CreateContentInput> & {
   reason?: string;
 };
+
+export type FreeChannelOption = {
+  code: string;
+  label: string;
+  description: string;
+};
+
+export type PublishVideoInput = {
+  videoFileId: string;
+  thumbnailFileId?: string | null;
+  caption?: string | null;
+  supportsStreaming?: boolean;
+  parseMode?: "MarkdownV2" | "HTML" | "Markdown";
+  reason?: string;
+};
+
+export type RegisterTelegramPublishInput = {
+  telegramMessageId: string | number;
+  telegramChatFingerprint?: string | null;
+  freeChannelCode?: string | null;
+  videoFileIdRemark?: string | null;
+  caption?: string | null;
+  reason?: string;
+};
+
+export type PublishVideoResult = {
+  ok: boolean;
+  registerMode?: "manual";
+  messageId?: number | string;
+  sentAt?: string;
+  channelLabel?: string;
+  freeChannelCode?: string | null;
+  chatMasked?: string;
+  chatFingerprint?: string;
+  waitedMs?: number;
+  videoFileIdRemark?: string | null;
+  errorMessage?: string;
+};
+
+export type RegisterTelegramPublishResult = PublishVideoResult;
 
 export type CategoryItem = {
   id: string;
@@ -404,7 +465,16 @@ export type EntitlementInvite = {
   inviteLink?: string;
   expiresAt: string | null;
   usedAt?: string | null;
+  deliveryMethod?: string;
+  deliveryError?: string | null;
 };
+
+export type EntitlementRemovalStatus =
+  | "none"
+  | "grace_period"
+  | "removed"
+  | "removal_failed"
+  | "renewed_during_grace";
 
 export type EntitlementItem = {
   id: string;
@@ -414,6 +484,14 @@ export type EntitlementItem = {
   status: EntitlementStatus;
   startsAt: string;
   expiresAt: string | null;
+  graceEndsAt: string | null;
+  expiryReminderAt: string | null;
+  preGraceReminderAt: string | null;
+  expiryReminderCount: number;
+  removalStatus: EntitlementRemovalStatus;
+  removalAttemptedAt: string | null;
+  removedAt: string | null;
+  lastRemovalErrorCode: string | null;
   createdAt: string;
   updatedAt: string;
   sourceOrder: EntitlementSourceOrder | null;
@@ -426,6 +504,7 @@ export type AdminEntitlementsFilter = {
   pageSize?: number;
   status?: EntitlementStatus;
   resourceType?: ResourceType;
+  removalStatus?: EntitlementRemovalStatus;
   userId?: string;
   telegramUserId?: string;
   orderNo?: string;
@@ -452,6 +531,13 @@ export type ResendInviteResp = {
   ok: true;
   entitlementId: string;
   invite: EntitlementInvite;
+};
+
+export type RetryEntitlementRemovalResp = {
+  ok: boolean;
+  action: string;
+  errorCode: string | null;
+  entitlement: EntitlementItem | null;
 };
 
 export type GrantEntitlementInput = {
@@ -648,9 +734,19 @@ export type CreateTicketInput = {
 };
 
 export type ChannelSource = "auto_scan" | "manual_add";
+export type ManagedChannelPurpose = "none" | "free_preview" | "membership_main" | "package_channel";
+export type ChannelDiscoveryLinkType = "public_username" | "private_invite" | "unknown";
+export type ChannelDiscoveryStatus =
+  | "pending_public_check"
+  | "awaiting_bot_admin"
+  | "discovered"
+  | "bound"
+  | "conflict"
+  | "failed";
 
 export type ChannelItem = {
   chatId: string;
+  chatIdHmac: string;
   chatIdMasked: string;
   type: string;
   title: string | null;
@@ -659,22 +755,52 @@ export type ChannelItem = {
   avatarFileId: string | null;
   isPrivate: boolean;
   source: ChannelSource;
+  purpose: ManagedChannelPurpose;
+  packageId: string | null;
+  packageTitle: string | null;
+  publicUrl: string | null;
+  botIsAdmin: boolean;
+  botCanPostMessages: boolean;
+  botCanInviteUsers: boolean;
+  botCanRestrictMembers: boolean;
+  lastDiscoveryUpdateType: string | null;
+  discoveryErrorCode: string | null;
   lastEventAt: string | null;
   refreshedAt: string | null;
   createdAt: string;
 };
 
-export type ChannelReveal = {
-  chatIdPlain: string;
-  expiresAt: string;
-  ttlMs: number;
+export type ChannelDiscoveryRequestItem = {
+  id: string;
+  submittedLink: string;
+  normalizedLink: string | null;
+  linkType: ChannelDiscoveryLinkType;
+  status: ChannelDiscoveryStatus;
+  requestedPurpose: ManagedChannelPurpose;
+  packageId: string | null;
+  packageTitle: string | null;
+  resolvedChannelHmac: string | null;
+  resolvedChannelMasked: string | null;
+  resolvedChannelTitle: string | null;
+  waitingSince: string | null;
+  discoveredAt: string | null;
+  boundAt: string | null;
+  lastErrorCode: string | null;
+  lastErrorNote: string | null;
+  submittedByAdmin: {
+    id: string;
+    displayName?: string;
+    email: string;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ChannelListFilter = {
   page?: number;
   pageSize?: number;
-  source?: ChannelSource;
-  chatType?: string;
+  purpose?: ManagedChannelPurpose;
+  status?: ChannelDiscoveryStatus;
   search?: string;
 };
 
@@ -685,6 +811,35 @@ export type ChannelListResp = {
     pageSize: number;
     total: number;
   };
+};
+
+export type ChannelDiscoveryListResp = {
+  items: ChannelDiscoveryRequestItem[];
+};
+
+export type SubmitChannelDiscoveryInput = {
+  channelLink: string;
+  purpose?: ManagedChannelPurpose;
+  packageId?: string | null;
+  reason: string;
+};
+
+export type SubmitChannelDiscoveryResp = {
+  ok: true;
+  mode: "public_verified" | "awaiting_bot_admin";
+  request: ChannelDiscoveryRequestItem;
+  channel?: ChannelItem;
+};
+
+export type BindChannelPurposeInput = {
+  purpose: ManagedChannelPurpose;
+  packageId?: string | null;
+  reason: string;
+};
+
+export type BindChannelPurposeResp = {
+  ok: true;
+  channel: ChannelItem;
 };
 
 export type ChannelRefreshSummary = {
@@ -713,20 +868,72 @@ export type ChannelRefreshError = {
 export type ChannelRefreshResp = {
   ok: true;
   summary: ChannelRefreshSummary;
-  refreshed: ChannelRefreshRow[];
+  refreshed: ChannelItem[];
   errors: ChannelRefreshError[];
 };
 
-export type ChannelAddResp = {
-  ok: true;
-  chatId: string;
-  chatIdMasked: string;
-  source: ChannelSource;
+export type AdminDashboardGmvByMethod = Record<
+  string,
+  {
+    amountDisplay: string;
+    amountMinor: string;
+    count: number;
+    currency: string;
+  }
+>;
+
+export type AdminDashboardCards = {
+  payingUsers: {
+    value: number;
+    unit: string;
+    description: string;
+  };
+  monthlyGmv: {
+    byMethod: AdminDashboardGmvByMethod;
+    totalPaidOrders: number;
+    description: string;
+  };
+  membershipRenewal: {
+    expiringMembershipUsers: number;
+    renewedWithin7dUsers: number;
+    ratePercent: number;
+    description: string;
+  };
+  packagePurchase: {
+    packagePaidOrders: number;
+    allPaidOrders: number;
+    ratePercent: number;
+    description: string;
+  };
+  inviteDelivery: {
+    inviteCreated: number;
+    paidOrders: number;
+    successRatePercent: number;
+    description: string;
+  };
+  supportAndRefund: {
+    refundedPaidOrders: number;
+    openTickets: number;
+    ratioPercent: number;
+    description: string;
+  };
 };
 
-export type ChannelRevealResp = {
-  ok: true;
-  chatIdMasked: string;
-  reveal: ChannelReveal;
+export type AdminDashboardPeriod = {
+  startsAt: string;
+  endsAt: string;
+  asOf: string;
+  label: string;
 };
 
+export type AdminDashboardStage2Readiness = {
+  stablePaidMembershipThreshold: number;
+  monthlyGmvUsdtThreshold: number;
+  note: string;
+};
+
+export type AdminDashboardSummary = {
+  period: AdminDashboardPeriod;
+  cards: AdminDashboardCards;
+  stage2Readiness: AdminDashboardStage2Readiness;
+};

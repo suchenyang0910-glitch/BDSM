@@ -10,6 +10,7 @@ import {
   chatIdFingerprint,
   TELEGRAM_CONFIG,
 } from "../services/telegramBot.js";
+import { processEntitlementGraceCleanup } from "../services/entitlementsCron.js";
 import type { ResourceType } from "@prisma/client";
 
 type Tx = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
@@ -21,6 +22,7 @@ const listEntitlementsQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
   status: z.enum(["active", "revoked", "expired"]).optional(),
   resourceType: z.enum(["content", "package", "membership_channel"]).optional(),
+  removalStatus: z.enum(["none", "grace_period", "removed", "removal_failed", "renewed_during_grace"]).optional(),
   userId: z.string().min(1).optional(),
   telegramUserId: z.coerce.bigint().optional(),
   orderNo: z.string().min(1).optional(),
@@ -50,6 +52,10 @@ const resendInviteSchema = z.object({
   reason: z.string().min(2).max(1000),
   ttlSeconds: z.coerce.number().int().min(60).max(86400 * 30).optional(),
   memberLimit: z.coerce.number().int().min(1).max(99999).optional(),
+});
+
+const retryRemovalSchema = z.object({
+  reason: z.string().min(2).max(1000),
 });
 
 const listTicketsQuerySchema = z.object({
@@ -99,6 +105,14 @@ function entitlementRow(e: any) {
     status: e.status,
     startsAt: e.startsAt.toISOString(),
     expiresAt: e.expiresAt ? e.expiresAt.toISOString() : null,
+    graceEndsAt: e.graceEndsAt ? e.graceEndsAt.toISOString() : null,
+    expiryReminderAt: e.expiryReminderAt ? e.expiryReminderAt.toISOString() : null,
+    preGraceReminderAt: e.preGraceReminderAt ? e.preGraceReminderAt.toISOString() : null,
+    expiryReminderCount: e.expiryReminderCount ?? 0,
+    removalStatus: e.removalStatus ?? "none",
+    removalAttemptedAt: e.removalAttemptedAt ? e.removalAttemptedAt.toISOString() : null,
+    removedAt: e.removedAt ? e.removedAt.toISOString() : null,
+    lastRemovalErrorCode: e.lastRemovalErrorCode ?? null,
     createdAt: e.createdAt.toISOString(),
     updatedAt: e.updatedAt.toISOString(),
     sourceOrder: e.sourceOrder
@@ -227,6 +241,7 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
       const where: any = {};
       if (query.status) where.status = query.status;
       if (query.resourceType) where.resourceType = query.resourceType;
+      if (query.removalStatus) where.removalStatus = query.removalStatus;
       if (query.userId) where.userId = query.userId;
       if (query.telegramUserId !== undefined) where.user = { telegramUserId: BigInt(query.telegramUserId) };
       if (query.resourceId) where.resourceId = query.resourceId;
@@ -390,6 +405,64 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
           deliveryMethod: dmSent ? "telegram_dm_sent" : "telegram_dm_failed",
           deliveryError: dmError,
         },
+      });
+    },
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    "/admin/entitlements/:id/retry-removal",
+    { preHandler: [requireAdmin("entitlement:retry_removal")] },
+    async (req, reply) => {
+      const admin = (req as any).admin as { adminId: string; role: string; email: string };
+      const bodyParse = retryRemovalSchema.safeParse(req.body ?? {});
+      if (!bodyParse.success) return reply.status(400).send({ error: "bad_request", details: bodyParse.error.issues });
+
+      const before = await prisma.entitlement.findUnique({
+        where: { id: req.params.id },
+        include: {
+          sourceOrder: { select: { id: true, orderNo: true, status: true, amountMinor: true } },
+          user: { select: { id: true, displayName: true, username: true, telegramUserId: true, status: true } },
+          telegramInvites: { take: 1, orderBy: { createdAt: "desc" } },
+        },
+      });
+      if (!before) return reply.status(404).send({ error: "not_found", message: "权益不存在" });
+      if (!["membership_channel", "package"].includes(before.resourceType)) {
+        return reply.status(409).send({ error: "conflict", message: "仅会员频道与内容包权益支持重试撤权" });
+      }
+      if (!before.expiresAt) {
+        return reply.status(409).send({ error: "conflict", message: "永久权益不存在撤权宽限任务" });
+      }
+
+      const result = await processEntitlementGraceCleanup(prisma, before.id, { now: new Date() });
+
+      const after = await prisma.entitlement.findUnique({
+        where: { id: before.id },
+        include: {
+          sourceOrder: { select: { id: true, orderNo: true, status: true, amountMinor: true } },
+          user: { select: { id: true, displayName: true, username: true, telegramUserId: true, status: true } },
+          telegramInvites: { take: 1, orderBy: { createdAt: "desc" } },
+        },
+      });
+
+      await prisma.adminAuditLog.create({
+        data: {
+          adminId: admin.adminId,
+          action: "admin.entitlement.retry_removal",
+          objectType: "entitlement",
+          objectId: before.id,
+          beforeValue: entitlementRow(before) as any,
+          afterValue: after ? entitlementRow(after) as any : null,
+          reason: bodyParse.data.reason,
+          ipAddress: (req.ip as string) || null,
+          userAgent: (req.headers["user-agent"] as string) || null,
+        },
+      });
+
+      return reply.send({
+        ok: result.ok,
+        action: result.action,
+        errorCode: result.errorCode ?? null,
+        entitlement: after ? entitlementRow(after) : null,
       });
     },
   );

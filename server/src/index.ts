@@ -15,9 +15,11 @@ import resourceRoutes from "./routes/resources.js";
 import orderRoutes from "./routes/orders.js";
 import usdtInternalRoutes from "./routes/usdtInternal.js";
 import adminRoutes from "./routes/admin.js";
-import adminCmsRoutes from "./routes/adminCms.js";
+import adminCmsRoutes, { adminPackageRoutes } from "./routes/adminCms.js";
 import adminUsersAndSupportRoutes from "./routes/adminUsersAndSupport.js";
 import adminChannelsRoutes from "./routes/adminChannels.js";
+import adminDashboardRoutes from "./routes/adminDashboard.js";
+import authH5Routes from "./routes/authH5.js";
 import { botSelfTest, TELEGRAM_CONFIG } from "./services/telegramBot.js";
 import { startEntitlementsCron } from "./services/entitlementsCron.js";
 import { releaseExpiredUsdtAddresses } from "./services/usdtPool.js";
@@ -247,8 +249,10 @@ async function main() {
   await app.register(usdtInternalRoutes, { prefix: "" });
   await app.register(adminRoutes, { prefix: "/api" });
   await app.register(adminCmsRoutes, { prefix: "/api" });
+  await app.register(adminPackageRoutes, { prefix: "/api" });
   await app.register(adminUsersAndSupportRoutes, { prefix: "/api" });
   await app.register(adminChannelsRoutes, { prefix: "/api" });
+  await app.register(authH5Routes, { prefix: "/api" });
 
   try {
     await prisma.$connect();

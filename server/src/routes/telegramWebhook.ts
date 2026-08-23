@@ -30,6 +30,7 @@ import {
   deliverStarsSuccessfulPayment,
   STARS_ORDER_EXPIRES_MS,
 } from "../services/orders.js";
+import { encryptPackageColsFromPlain } from "../services/channelCrypto.js";
 
 const STALE_PROCESSING_MS = 10 * 60 * 1000; // processing 超过 10 分钟视为卡住，下一轮重置
 
@@ -37,8 +38,17 @@ type UpdateChatInfo = {
   chatIdBig: bigint;
   chatType: string;
   chatTitle: string | null;
+  chatUsername: string | null;
   dateSec: number | null;
   event: string;
+};
+
+type BotMembershipInfo = {
+  status: string;
+  isAdmin: boolean;
+  canPostMessages: boolean;
+  canInviteUsers: boolean;
+  canRestrictMembers: boolean;
 };
 
 function extractChatFromUpdate(raw: any): UpdateChatInfo | null {
@@ -52,6 +62,7 @@ function extractChatFromUpdate(raw: any): UpdateChatInfo | null {
           chatIdBig: BigInt(String(n.chat.id)),
           chatType,
           chatTitle: typeof n.chat.title === "string" ? n.chat.title : null,
+          chatUsername: typeof n.chat.username === "string" ? n.chat.username : null,
           dateSec: typeof n.date === "number" ? n.date : null,
           event: n.__event || "other",
         };
@@ -70,6 +81,20 @@ function extractChatFromUpdate(raw: any): UpdateChatInfo | null {
   }
   // successful_payment 在 body.message.successful_payment 里，而 message.chat 可能有 user id，已由上面 "message" 分支覆盖
   return null;
+}
+
+function extractBotMembershipFromUpdate(raw: any): BotMembershipInfo | null {
+  const m = raw?.my_chat_member;
+  if (!m || typeof m !== "object") return null;
+  const next = m.new_chat_member;
+  if (!next || typeof next !== "object") return null;
+  return {
+    status: String(next.status || "unknown"),
+    isAdmin: ["administrator", "creator"].includes(String(next.status || "")),
+    canPostMessages: next.can_post_messages === true,
+    canInviteUsers: next.can_invite_users === true,
+    canRestrictMembers: next.can_restrict_members === true,
+  };
 }
 
 export default async function telegramWebhookRoutes(fastify: FastifyInstance) {
@@ -104,6 +129,7 @@ export default async function telegramWebhookRoutes(fastify: FastifyInstance) {
     }
     const updateId = BigInt(String(updateIdRaw));
     const chatInfo = extractChatFromUpdate(body);
+    const botMembership = extractBotMembershipFromUpdate(body);
 
     // ===== Phase 0-4 三段式状态机 =====
     // 【Stage A - 短事务：领取 processing】（绝不包含网络 IO）
@@ -253,13 +279,13 @@ export default async function telegramWebhookRoutes(fastify: FastifyInstance) {
         }
       } else if (chatInfo) {
         // ================================================================
-        // FALLBACK) Phase 0 原逻辑：adminManagedChannel 入库
+        // CHANNEL DISCOVERY) webhook 自动发现频道 + 尝试绑定待发现请求
         // ================================================================
         const chatIdHmac = chatIdIndexKey(chatInfo.chatIdBig);
         const chatIdCipher = encryptChatIdAesGcm(chatInfo.chatIdBig);
         const lastEventAt = chatInfo.dateSec ? new Date(chatInfo.dateSec * 1000) : null;
-        // 独立事务，不与 processing 状态事务绑定
-        await prisma.adminManagedChannel.upsert({
+        const publicUrl = chatInfo.chatUsername ? `https://t.me/${chatInfo.chatUsername}` : null;
+        const upsertedChannel = await prisma.adminManagedChannel.upsert({
           where: { chatIdHmac },
           create: {
             chatIdHmac,
@@ -267,18 +293,133 @@ export default async function telegramWebhookRoutes(fastify: FastifyInstance) {
             deprecatedChatIdBig: chatInfo.chatIdBig,
             chatType: chatInfo.chatType,
             title: chatInfo.chatTitle,
+            username: chatInfo.chatUsername,
             lastEventAt,
             source: "auto_scan",
-            isPrivate: !chatInfo.chatTitle ? true : undefined,
+            isPrivate: !chatInfo.chatUsername,
+            publicUrl,
+            botIsAdmin: !!botMembership?.isAdmin,
+            botCanPostMessages: !!botMembership?.canPostMessages,
+            botCanInviteUsers: !!botMembership?.canInviteUsers,
+            botCanRestrictMembers: !!botMembership?.canRestrictMembers,
+            lastDiscoveryUpdateType: chatInfo.event,
+            discoveryErrorCode: null,
           },
           update: {
             chatIdCiphertextB64: chatIdCipher, // 每次重新加密（nonce 旋转）
             deprecatedChatIdBig: chatInfo.chatIdBig,
             chatType: chatInfo.chatType,
             title: chatInfo.chatTitle || undefined,
+            username: chatInfo.chatUsername || undefined,
             lastEventAt: lastEventAt || undefined,
+            isPrivate: !chatInfo.chatUsername,
+            publicUrl: publicUrl || undefined,
+            botIsAdmin: botMembership ? !!botMembership.isAdmin : undefined,
+            botCanPostMessages: botMembership ? !!botMembership.canPostMessages : undefined,
+            botCanInviteUsers: botMembership ? !!botMembership.canInviteUsers : undefined,
+            botCanRestrictMembers: botMembership ? !!botMembership.canRestrictMembers : undefined,
+            lastDiscoveryUpdateType: chatInfo.event,
+            discoveryErrorCode: null,
           },
         });
+
+        // 自动绑定 discovery request：
+        // 1) 公开频道：按 normalizedLink 精确绑定
+        // 2) 私密频道：若当前仅有 1 个 awaiting_bot_admin 未绑定请求，则自动绑定；多个并存时保持待人工确认，避免误绑
+        if (chatInfo.chatUsername) {
+          const normalizedPublic = `https://t.me/${chatInfo.chatUsername}`;
+          const pendingPublic = await prisma.adminChannelDiscoveryRequest.findFirst({
+            where: {
+              linkType: "public_username",
+              normalizedLink: normalizedPublic,
+              resolvedChannelId: null,
+              status: { in: ["pending_public_check", "awaiting_bot_admin", "discovered"] },
+            },
+            orderBy: { createdAt: "asc" },
+          });
+          if (pendingPublic) {
+            await prisma.adminChannelDiscoveryRequest.update({
+              where: { id: pendingPublic.id },
+              data: {
+                status: pendingPublic.requestedPurpose && pendingPublic.requestedPurpose !== "none" ? "bound" : "discovered",
+                resolvedChannelId: upsertedChannel.id,
+                discoveredAt: new Date(),
+                boundAt: pendingPublic.requestedPurpose && pendingPublic.requestedPurpose !== "none" ? new Date() : null,
+                lastErrorCode: null,
+                lastErrorNote: null,
+              },
+            });
+            if (pendingPublic.requestedPurpose && pendingPublic.requestedPurpose !== "none") {
+              await prisma.adminManagedChannel.update({
+                where: { chatIdHmac },
+                data: {
+                  purpose: pendingPublic.requestedPurpose,
+                  packageId: pendingPublic.requestedPurpose === "package_channel" ? pendingPublic.packageId : null,
+                },
+              });
+              if (pendingPublic.requestedPurpose === "package_channel" && pendingPublic.packageId) {
+                const encrypted = encryptPackageColsFromPlain(chatInfo.chatIdBig);
+                await prisma.contentPackage.update({
+                  where: { id: pendingPublic.packageId },
+                  data: {
+                    channelId: chatInfo.chatIdBig,
+                    channelIdCiphertext: encrypted.channelIdCiphertextB64,
+                    channelIdHmac: encrypted.channelIdHmac,
+                  },
+                });
+              }
+            }
+          }
+        } else {
+          const pendingPrivate = await prisma.adminChannelDiscoveryRequest.findMany({
+            where: {
+              linkType: "private_invite",
+              status: "awaiting_bot_admin",
+              resolvedChannelId: null,
+            },
+            orderBy: { createdAt: "asc" },
+            take: 2,
+          });
+          if (pendingPrivate.length === 1) {
+            const reqRow = pendingPrivate[0];
+            await prisma.adminChannelDiscoveryRequest.update({
+              where: { id: reqRow.id },
+              data: {
+                status: reqRow.requestedPurpose && reqRow.requestedPurpose !== "none" ? "bound" : "discovered",
+                resolvedChannelId: upsertedChannel.id,
+                discoveredAt: new Date(),
+                boundAt: reqRow.requestedPurpose && reqRow.requestedPurpose !== "none" ? new Date() : null,
+                lastErrorCode: null,
+                lastErrorNote: null,
+              },
+            });
+            if (reqRow.requestedPurpose && reqRow.requestedPurpose !== "none") {
+              await prisma.adminManagedChannel.update({
+                where: { chatIdHmac },
+                data: {
+                  purpose: reqRow.requestedPurpose,
+                  packageId: reqRow.requestedPurpose === "package_channel" ? reqRow.packageId : null,
+                },
+              });
+              if (reqRow.requestedPurpose === "package_channel" && reqRow.packageId) {
+                const encrypted = encryptPackageColsFromPlain(chatInfo.chatIdBig);
+                await prisma.contentPackage.update({
+                  where: { id: reqRow.packageId },
+                  data: {
+                    channelId: chatInfo.chatIdBig,
+                    channelIdCiphertext: encrypted.channelIdCiphertextB64,
+                    channelIdHmac: encrypted.channelIdHmac,
+                  },
+                });
+              }
+            }
+          } else if (pendingPrivate.length > 1) {
+            await prisma.adminManagedChannel.update({
+              where: { chatIdHmac },
+              data: { discoveryErrorCode: "multiple_pending_private_requests" },
+            });
+          }
+        }
       }
     } catch (e: any) {
       stageErrClass =

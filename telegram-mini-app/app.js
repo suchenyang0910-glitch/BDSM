@@ -56,6 +56,52 @@
     return h > 0 ? `${h}:${pad(m)}:${pad(ss)}` : `${pad(m)}:${pad(ss)}`;
   }
 
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  /* ================= 错误码中文映射（Mini App 仅走 Stars） ================= */
+  const CLIENT_ERROR_ZH = {
+    unauthorized: "请重新在 Telegram Mini App 内打开以完成登录",
+    forbidden: "你暂无对应权限，请先完成有效支付订单",
+    single_delivery_not_enabled: "单条内容购买首期暂不开放，共享收费频道无法做到只开放一条内容。请选择会员或内容包。",
+    delivery_channel_not_configured: "当前内容所属交付频道尚未配置，请稍后再试或联系运营。",
+    channel_missing: "当前内容尚未配置访问通道，请前往公开频道预览或联系客服。",
+    package_id_required: "内容配置异常（缺少绑定的内容包），请联系运营修复。",
+    package_not_ready: "当前内容包尚未完成发布或关联产品不可购买，请稍后再试。",
+    pool_empty: "当前系统支付资源占用已满，请稍后重试或联系客服。",
+    usdt_address_pool_exhausted: "当前没有可用的支付地址，请稍后重试。",
+    usdt_assign_failed: "支付地址分配失败，请稍后重试。",
+    payment_expired: "支付窗口已过期，请重新创建订单。",
+    bad_order_status_pending: "订单尚未完成支付，请完成支付后重试。",
+    bad_order_status_processing: "订单正在处理中，请稍候片刻再试。",
+    bad_order_status_expired: "订单已过期，请重新创建。",
+    bad_order_status_cancelled: "订单已取消。",
+    bad_order_status_failed: "订单支付失败，请重新下单。",
+    bad_order_status_refunded: "该订单已退款，如需重新访问请再次下单。",
+    content_unavailable: "内容已下架或未上架。",
+    not_found: "内容或订单不存在。",
+    bad_request: "请求参数不正确，请刷新页面后重试。",
+    conflict: "操作冲突，请稍候重试。",
+    db_error: "服务暂不可用，请稍后重试。",
+    stars_invoice_service_unavailable: "Stars 发票服务暂时不可用（Bot 未配置或 API 失败），请稍后重试或联系运营。",
+    stars_continue_not_found: "未找到该订单（可能已被删除或订单号错误）。",
+    stars_continue_not_owner: "该订单不是你的，无法续付（可在 Mini App 中发起新单）。",
+    stars_continue_not_stars: "该订单不是 Telegram Stars 支付，不能使用 Stars 续付（可使用 USDT 通道）。",
+    stars_continue_not_pending: "该订单已不处于待支付状态，请重新创建订单。",
+    stars_continue_expired: "Stars 续付窗口（30 分钟）已过，请重新创建订单。",
+    stars_continue_no_invoice: "该旧单未保存发票链接（可能是旧版本创建），请重新创建订单。",
+  };
+
+  function zhMessage(err) {
+    const p = err?.payload || {};
+    const code = p.error || p.code || p.userError || p.errorClass || "";
+    if (code && CLIENT_ERROR_ZH[code]) return CLIENT_ERROR_ZH[code];
+    const raw = p.userMessage || p.message || p.error || err?.message || "";
+    if (!raw) return "请稍后重试或联系客服。";
+    return raw;
+  }
+
   function copyText(text) {
     try {
       const ta = document.createElement("textarea");
@@ -75,6 +121,32 @@
   function showAlert(msg) {
     if (telegram?.showAlert) telegram.showAlert(msg);
     else window.alert(msg);
+  }
+
+  function showConfirmDialog(message, primaryLabel, primaryAction, secondaryLabel, secondaryAction, cancelAction) {
+    if (telegram?.showPopup) {
+      telegram.showPopup({
+        title: "选择操作",
+        message,
+        buttons: [
+          { id: "primary", text: primaryLabel, type: "ok" },
+          { id: "secondary", text: secondaryLabel, type: "default" },
+          { id: "cancel", type: "cancel" },
+        ],
+      }).then((btn) => {
+        if (btn === "primary") primaryAction();
+        else if (btn === "secondary") secondaryAction();
+        else cancelAction();
+      }).catch(() => cancelAction());
+      return;
+    }
+    const got = window.confirm(message + "\n\n确定 = " + primaryLabel + "\n取消 = " + secondaryLabel);
+    if (got) primaryAction();
+    else {
+      const again = window.confirm("是否取消本次支付？\n\n确定 = 取消\n取消 = " + secondaryLabel);
+      if (again) cancelAction();
+      else secondaryAction();
+    }
   }
 
   function showToast(msg) {
@@ -428,8 +500,9 @@
     if (d.categories && d.categories.length) items.push(d.categories.map((c) => c.name).join(" · "));
     if (d.publishedAt) items.push(`更新于 ${formatDate(d.publishedAt, false)}`);
     if (d.product) {
-      const priceStars = (Number(d.product.priceMinor || 0) / 1_000_000_000).toFixed(6);
-      items.push(`${priceStars} Stars (${d.product.currency})`);
+      const priceStars = (Number(d.product.priceMinor || 0) / 1_000_000_000).toFixed(2).replace(/\.?0+$/, "");
+      const currency = d.product.currency === "XTR" ? "Stars" : d.product.currency;
+      items.push(`${priceStars} ${currency}`);
       if (d.product.durationDays) items.push(`会员 ${d.product.durationDays} 天`);
     }
     items.forEach((it) => {
@@ -466,12 +539,12 @@
         cta.disabled = true;
         sub.textContent = "未登录状态下的占位；请重新在 Telegram 中打开。";
       } else if (d.product && d.product.id) {
-        const priceStars = (Number(d.product.priceMinor || 0) / 1_000_000_000).toFixed(6);
-        const label = d.accessType === "membership" ? `购买会员 · ${d.product.durationDays || 30} 天` :
-          d.accessType === "package" ? "购买内容包" : "购买本条内容";
-        cta.textContent = `${label} · ≈ ${priceStars} Stars`;
-        cta.addEventListener("click", () => openCreateOrderDialog(d));
-        sub.textContent = "点击创建订单 → 把订单号发给客服/运营 → 到账确认后权益立即生效（含会员频道邀请）";
+        const priceStars = (Number(d.product.priceMinor || 0) / 1_000_000_000).toFixed(2).replace(/\.?0+$/, "");
+        const label = d.accessType === "membership" ? `开通会员 · ${d.product.durationDays || 30} 天` :
+          d.accessType === "package" ? "购买内容包" : "购买内容";
+        cta.textContent = `${label} · ${priceStars} Stars`;
+        cta.addEventListener("click", () => createStarsOrderAndPay(d));
+        sub.textContent = "点击后直接唤起 Telegram Stars 原生支付，成功后立即激活权益并自动进入频道。";
       } else {
         cta.textContent = "当前内容暂未上架购买";
         cta.disabled = true;
@@ -485,84 +558,223 @@
 
   async function requestChannelLink(videoId) {
     try {
-      const res = await apiCall(`/api/resources/${encodeURIComponent(videoId)}/access-link`, { method: "POST" });
-      const url = res?.url;
-      if (!url || !/^https:\/\/t\.me\//.test(url)) throw new Error("invalid channel link");
-      telegram?.openTelegramLink ? telegram.openTelegramLink(url) : window.open(url, "_blank", "noopener");
+      if (!videoId) throw new Error("missing_video_id");
+      const jumpUrl = `/api/resources/${encodeURIComponent(videoId)}/access-link`;
+      // P0-#2-B FIX：由浏览器直接 GET 受控跳转入口，Location 头 302 到 Telegram t.me/ 邀请；
+      // Mini App 环境优先使用 telegram.openTelegramLink 跳 tg 域，但这里是本域 302，因此直接 window.open 让浏览器处理。
+      try {
+        const win = window.open(jumpUrl, "_blank", "noopener,noreferrer");
+        if (!win) throw new Error("popup_blocked");
+      } catch (_openErr: any) {
+        // 弹窗拦截时走 location.href 兜底
+        location.href = jumpUrl;
+      }
     } catch (err) {
-      showAlert("当前无法取得访问链接：" + (err?.payload?.message || err?.message || "请稍后重试或联系支持。"));
+      showAlert("当前无法取得访问链接：" + zhMessage(err));
     }
   }
 
-  /* ================= 创建订单（内容详情 CTA） ================= */
+  /* ================= Stars 原生支付（内容详情 CTA → 旧单续付/新单 → 服务端验状态 → 激活） ================= */
 
-  function openCreateOrderDialog(detail) {
-    const dlg = document.getElementById("createOrderDialog");
-    document.getElementById("coTitle").textContent =
-      detail.accessType === "membership" ? "购买会员 · 创建订单" :
-      detail.accessType === "package" ? "购买内容包 · 创建订单" : "购买内容 · 创建订单";
+  const STARS_CONTINUE_WINDOW_MS = 30 * 60 * 1000; // 30 分钟窗口内复用待支付 Stars 订单
 
-    const preview = document.getElementById("coPreview");
-    const rows = [
-      ["内容", detail.title],
-    ];
-    if (detail.product) {
-      const priceStars = (Number(detail.product.priceMinor || 0) / 1_000_000_000).toFixed(6);
-      rows.push(["价格", `${detail.product.priceMinor} ${detail.product.currency} (≈ ${priceStars} Stars)`]);
-      if (detail.product.durationDays) rows.push(["时长", `${detail.product.durationDays} 天`]);
-    } else {
-      rows.push(["价格", "暂未配置"]);
+  async function findActiveStarsOrderForProduct(productId) {
+    try {
+      const data = await apiCall(`/api/user/orders?page=1&pageSize=50`);
+      const candidates = (data?.items || []).filter((o) =>
+        o.product?.id === productId &&
+        (o.paymentMethod === "telegram_stars" || o.currency === "XTR") &&
+        (o.status === "pending" || o.status === "processing"),
+      );
+      if (!candidates.length) return null;
+      candidates.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      for (const c of candidates) {
+        try {
+          const r = await apiCall(`/api/orders/${encodeURIComponent(c.orderNo)}/continue-stars`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          if (r?.ok && r?.order?.invoiceLink) {
+            return {
+              ...r.order,
+              remainMs: typeof r.remainMs === "number" ? r.remainMs : STARS_CONTINUE_WINDOW_MS,
+              _hitContinueStars: true,
+            };
+          }
+        } catch (_) {
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
     }
-    preview.innerHTML = rows.map(([k, v]) =>
-      `<div class="row"><span class="k">${escapeHtml(k)}</span><span class="v">${escapeHtml(v)}</span></div>`
-    ).join("");
+  }
 
-    const orderNoBox = document.getElementById("coOrderNo");
-    orderNoBox.style.display = "none";
-    orderNoBox.innerHTML = "";
+  async function pollOrderUntilPaid(orderNo, maxWaitMs) {
+    const start = Date.now();
+    let lastStatus = null;
+    let lastEntitlements = null;
+    while (Date.now() - start < maxWaitMs) {
+      try {
+        const data = await apiCall(`/api/user/orders?page=1&pageSize=100`);
+        const order = (data?.items || []).find((o) => o.orderNo === orderNo);
+        if (order) {
+          lastStatus = order.status;
+          lastEntitlements = order.entitlements || [];
+          if (order.status === "paid" && lastEntitlements.length > 0) {
+            return { order, ok: true };
+          }
+          if (["expired", "cancelled", "refunded", "failed"].includes(order.status)) {
+            return { order, ok: false, reason: order.status };
+          }
+        }
+      } catch (_) {
+        // 网络抖动静默重试
+      }
+      await sleep(1500);
+    }
+    return { ok: false, reason: "timeout", lastStatus, lastEntitlements };
+  }
 
-    const confirmBtn = document.getElementById("coConfirm");
-    confirmBtn.disabled = false;
-    confirmBtn.textContent = "创建订单并生成订单号";
+  async function createStarsOrderAndPay(detail) {
+    if (!detail.product?.id) {
+      showAlert("该内容暂未配置商品，无法创建订单。");
+      return;
+    }
+    if (!telegram || typeof telegram.openInvoice !== "function") {
+      showAlert("请在 Telegram Mini App 内打开本页面以使用 Stars 支付。");
+      return;
+    }
+    const toastLoading = showToastLoading("检查是否有进行中的 Stars 订单…");
+    const existing = await findActiveStarsOrderForProduct(detail.product.id);
+    toastLoading.close();
 
-    confirmBtn.onclick = async () => {
-      if (!detail.product?.id) {
-        showAlert("该内容暂未配置商品，无法创建订单。");
+    let orderTarget;
+    let invoiceLink;
+    if (existing) {
+      const remainMs = typeof existing.remainMs === "number"
+        ? existing.remainMs
+        : Math.max(0, STARS_CONTINUE_WINDOW_MS - (Date.now() - new Date(existing.createdAt).getTime()));
+      const remainSec = Math.round(remainMs / 1000);
+      const pick = await new Promise((resolve) => {
+        showConfirmDialog(
+          `已有同商品的 Stars 待支付订单（创建于 ${formatDate(existing.createdAt)}，剩余 ${remainSec}s 有效），是否继续该订单支付？`,
+          `继续支付该订单 · ${existing.orderNo}`,
+          () => resolve("continue"),
+          "丢弃旧单，新建订单",
+          () => resolve("renew"),
+          () => resolve("cancel"),
+        );
+      });
+      if (pick === "cancel") {
         return;
       }
-      confirmBtn.disabled = true;
-      confirmBtn.textContent = "正在创建订单…";
+      if (pick === "continue") {
+        orderTarget = existing;
+        invoiceLink = existing.invoiceLink;
+      }
+    }
+
+    if (!orderTarget) {
+      const t2 = showToastLoading("正在创建支付订单…");
+      let createdResp = null;
       try {
-        const created = await apiCall("/api/orders", {
+        createdResp = await apiCall("/api/orders/stars", {
           method: "POST",
           body: JSON.stringify({ productId: detail.product.id }),
         });
-        orderNoBox.style.display = "flex";
-        const label = document.createElement("div");
-        label.className = "label";
-        label.textContent = "你的订单号（长按 / 复制，发给客服或运营）";
-        const valueEl = document.createElement("div");
-        valueEl.className = "value";
-        valueEl.textContent = created.orderNo;
-        valueEl.style.cursor = "copy";
-        valueEl.title = "点击复制";
-        valueEl.addEventListener("click", () => {
-          if (copyText(created.orderNo)) showToast("订单号已复制，可粘贴给客服。");
-        });
-        const sub = document.createElement("div");
-        sub.className = "sub";
-        sub.textContent = `创建时间 ${formatDate(created.createdAt)} · 当前状态：待支付`;
-        orderNoBox.append(label, valueEl, sub);
-        confirmBtn.textContent = "创建成功 · 已保存到「我的订单」";
       } catch (err) {
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = "创建订单并生成订单号";
-        const message = err?.payload?.message || err?.payload?.error || err?.message || "创建失败";
-        showAlert("创建订单失败：" + message);
+        t2.close();
+        showAlert("创建支付订单失败：" + zhMessage(err));
+        return;
       }
-    };
+      t2.close();
+      const link =
+        createdResp?.created?.invoiceLink ??
+        createdResp?.invoice?.invoiceLink ??
+        createdResp?.order?.invoiceLink ??
+        null;
+      if (!link || !/^https:\/\/t\.me\//.test(link)) {
+        const msg = createdResp?.message || createdResp?.userMessage || "";
+        showAlert("未获得有效支付链接，请稍后重试。" + (msg ? " 错误：" + msg : ""));
+        return;
+      }
+      orderTarget = createdResp?.created || createdResp?.order || createdResp;
+      invoiceLink = link;
+    }
 
-    try { dlg.showModal(); } catch (_) {}
+    try {
+      const paid = await new Promise((resolve) => {
+        let settled = false;
+        telegram.openInvoice(invoiceLink, (status) => {
+          if (settled) return;
+          settled = true;
+          const ok = status === "paid" || status === true;
+          resolve(ok);
+        });
+        setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resolve(false);
+        }, 10 * 60 * 1000);
+      });
+      if (!paid) {
+        showToast("Stars 支付未完成，可稍后回到「我的订单」继续支付。");
+        setHashView("orders");
+        return;
+      }
+      await afterPaymentActivate(orderTarget, detail);
+    } catch (e) {
+      showAlert("支付流程中断：" + zhMessage(e));
+    }
+  }
+
+  async function afterPaymentActivate(orderOrNull, detail) {
+    const orderNo = orderOrNull?.orderNo;
+    const toast1 = showToastLoading("✅ Telegram Stars 已扣款 · 正在等待服务端确认订单状态…");
+    let polled = null;
+    if (orderNo) {
+      polled = await pollOrderUntilPaid(orderNo, 60 * 1000);
+    }
+    toast1.close();
+    if (!orderNo || !polled?.ok) {
+      const toastFail = showToastLoading("⏳ 支付到账仍在确认中（最长约 1 分钟）…已跳到「我的订单」，状态更新后可自行进入频道。");
+      setHashView("orders");
+      setTimeout(() => toastFail.close(), 2800);
+      return;
+    }
+    const toast2 = showToastLoading("🎊 权益已激活！正在进入对应私密频道…");
+    try {
+      state.access = "active";
+      renderStatus("active");
+      await sleep(1200);
+      toast2.close();
+      const resourceId =
+        (detail?.accessType === "membership") ? "membership-main" :
+        (detail?.id ? detail.id : "membership-main");
+      await requestChannelLink(resourceId).catch((err) => {
+        showAlert("进入频道失败：" + zhMessage(err) + "；请返回「我的订单」，在已支付订单中点击「进入频道观看」。");
+        setHashView("orders");
+      });
+    } catch (_) {
+      toast2.close();
+      setHashView("orders");
+    }
+  }
+
+  function showToastLoading(msg) {
+    const mask = document.createElement("div");
+    mask.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:9999; padding:24px;";
+    const box = document.createElement("div");
+    box.style.cssText = "background:#1b1928; color:#fff; padding:18px 22px; border-radius:14px; max-width:85%; font-size:15px; line-height:1.55; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,.35);";
+    box.textContent = msg;
+    mask.appendChild(box);
+    document.body.appendChild(mask);
+    return {
+      close() {
+        try { document.body.removeChild(mask); } catch (_) {}
+      },
+    };
   }
 
   /* ================= 我的订单 ================= */
@@ -667,9 +879,10 @@
     if (ent && ent.expiresAt) metaBits.push(`权益至 ${formatDate(ent.expiresAt, false)}`);
     f.querySelector(".product-meta").textContent = metaBits.join(" · ");
 
-    const priceStars = (Number(o.amountMinor || 0) / 1_000_000_000).toFixed(6);
-    f.querySelector(".amount").textContent = o.amountMinor || "0";
-    f.querySelector(".amount-sub").textContent = `${o.currency || "XTR"} · ≈ ${priceStars} Stars`;
+    const priceStars = (Number(o.amountMinor || 0) / 1_000_000_000).toFixed(2).replace(/\.?0+$/, "");
+    f.querySelector(".amount").textContent = priceStars || "0";
+    f.querySelector(".amount-sub").textContent =
+      o.currency === "USDT" ? `${o.currency} 站外支付` : `${o.currency || "Stars"} · Telegram Stars 支付`;
 
     const dateBits = [`创建 ${formatDate(o.createdAt)}`];
     if (o.paidAt) dateBits.push(`到账 ${formatDate(o.paidAt)}`);
@@ -686,11 +899,22 @@
     });
     ctaHost.appendChild(copyOrderBtn);
     if (o.status === "pending") {
+      const isStars = o.paymentMethod === "telegram_stars" || o.currency === "XTR";
       const payBtn = document.createElement("button");
       payBtn.type = "button";
       payBtn.className = "cta-button cta-primary";
-      payBtn.textContent = "查看付款指引";
-      payBtn.addEventListener("click", () => showToast("请把订单号发给客服/运营完成转账，到账后运营会确认补单，权益立即生效。"));
+      if (isStars) {
+        payBtn.textContent = "使用 Stars 重新下单支付";
+        payBtn.addEventListener("click", async () => {
+          if (!o.product?.id) { showAlert("该订单缺少关联商品信息，无法继续支付。"); return; }
+          await createStarsOrderAndPay(o.product).catch((err) => showAlert("唤起 Stars 支付失败：" + zhMessage(err)));
+        });
+      } else {
+        payBtn.textContent = "复制订单号去 USDT 支付";
+        payBtn.addEventListener("click", async () => {
+          if (copyText(o.orderNo)) showToast("订单号已复制。在独立 USDT 支付页粘贴该订单号即可完成转账。");
+        });
+      }
       ctaHost.appendChild(payBtn);
     }
     if (o.status === "paid" && o.entitlements && o.entitlements.length) {
@@ -700,8 +924,12 @@
       goBtn.textContent = "进入频道观看";
       goBtn.addEventListener("click", () => {
         const firstMember = o.entitlements.find((e) => e.resourceType === "membership_channel");
+        const firstPkg = o.entitlements.find((e) => e.resourceType === "package");
         if (firstMember) {
-          requestChannelLink("membership-main").catch(() => showAlert("请先回到首页，点击已解锁的会员内容进入频道。"));
+          requestChannelLink("membership-main").catch((err) => showAlert("进入会员频道失败：" + zhMessage(err)));
+        } else if (firstPkg) {
+          setHashView("home");
+          setTimeout(() => showToast("请返回首页，找到所属内容包下已解锁内容，点击「前往频道观看」。"), 250);
         } else if (o.product?.id) {
           setHashView("home");
           setTimeout(() => showToast("请返回首页，找到「已解锁」内容，点击「前往频道观看」。"), 300);
