@@ -156,6 +156,39 @@ async function fetchJson(fetchImpl: FetchLike, url: string, init?: RequestInit):
   }
 }
 
+/**
+ * The TRC-20 account-history endpoint does not consistently include a block
+ * height.  Fetch the execution receipt only for those rows so confirmations
+ * remain derived from an actual on-chain block, never from a timestamp guess.
+ */
+async function fetchTransactionBlockNumber(
+  fetchImpl: FetchLike,
+  cfg: UsdtMonitorConfig,
+  txHash: string,
+): Promise<bigint> {
+  const json = await fetchJson(fetchImpl, `${cfg.tronGridBaseUrl}/wallet/gettransactioninfobyid`, {
+    method: "POST",
+    headers: { ...monitorHeaders(cfg), "Content-Type": "application/json" },
+    body: JSON.stringify({ value: txHash }),
+  });
+  const receiptResult = String(json?.receipt?.result || json?.result || "").toUpperCase();
+  const blockRaw = json?.blockNumber ?? json?.block_number ?? null;
+  if (receiptResult !== "SUCCESS" || blockRaw == null) {
+    const err: any = new Error("transaction_receipt_missing_confirmed_block");
+    err.errorClass = "provider_bad_payload";
+    throw err;
+  }
+  try {
+    const blockNumber = BigInt(String(blockRaw));
+    if (blockNumber < 0n) throw new Error("negative_block");
+    return blockNumber;
+  } catch {
+    const err: any = new Error("transaction_receipt_invalid_block");
+    err.errorClass = "provider_bad_payload";
+    throw err;
+  }
+}
+
 export async function fetchLatestTronBlockNumber(fetchImpl: FetchLike, cfg: UsdtMonitorConfig): Promise<bigint> {
   const json = await fetchJson(fetchImpl, `${cfg.tronGridBaseUrl}/wallet/getnowblock`, {
     method: "POST",
@@ -198,7 +231,16 @@ export async function fetchTrc20TransactionsForAddress(
     const json = await fetchJson(fetchImpl, url, { headers: monitorHeaders(cfg) });
     const rows = Array.isArray(json?.data) ? json.data : [];
     for (const row of rows) {
-      const parsed = parseTronTx(row, cfg.acceptedTokenContracts);
+      // TronGrid's /transactions/trc20 response commonly omits block_number.
+      // Enrich it from the receipt before strict parsing and confirmation math.
+      let enriched = row;
+      if (row?.block_number == null && row?.blockNumber == null && row?.block == null) {
+        const txHash = String(row?.transaction_id || row?.txID || row?.hash || "").trim();
+        if (!txHash) continue;
+        const blockNumber = await fetchTransactionBlockNumber(fetchImpl, cfg, txHash);
+        enriched = { ...row, block_number: blockNumber.toString() };
+      }
+      const parsed = parseTronTx(enriched, cfg.acceptedTokenContracts);
       if (parsed) out.push(parsed);
     }
     fingerprint = typeof json?.meta?.fingerprint === "string" && json.meta.fingerprint ? json.meta.fingerprint : null;

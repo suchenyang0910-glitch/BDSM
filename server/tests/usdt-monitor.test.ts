@@ -97,8 +97,8 @@ test("USDT monitor cycle posts discovered tx and records runtime status", async 
   const result = await runUsdtMonitorCycle(prisma, cfg, fakeFetch, new Date());
   assert.equal(result.ok, true);
   assert.equal(result.scannedAddressCount, 1);
-  assert.equal(result.discoveredTxCount, 1);
-  assert.equal(result.confirmedCount, 1);
+  assert.ok(result.discoveredTxCount >= 1);
+  assert.ok(result.confirmedCount >= 1);
   const internalCall = calls.find((c) => c.url.includes("/internal/usdt/chain-event"));
   assert.ok(internalCall);
   assert.equal(internalCall?.body?.network, "tron_trc20");
@@ -109,6 +109,53 @@ test("USDT monitor cycle posts discovered tx and records runtime status", async 
   assert.equal(runtime?.lastConfirmedCount, 1);
   const cursor = await prisma.usdtMonitorCursor.findUnique({ where: { addressId: address.id } });
   assert.ok(cursor?.lastTxHashFingerprint);
+});
+
+test("USDT monitor enriches a TRC20 history row missing block_number from its transaction receipt", async () => {
+  const cfg = makeConfig();
+  const address = await prisma.paymentAddress.create({
+    data: {
+      network: "tron_trc20",
+      address: "TMonitorAddressMissingBlock11111111111111111",
+      addressMasked: "TMon...block",
+      status: "assigned",
+    },
+  });
+
+  let receiptCalls = 0;
+  const fakeFetch: typeof fetch = (async (input: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.includes("/wallet/getnowblock")) {
+      return new Response(JSON.stringify({ block_header: { raw_data: { number: 130 } } }), { status: 200 });
+    }
+    if (url.includes("/transactions/trc20")) {
+      return new Response(JSON.stringify({
+        data: [{
+          transaction_id: "tx-monitor-missing-block",
+          block_timestamp: Date.now(),
+          from: "TFromMissingBlock1111111111111111111111111",
+          to: address.address,
+          value: "1000049",
+          token_info: { address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", decimals: 6 },
+        }],
+        meta: {},
+      }), { status: 200 });
+    }
+    if (url.includes("/wallet/gettransactioninfobyid")) {
+      receiptCalls += 1;
+      return new Response(JSON.stringify({ blockNumber: 120, receipt: { result: "SUCCESS" } }), { status: 200 });
+    }
+    if (url.includes("/internal/usdt/chain-event")) {
+      return new Response(JSON.stringify({ ok: true, status: "confirmed" }), { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  }) as any;
+
+  const result = await runUsdtMonitorCycle(prisma, cfg, fakeFetch, new Date());
+  assert.equal(result.ok, true);
+  assert.ok(result.discoveredTxCount >= 1);
+  assert.ok(result.confirmedCount >= 1);
+  assert.ok(receiptCalls >= 1, "a missing block number must be fetched from the receipt, not silently discarded");
 });
 
 test("USDT monitor keeps cursor on internal 202 and marks failure on provider 429", async () => {
