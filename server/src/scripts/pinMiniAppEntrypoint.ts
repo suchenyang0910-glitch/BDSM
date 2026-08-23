@@ -82,10 +82,28 @@ const text = [
 ].join("\n");
 
 async function main() {
-  const targets = await configuredTargets();
-  if (targets.length < 2) throw new Error("no_free_channel_configured");
+  let targets: Target[];
+  try {
+    targets = await configuredTargets();
+  } catch {
+    console.log(JSON.stringify({ ok: false, action: "preflight", reason: "target_resolution_failed" }));
+    process.exitCode = 1;
+    return;
+  }
+  if (targets.length < 2) {
+    console.log(JSON.stringify({ ok: false, action: "preflight", targets: targets.length, reason: "no_free_channel_configured" }));
+    process.exitCode = 1;
+    return;
+  }
 
-  const members = await Promise.all(targets.map((target) => getBotChatMember(target.channel)));
+  let members;
+  try {
+    members = await Promise.all(targets.map((target) => getBotChatMember(target.channel)));
+  } catch {
+    console.log(JSON.stringify({ ok: false, action: "preflight", targets: targets.length, reason: "bot_permission_check_failed" }));
+    process.exitCode = 1;
+    return;
+  }
   const ready = members.every((member) => member.isAdministrator && member.canPostMessages && member.canPinMessages);
   if (!ready) {
     console.log(JSON.stringify({ ok: false, action: "preflight", targets: targets.length, reason: "missing_bot_pin_or_post_permission" }));
@@ -118,6 +136,6 @@ async function main() {
 }
 
 main().catch(() => {
-  console.log(JSON.stringify({ ok: false, action: "preflight", reason: "operation_failed" }));
+  console.log(JSON.stringify({ ok: false, action: "preflight", reason: "unexpected_operation_failure" }));
   process.exitCode = 1;
 });
