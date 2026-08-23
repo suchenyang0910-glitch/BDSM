@@ -1015,14 +1015,17 @@
       membership: ["会员", "会员主频道与内容包"],
       me: ["我的", "资产、订单、频道入口与绑定"],
     };
+    const isHome = !isDetail && routeState.tab === "home";
 
     $("backButton").hidden = !isDetail;
     $("bottomNav").classList.toggle("is-hidden", isDetail);
-    $("appHeader").classList.toggle("is-home", !isDetail && routeState.tab === "home");
+    $("appHeader").classList.toggle("is-home", isHome);
     $("headerTitle").textContent = isDetail ? "视频详情" : titleMap[routeState.tab][0];
-    $("headerSubtitle").textContent = isDetail ? "查看权益与购买方式" : titleMap[routeState.tab][1];
-    $("headerSubtitle").hidden = !isDetail && routeState.tab === "home";
-    $("headerEyebrow").hidden = !isDetail && routeState.tab === "home";
+    $("headerSubtitle").textContent = isDetail
+      ? "查看权益与购买方式"
+      : (isHome ? "真实表达，在理解与边界中被看见" : titleMap[routeState.tab][1]);
+    $("headerSubtitle").hidden = false;
+    $("headerEyebrow").hidden = isHome;
 
     ["home", "library", "membership", "me"].forEach(function (tab) {
       $(tab + "View").classList.toggle("is-hidden", isDetail || routeState.tab !== tab);
