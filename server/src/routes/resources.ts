@@ -327,8 +327,33 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
       reason?: string;
     }> = [];
 
-    // ----- 1. 免费公开频道（白名单 3 条）-----
-    for (const entry of PUBLIC_FREE_CHANNELS) {
+    // ----- 1. 后台已登记的免费公开频道（优先）-----
+    // 频道管理页是运营的单一事实来源。只返回标题与公开 URL，绝不下发 chatId / 密文 / HMAC。
+    const managedPublicChannels = await prisma.adminManagedChannel.findMany({
+      where: { purpose: "free_preview", chatType: "channel", isPrivate: false },
+      orderBy: [{ updatedAt: "desc" }],
+      select: { id: true, title: true, username: true, publicUrl: true, botIsAdmin: true },
+    });
+    for (const channel of managedPublicChannels) {
+      const publicUrl = String(channel.publicUrl || "").trim();
+      const derivedUrl = channel.username ? `https://t.me/${String(channel.username).replace(/^@/, "")}` : "";
+      const link = /^https:\/\/t\.me\/[A-Za-z0-9_]{3,128}$/i.test(publicUrl)
+        ? publicUrl
+        : (/^https:\/\/t\.me\/[A-Za-z0-9_]{3,128}$/i.test(derivedUrl) ? derivedUrl : null);
+      items.push({
+        id: `public-managed-${channel.id}`,
+        kind: "public",
+        label: channel.title || "免费公开频道",
+        subtitle: "免费预览与平台公开内容",
+        accessMode: "public_link",
+        link,
+        available: Boolean(link),
+        reason: link ? undefined : "频道已登记，但尚未同步公开用户名或 t.me 链接。",
+      });
+    }
+
+    // ----- 2. 兼容旧的 env 白名单配置（仅后台未登记免费频道时使用）-----
+    if (managedPublicChannels.length === 0) for (const entry of PUBLIC_FREE_CHANNELS) {
       const code = entry.code;
       // 找一个 published + accessType=public + freeChannelCode=code 的内容作为 access-link 触发点
       let triggerContentId: string | null = null;
@@ -365,7 +390,7 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // ----- 2. 会员主频道（如果有 active membership_channel entitlement）-----
+    // ----- 3. 会员主频道（如果有 active membership_channel entitlement）-----
     try {
       const now = new Date();
       const membershipE = await prisma.entitlement.findFirst({

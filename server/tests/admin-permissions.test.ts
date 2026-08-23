@@ -620,6 +620,46 @@ test("首页 Banner：五类受控跳转均可保存，私密邀请与支付外�
   }
 });
 
+test("用户频道入口优先展示后台登记的免费公开频道，且不泄露频道标识", async () => {
+  process.env.CRYPTO_CHAT_ID_AES_KEY = "12345678901234567890123456789012";
+  const user = await prisma.user.create({
+    data: { telegramUserId: String(8000000000 + (Date.now() % 1000000000)), displayName: "Channel entry test" },
+  });
+  const app = await createApp(prisma);
+  const chatId = BigInt("-1009876543999");
+  try {
+    app.addHook("preHandler", async (req) => {
+      (req as any).userId = user.id;
+    });
+    const channel = await prisma.adminManagedChannel.create({
+      data: {
+        chatIdHmac: chatIdIndexKey(chatId),
+        chatIdCiphertextB64: encryptChatIdAesGcm(chatId),
+        deprecatedChatIdBig: chatId,
+        chatType: "channel",
+        title: "Public preview test channel",
+        username: "intune_public_preview_test",
+        publicUrl: "https://t.me/intune_public_preview_test",
+        isPrivate: false,
+        purpose: "free_preview",
+        source: "manual_add",
+        botIsAdmin: true,
+      },
+    });
+
+    const response = await app.inject({ method: "GET", url: "/api/user/channels" });
+    assert.equal(response.statusCode, 200, response.body);
+    const item = (response.json() as any).items.find((entry: any) => entry.id === `public-managed-${channel.id}`);
+    assert.ok(item, "后台登记的免费频道应出现在用户频道入口");
+    assert.equal(item.kind, "public");
+    assert.equal(item.link, "https://t.me/intune_public_preview_test");
+    assert.equal(item.available, true);
+    assert.doesNotMatch(response.body, /9876543999|chatIdCiphertext|chatIdHmac/i);
+  } finally {
+    await app.close();
+  }
+});
+
 test("channel_post 收件箱入库后只能按 accessType 关联到允许的内容", async () => {
   const app = await createApp(prisma);
   try {
