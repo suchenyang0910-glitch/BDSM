@@ -16,8 +16,13 @@ import { Readable } from "node:stream";
 import { getTelegramBotByKey, type TelegramBotCredential } from "../utils/telegram.js";
 import { chatIdIndexKey, constantTimeEqual } from "../utils/crypto.js";
 
-const API_BASE = "https://api.telegram.org";
+const API_BASE = String(process.env.TELEGRAM_BOT_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
 const DEFAULT_MINI_APP_URL = "https://bdsm.linkx.club/";
+
+/** 官方云端 Bot API 对大文件上传有限制；部署本地 Bot API 后通过 env 切换即可获得更高上限。 */
+export function usesTelegramCloudBotApi(): boolean {
+  try { return new URL(API_BASE).hostname === "api.telegram.org"; } catch { return true; }
+}
 
 // ======= ChannelRef（内部引用）体系：路由层只传 ref，不在路由层出现明文 chatId =======
 

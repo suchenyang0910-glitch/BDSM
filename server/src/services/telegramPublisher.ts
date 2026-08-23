@@ -34,6 +34,7 @@ import {
   refRawChatId,
   chatIdFingerprint,
   maskChatIdSafe,
+  usesTelegramCloudBotApi,
   type ChannelRef,
   type TelegramBotSlot,
   type SendMediaFromStoragePayload,
@@ -57,6 +58,8 @@ const DEFAULT_BOT_SLOT: TelegramBotSlot = "invite_bot";
 const DEFAULT_MAX_ATTEMPTS = 3;
 const BASE_RETRY_SECONDS = 5;
 const DB_POLL_INTERVAL_MS = 15_000;
+// 预留 multipart 边界/元数据空间；达到此值应先转码，或改用自托管 Telegram Bot API。
+const TELEGRAM_CLOUD_SAFE_UPLOAD_BYTES = 49 * 1024 * 1024;
 const BOT_DEEPLINK_PREFIX = "https://t.me/InTune_bdsm_bot?startapp=content_";
 const WEB_DIRECT_LINK_PREFIX = "https://bdsm.linkx.club/?content=";
 
@@ -303,6 +306,20 @@ export async function processPublishJob(
     });
     return { ok: false, reason: "asset_not_ready" };
   }
+  if (
+    asset.kind !== "cover_image" &&
+    usesTelegramCloudBotApi() &&
+    asset.contentLength != null &&
+    BigInt(asset.contentLength.toString()) > BigInt(TELEGRAM_CLOUD_SAFE_UPLOAD_BYTES)
+  ) {
+    await markJobFailed(prisma, job.id, {
+      lastErrorClass: "telegram_cloud_file_too_large",
+      lastErrorNote: "video_requires_transcode_or_local_bot_api",
+      bumpRetry: false,
+      exhaust: true,
+    });
+    return { ok: false, reason: "telegram_cloud_file_too_large" };
+  }
 
   // Step 1: requireObjectStorageEnv + HeadObject 二次校验（上传后可能被删/覆盖）
   let resolved: ResolvedTarget;
@@ -384,10 +401,12 @@ export async function processPublishJob(
 
     if (!result.success || !result.messageId) {
       const errCode = result.errorCode ?? 500;
+      const fileTooLarge = errCode === 413;
       await markJobFailed(prisma, job.id, {
-        lastErrorClass: "tg_bot_send_failed",
-        lastErrorNote: truncateNote(`code=${errCode} ${result.errorNote || ""}`, 180),
-        bumpRetry: true,
+        lastErrorClass: fileTooLarge ? "telegram_cloud_file_too_large" : "tg_bot_send_failed",
+        lastErrorNote: fileTooLarge ? "video_requires_transcode_or_local_bot_api" : truncateNote(`code=${errCode} ${result.errorNote || ""}`, 180),
+        bumpRetry: !fileTooLarge,
+        exhaust: fileTooLarge,
       });
       return { ok: false, reason: "tg_send_failed" };
     }
