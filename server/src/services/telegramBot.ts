@@ -348,6 +348,7 @@ export type GetChatMemberResult = {
   canPostMessages?: boolean;
   canInviteUsers?: boolean;
   canRestrictMembers?: boolean;
+  canPinMessages?: boolean;
 };
 
 export async function getChat(chat: ChannelRef): Promise<GetChatResult> {
@@ -424,7 +425,41 @@ export async function getBotChatMember(chat: ChannelRef | string): Promise<GetCh
     canPostMessages: m.can_post_messages === true,
     canInviteUsers: m.can_invite_users === true,
     canRestrictMembers: m.can_restrict_members === true,
+    canPinMessages: m.can_pin_messages === true,
   };
+}
+
+export type SendChannelTextOptions = {
+  channel: ChannelRef;
+  text: string;
+  disableWebPagePreview?: boolean;
+  disableNotification?: boolean;
+};
+
+/** Posts a text-only operational message without exposing channel identifiers. */
+export async function sendChannelText(opts: SendChannelTextOptions): Promise<{ success: boolean; messageId?: number; errorCode?: number }> {
+  const bot = assertInviteBot("send channel text");
+  const chatId = channelIdString(resolveChannelRefToChatId(opts.channel));
+  const result = await callBotApi<{ message_id: number }>(bot, "sendMessage", {
+    chat_id: chatId,
+    text: opts.text,
+    disable_web_page_preview: opts.disableWebPagePreview ?? false,
+    disable_notification: opts.disableNotification ?? true,
+  });
+  if (!result.ok || !result.result?.message_id) return { success: false, errorCode: result.error_code };
+  return { success: true, messageId: result.result.message_id };
+}
+
+/** Pins a previously posted channel message. Callers must preflight canPinMessages first. */
+export async function pinChannelMessage(opts: { channel: ChannelRef; messageId: number }): Promise<{ success: boolean; errorCode?: number }> {
+  const bot = assertInviteBot("pin channel message");
+  const chatId = channelIdString(resolveChannelRefToChatId(opts.channel));
+  const result = await callBotApi<true>(bot, "pinChatMessage", {
+    chat_id: chatId,
+    message_id: opts.messageId,
+    disable_notification: true,
+  });
+  return result.ok ? { success: true } : { success: false, errorCode: result.error_code };
 }
 
 export async function getChatMemberCount(chat: ChannelRef): Promise<number> {
