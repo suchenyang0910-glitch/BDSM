@@ -326,6 +326,7 @@
     }
 
     const addr =
+      o.usdtPayment?.toAddress ||
       o.usdtPayment?.address ||
       o.usdtPaymentAddress ||
       (o._h5Extra && o._h5Extra.address) ||
