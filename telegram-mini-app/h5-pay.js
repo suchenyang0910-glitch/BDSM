@@ -228,6 +228,7 @@
 
   let pollTimer = null;
   let paidRedirectTimer = null;
+  let lastForegroundRefreshAt = 0;
   function stopPolling() {
     if (pollTimer) {
       clearInterval(pollTimer);
@@ -299,6 +300,8 @@
   function showActivatedCard() {
     const card = $("activatedCard");
     if (!card) return;
+    // 钱包 App 返回 H5 时，始终把已支付结果带回可见的支付详情页，避免停留在旧的待支付列表。
+    showView("payDetail");
     const bound = currentIdentitySession?.telegramBound === true;
     const message = $("activatedMessage");
     const button = $("btnBackMiniApp");
@@ -981,10 +984,24 @@
     });
   }
 
+  function refreshCurrentOrderAfterForeground() {
+    if (document.visibilityState && document.visibilityState !== "visible") return;
+    const now = Date.now();
+    if (now - lastForegroundRefreshAt < 1200) return;
+    const orderNo = currentOrderNoFromQs() || ($("orderNo") && $("orderNo").value.trim());
+    if (!orderNo) return;
+    lastForegroundRefreshAt = now;
+    // 手机钱包/扫码器返回浏览器后，定时器可能被系统暂停；这里立即向服务端重新查单。
+    handleQueryOrder(orderNo);
+  }
+
   document.addEventListener("DOMContentLoaded", async () => {
     bindCopyAndNav();
     bindTabBar();
     bindQuickActions();
     await boot();
+    document.addEventListener("visibilitychange", refreshCurrentOrderAfterForeground);
+    window.addEventListener("focus", refreshCurrentOrderAfterForeground);
+    window.addEventListener("pageshow", refreshCurrentOrderAfterForeground);
   });
 })();
