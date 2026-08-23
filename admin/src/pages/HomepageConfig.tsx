@@ -117,7 +117,8 @@ const HomepageConfigPage: React.FC = () => {
         getAdminHomepageDraft().catch(() => ({ draft: null })),
         getAdminHomepagePublished().catch(() => ({ published: null, recent: [] })),
         listAdminBanners(),
-        listAdminContents({ limit: 500 }),
+        // 服务端内容列表单次上限为 100；首期首页配置只加载最新 100 条候选内容。
+        listAdminContents({ limit: 100 }),
         listAdminCategories(),
         adminMe().catch(() => null as AdminMe | null),
       ]);

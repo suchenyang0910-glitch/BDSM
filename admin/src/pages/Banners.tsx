@@ -101,7 +101,8 @@ const BannersPage: React.FC = () => {
     try {
       const [cResp, tResp] = await Promise.all([
         listAdminCategories(),
-        listAdminContents({ limit: 200 }),
+        // 与服务端分页契约保持一致，单次请求最大 100 条。
+        listAdminContents({ limit: 100 }),
       ]);
       setCategories(cResp.data);
       setContents(tResp.data);
