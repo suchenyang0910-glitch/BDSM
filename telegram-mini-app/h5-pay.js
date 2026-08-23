@@ -56,6 +56,10 @@
     return `${whole.toString()}.${fracStr}`;
   }
 
+  function minorToDisplayUsdtPrice(minorStr) {
+    return minorToDecimalUsdt(minorStr).replace(/\.?0+$/, "") || "0";
+  }
+
   function normalizeXtrMinor(minorStr) {
     const n = BigInt(minorStr || "0");
     if (n > 0n && n >= 1_000_000n && n % 1_000_000n === 0n) return n / 1_000_000n;
@@ -304,7 +308,7 @@
     // USDT 订单 amountMinor 是包含唯一尾数的实际应付金额；优先展示商品基价，避免把尾数误称为标价。
     const baseAmountMinor = o.usdtPayment?.baseAmountMinor ?? o.product?.usdtPriceMinor ?? null;
     const listPrice = isUsdt
-      ? (baseAmountMinor != null ? minorToDecimalUsdt(baseAmountMinor) : minorToDecimalUsdt(o.amountMinor))
+      ? (baseAmountMinor != null ? minorToDisplayUsdtPrice(baseAmountMinor) : minorToDisplayUsdtPrice(o.amountMinor))
       : o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : null;
 
     const listPriceEl = $("listPrice");
