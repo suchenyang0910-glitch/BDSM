@@ -142,12 +142,12 @@ type InitMediaUploadReq = {
   expectedChecksumSha256?: string | null;
 };
 type InitMediaUploadResp = {
-  ok: true;
-  mediaAsset: MediaAssetItem;
+  mediaAssetId: string;
   uploadUrl: string;
   expectedHttpHeaders: Record<string, string>;
 };
-type CompleteMediaUploadReq = { ok: boolean; reportedLength?: number | null; etag?: string | null; errorNote?: string | null };
+type CompleteMediaUploadReq = { ok: boolean; reportedContentLength?: number | null; etag?: string | null; error?: string | null; reason?: string | null };
+type CompleteMediaUploadResp = { ok: boolean; id: string; status: MediaAssetStatus; publicUrl?: string | null; contentLength?: string | null };
 type StartTelegramPublishReq = { channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">; telegramTags?: string[]; reason?: string };
 type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }>; normalizedTelegramTags?: string[] };
 
@@ -155,13 +155,20 @@ export async function initMediaUpload(req: InitMediaUploadReq): Promise<InitMedi
   const res = await http.post("/admin/media/init-upload", req, { timeout: 20_000 });
   return res.data;
 }
-export async function completeMediaUpload(id: string, req: CompleteMediaUploadReq): Promise<{ ok: true; mediaAsset: MediaAssetItem }> {
+function normalizeMediaAsset(raw: any): MediaAssetItem {
+  return {
+    ...raw,
+    contentLength: Number(raw?.contentLength || 0),
+    storagePublicUrl: raw?.storagePublicUrl ?? null,
+  } as MediaAssetItem;
+}
+export async function completeMediaUpload(id: string, req: CompleteMediaUploadReq): Promise<CompleteMediaUploadResp> {
   const res = await http.post(`/admin/media/${encodeURIComponent(id)}/complete`, req, { timeout: 30_000 });
   return res.data;
 }
-export async function getMediaAsset(id: string): Promise<{ ok: true; mediaAsset: MediaAssetItem }> {
+export async function getMediaAsset(id: string): Promise<MediaAssetItem> {
   const res = await http.get(`/admin/media/${encodeURIComponent(id)}`);
-  return res.data;
+  return normalizeMediaAsset(res.data);
 }
 export async function startTelegramPublish(contentId: string, req: StartTelegramPublishReq): Promise<StartTelegramPublishResp> {
   return startAdminTelegramPublish(contentId, req as any);
@@ -537,9 +544,9 @@ const ContentsPage: React.FC = () => {
     const caId = rawAny.coverAssetId || rawAny.cover_asset_id || null;
     const paId = rawAny.previewAssetId || rawAny.preview_asset_id || null;
     const faId = rawAny.fullVideoAssetId || rawAny.full_video_asset_id || null;
-    if (caId) { setCoverAssetId(caId); getMediaAsset(caId).then(r => setCoverAsset(r.mediaAsset)).catch(() => {}); }
-    if (paId) { setPreviewAssetId(paId); getMediaAsset(paId).then(r => setPreviewAsset(r.mediaAsset)).catch(() => {}); }
-    if (faId) { setFullVideoAssetId(faId); getMediaAsset(faId).then(r => setFullVideoAsset(r.mediaAsset)).catch(() => {}); }
+    if (caId) { setCoverAssetId(caId); getMediaAsset(caId).then(setCoverAsset).catch(() => {}); }
+    if (paId) { setPreviewAssetId(paId); getMediaAsset(paId).then(setPreviewAsset).catch(() => {}); }
+    if (faId) { setFullVideoAssetId(faId); getMediaAsset(faId).then(setFullVideoAsset).catch(() => {}); }
     setDrawerOpen(true);
   };
 
@@ -566,6 +573,7 @@ const ContentsPage: React.FC = () => {
     }
     setters.setProgress(0);
     setters.setUploading(true);
+    let createdAssetId: string | null = null;
     try {
       // Step 1: init-upload 拿预签名 PUT URL + 事务内写 mediaAsset
       const init = await initMediaUpload({
@@ -574,8 +582,8 @@ const ContentsPage: React.FC = () => {
         mimeType: file.type || "application/octet-stream",
         contentLength: file.size,
       });
-      setters.setAssetId(init.mediaAsset.id);
-      setters.setAsset(init.mediaAsset);
+      createdAssetId = init.mediaAssetId;
+      setters.setAssetId(createdAssetId);
       // Step 2: XHR PUT 到对象存储（支持 onprogress）
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -598,20 +606,21 @@ const ContentsPage: React.FC = () => {
       });
       setters.setProgress(100);
       // Step 3: 调 complete 让服务端 HeadObject 校验
-      const comp = await completeMediaUpload(init.mediaAsset.id, { ok: true, reportedLength: file.size, etag: "" });
-      setters.setAsset(comp.mediaAsset);
-      if (comp.mediaAsset.status !== "ready") {
-        message.error(`对象存储校验失败：${comp.mediaAsset.lastErrorClass || comp.mediaAsset.status}${comp.mediaAsset.lastErrorNote ? `（${comp.mediaAsset.lastErrorNote}）` : ""}`);
+      const comp = await completeMediaUpload(createdAssetId, { ok: true, reportedContentLength: file.size, etag: "" });
+      const verified = await getMediaAsset(createdAssetId);
+      setters.setAsset(verified);
+      if (comp.status !== "ready") {
+        message.error(`对象存储校验失败：${verified.lastErrorClass || comp.status}${verified.lastErrorNote ? `（${verified.lastErrorNote}）` : ""}`);
       } else {
         message.success(`${kind === "cover_image" ? "封面" : kind === "preview_video" ? "试看视频" : "完整视频"}上传完成`);
       }
     } catch (e) {
       setters.setProgress(0);
-      const id = coverAssetId || previewAssetId || fullVideoAssetId;
+      const id = createdAssetId || coverAssetId || previewAssetId || fullVideoAssetId;
       if (id) {
         try {
-          const comp = await completeMediaUpload(id, { ok: false, errorNote: e instanceof Error ? e.message.slice(0, 180) : "upload_aborted" });
-          setters.setAsset(comp.mediaAsset);
+          await completeMediaUpload(id, { ok: false, error: e instanceof Error ? e.message.slice(0, 180) : "upload_aborted" });
+          setters.setAsset(await getMediaAsset(id));
         } catch {}
       }
       message.error(errMsg(e, kind === "cover_image" ? "封面上传失败" : kind === "preview_video" ? "试看上传失败" : "完整视频上传失败"));

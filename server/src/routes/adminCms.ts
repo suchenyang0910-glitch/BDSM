@@ -1813,7 +1813,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           note: `kind=${asset.kind} uerr_len=${(verify.userError || "").length}`,
         });
       }
-      const publicUrl = finalStatus === "ready" ? makePublicUrl(storageEnv.bucket, storageEnv.region, asset.storageKey, storageEnv) : undefined;
+      const publicUrl = finalStatus === "ready" && asset.kind !== "full_video"
+        ? makePublicUrl(storageEnv.bucket, storageEnv.region, asset.storageKey, storageEnv)
+        : undefined;
       const updated = await prisma.$transaction(async (tx: any) => {
         const after = await tx.mediaAsset.update({
           where: { id },

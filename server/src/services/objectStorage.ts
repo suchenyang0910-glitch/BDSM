@@ -60,6 +60,11 @@ export type RequiredObjectStorageEnv = {
   publicBaseUrl?: string;
 };
 
+/** Only assets that are intended to appear in the public catalog may be public. */
+export function isPublicMediaAssetKind(kind: MediaAssetKind): boolean {
+  return kind === "cover_image" || kind === "preview_video";
+}
+
 const REQUIRED_ENV_KEYS = [
   "S3_ENDPOINT",
   "S3_REGION",
@@ -177,6 +182,7 @@ export async function createPresignedPutUpload(
 }> {
   const env = requireObjectStorageEnv();
   const s3 = getS3Client();
+  const publicReadable = isPublicMediaAssetKind(input.kind);
   const key = generateStorageKey(input.kind, input.originalFilename);
   const expiresSeconds = 15 * 60;
   const contentLength = Number.isFinite(input.contentLength) ? Math.max(0, Math.floor(input.contentLength)) : 0;
@@ -188,6 +194,7 @@ export async function createPresignedPutUpload(
     "Content-Type": input.mimeType || "application/octet-stream",
     "Content-Length": String(contentLength),
   };
+  if (publicReadable) headers["x-amz-acl"] = "public-read";
   if (input.expectedChecksumSha256) {
     headers["X-Amz-Checksum-Sha256"] = String(input.expectedChecksumSha256).trim();
   }
@@ -198,6 +205,9 @@ export async function createPresignedPutUpload(
     ContentLength: contentLength > 0 ? contentLength : undefined,
     ChecksumSHA256: input.expectedChecksumSha256 ? String(input.expectedChecksumSha256).trim() : undefined,
     Metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    // Full videos are delivered only by the controlled Telegram channel flow.
+    // Never grant public-read to them at upload time.
+    ACL: publicReadable ? "public-read" : undefined,
   });
   const url = await getSignedUrl(s3, cmd as any, { expiresIn: expiresSeconds });
   const expiresAt = new Date(Date.now() + expiresSeconds * 1000);
