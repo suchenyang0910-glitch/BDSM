@@ -239,6 +239,7 @@ const ContentsPage: React.FC = () => {
   const [q, setQ] = React.useState("");
 
   const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [editorTab, setEditorTab] = React.useState("basic");
   const [editing, setEditing] = React.useState<ContentItem | null>(null);
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = React.useState(false);
@@ -478,6 +479,7 @@ const ContentsPage: React.FC = () => {
 
   const openCreate = () => {
     setEditing(null);
+    setEditorTab("basic");
     setChannelKinds([]);
     resetMediaState();
     form.resetFields();
@@ -504,6 +506,7 @@ const ContentsPage: React.FC = () => {
 
   const openEdit = (row: ContentItem) => {
     setEditing(row);
+    setEditorTab("basic");
     resetMediaState();
     setChannelKinds([]);
     setCurrentChannelLink(null);
@@ -662,10 +665,13 @@ const ContentsPage: React.FC = () => {
         setEditing(refreshed);
         refreshPublishJobs(editing.id);
       } else {
-        await createAdminContent(payload);
-        message.success("内容已创建");
+        const created = await createAdminContent(payload);
+        const refreshed = await getAdminContent(created.id);
+        setEditing(refreshed);
+        // 创建完成后保留当前上传状态，直接进入下一步，避免运营回列表再找一次内容。
+        setEditorTab("media");
+        message.success("视频已创建，请继续上传素材");
       }
-      setDrawerOpen(false);
       fetchList();
     } catch (e) {
       message.error(errMsg(e, editing ? "更新失败" : "创建失败"));
@@ -1076,13 +1082,14 @@ const ContentsPage: React.FC = () => {
           <Space>
             <Button onClick={() => setDrawerOpen(false)} disabled={submitting}>取消</Button>
             <Button type="primary" loading={submitting} onClick={onDrawerSubmit} disabled={!canEdit}>
-              {editing ? "保存视频信息" : "保存并进入发布"}
+              {editing ? "保存视频信息" : "保存并上传素材"}
             </Button>
           </Space>
         }
       >
         <Tabs
-          defaultActiveKey="basic"
+          activeKey={editorTab}
+          onChange={setEditorTab}
           items={[
             // ==================== Tab 1：基本信息（原 Form + 发布前检查） ====================
             {
