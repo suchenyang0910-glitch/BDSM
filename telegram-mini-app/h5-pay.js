@@ -800,7 +800,8 @@
     const meta = $("orderMeta");
     if (meta) meta.textContent = "订单号 " + orderNo;
     try {
-      const data = await api(`/api/user/orders?page=1&pageSize=100`);
+      // 与服务端 ordersQuerySchema 的上限保持一致（最大 50），否则刷新待支付订单会被 400 拒绝。
+      const data = await api(`/api/user/orders?page=1&pageSize=50`);
       const order = (data?.items || []).find((o) => o.orderNo === orderNo);
       if (!order) {
         return showError(

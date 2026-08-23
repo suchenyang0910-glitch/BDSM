@@ -72,7 +72,7 @@ function resolveUsdtPriceMinor(product: { priceMinor: bigint; currency?: string 
   return legacy > 0n ? legacy : null;
 }
 
-function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null }) {
+function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null; exposeUsdtPaymentIfOwnedBy?: string | null }) {
   const out: any = {
     id: o.id,
     orderNo: o.orderNo,
@@ -135,6 +135,28 @@ function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null }
   ) {
     out.invoiceLink = o.telegramStarsInvoiceLink;
     out.invoiceVia = o.telegramStarsInvoiceVia ?? null;
+  }
+  // H5 刷新或重新打开待支付订单时，必须能继续取得该订单的收款地址。
+  // 地址只返回给订单本人，且仅限仍可支付的 USDT 订单，避免在通用订单列表泄露。
+  if (
+    opts?.exposeUsdtPaymentIfOwnedBy &&
+    typeof o.userId === "string" &&
+    o.userId === opts.exposeUsdtPaymentIfOwnedBy &&
+    o.currency === "USDT" &&
+    (o.status === "pending" || o.status === "processing") &&
+    typeof o.usdtPaymentAddress?.address === "string" &&
+    o.usdtPaymentAddress.address.length > 0
+  ) {
+    const finalAmountMinor = o.amountMinor?.toString() ?? null;
+    const baseAmountMinor = resolveUsdtPriceMinor(o.product)?.toString() ?? finalAmountMinor;
+    out.usdtPayment = {
+      network: "tron_trc20",
+      toAddress: o.usdtPaymentAddress.address,
+      amountMinor: finalAmountMinor,
+      baseAmountMinor,
+      displayAmountDecimal: finalAmountMinor ? (Number(finalAmountMinor) / 1_000_000).toFixed(6) : null,
+      confirmationsTarget: USDT_CONFIRMATIONS_TARGET_DEFAULT,
+    };
   }
   return out;
 }
@@ -702,12 +724,12 @@ export default async function orderRoutes(fastify: FastifyInstance) {
         orderBy: [{ createdAt: "desc" }],
         skip,
         take,
-        include: { product: true, entitlements: true },
+        include: { product: true, entitlements: true, usdtPaymentAddress: true },
       }),
     ]);
 
     return {
-      items: rows.map((o: any) => orderResponse(o, { exposeInvoiceIfOwnedBy: uid })),
+      items: rows.map((o: any) => orderResponse(o, { exposeInvoiceIfOwnedBy: uid, exposeUsdtPaymentIfOwnedBy: uid })),
       pagination: {
         page: query.page,
         pageSize: query.pageSize,
@@ -723,10 +745,10 @@ export default async function orderRoutes(fastify: FastifyInstance) {
 
     const order = await prisma.order.findUnique({
       where: { orderNo: req.params.orderNo },
-      include: { product: true, entitlements: true },
+      include: { product: true, entitlements: true, usdtPaymentAddress: true },
     });
     if (!order || order.userId !== uid) return reply.status(404).send({ error: "not_found" });
-    return orderResponse(order, { exposeInvoiceIfOwnedBy: uid });
+    return orderResponse(order, { exposeInvoiceIfOwnedBy: uid, exposeUsdtPaymentIfOwnedBy: uid });
   });
 
   // ============================================================
@@ -889,6 +911,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
             user: true,
             product: true,
             entitlements: true,
+            usdtPaymentAddress: true,
             paymentTransactions: {
               take: 10,
               orderBy: [{ createdAt: "desc" }],
@@ -1769,12 +1792,13 @@ export default async function orderRoutes(fastify: FastifyInstance) {
           include: {
             product: true,
             entitlements: true,
+            usdtPaymentAddress: true,
           },
         }),
       ]);
 
       return reply.send({
-        items: rows.map(orderResponse),
+        items: rows.map((o: any) => orderResponse(o, { exposeInvoiceIfOwnedBy: uid, exposeUsdtPaymentIfOwnedBy: uid })),
         pagination: {
           page: query.page,
           pageSize: query.pageSize,

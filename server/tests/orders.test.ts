@@ -910,6 +910,16 @@ test("USDT 创单：XTR 会员可使用独立 USDT 测试价，Stars 主价格�
     assert.equal(body.usdtPayment.baseAmountMinor, "10000", "USDT 建单必须使用独立 USDT 测试价 0.01");
     assert.equal(body.currency, "USDT", "订单账务币种必须是 USDT，不能沿用商品主 Stars 币种");
 
+    // H5 刷新 / 使用“继续支付”时必须能从本人订单列表恢复精确金额与收款地址。
+    // 同时确保这里的 baseAmountMinor 仍是 0.01，而不是包含唯一尾数的最终应付金额。
+    const ownOrders = await app.inject({ method: "GET", url: "/api/user/orders?page=1&pageSize=50", headers: { cookie } });
+    assert.equal(ownOrders.statusCode, 200, ownOrders.body);
+    const ownOrder = (ownOrders.json() as any).items.find((item: any) => item.orderNo === body.orderNo);
+    assert.ok(ownOrder, "本人订单列表必须包含刚创建的待支付订单");
+    assert.equal(ownOrder.usdtPayment.baseAmountMinor, "10000", "订单恢复必须保留 0.01 USDT 商品基价");
+    assert.equal(ownOrder.usdtPayment.amountMinor, body.usdtPayment.amountMinor, "订单恢复必须保留精确应付金额");
+    assert.equal(ownOrder.usdtPayment.toAddress, body.usdtPayment.toAddress, "订单恢复必须保留本人可见的收款地址");
+
     const stored = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
     assert.equal(stored.currency, "XTR", "备用 USDT 定价不能篡改 Stars 主币种");
     assert.equal(stored.priceMinor, 150_000_000n, "备用 USDT 定价不能篡改 Stars 主价格");
