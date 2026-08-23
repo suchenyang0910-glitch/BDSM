@@ -863,10 +863,20 @@ h3 {
 }
 
 @media (max-width: 680px) {
-  .app-header,
   .membership-summary,
   .profile-card {
     flex-direction: column;
+  }
+
+  /* The VOD home header is intentionally one line on phones: brand left,
+     search and notifications right. Do not inherit the card stack rule. */
+  .app-header.is-home {
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+
+  .app-header.is-home .header-main {
+    flex: 1 1 auto;
   }
 }
 
