@@ -574,6 +574,52 @@ test("内容包管理：editor 可创建、编辑和下架；auditor 只读，�
   }
 });
 
+test("首页 Banner：五类受控跳转均可保存，私密邀请与支付外链必须拒绝", async () => {
+  const app = await createApp(prisma);
+  try {
+    const superCookie = await loginAdmin(app, "superAdmin");
+    const cases = [
+      { targetType: "content", targetId: TEST_KNOWN_IDS.contentPublic },
+      { targetType: "category", targetId: TEST_KNOWN_IDS.categoryFeatured },
+      { targetType: "package", targetId: TEST_KNOWN_IDS.contentPackageKey },
+      { targetType: "membership" },
+      { targetType: "external", externalUrl: "https://t.me/InTune_bdsm" },
+    ];
+    for (const [index, item] of cases.entries()) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/admin/banners",
+        headers: { cookie: superCookie, "Content-Type": "application/json" },
+        payload: {
+          title: `Banner target ${index}`,
+          slot: "home_primary",
+          status: "draft",
+          actionLabel: "查看详情",
+          ...item,
+        },
+      });
+      assert.equal(response.statusCode, 201, response.body);
+    }
+
+    const unsafe = await app.inject({
+      method: "POST",
+      url: "/api/admin/banners",
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        title: "unsafe private invite",
+        slot: "home_primary",
+        status: "draft",
+        targetType: "external",
+        externalUrl: "https://t.me/+privateInviteMustNeverPass",
+      },
+    });
+    assert.equal(unsafe.statusCode, 400, unsafe.body);
+    assert.equal((unsafe.json() as any).error, "external_url_invalid");
+  } finally {
+    await app.close();
+  }
+});
+
 test("channel_post 收件箱入库后只能按 accessType 关联到允许的内容", async () => {
   const app = await createApp(prisma);
   try {
