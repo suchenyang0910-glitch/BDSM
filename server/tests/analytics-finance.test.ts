@@ -184,6 +184,27 @@ test("analytics events reject requests without an established account session", 
   }
 });
 
+test("admin analytics overview exposes aggregate funnel only and enforces analytics:view", async () => {
+  const app = await createApp(prisma);
+  try {
+    const operatorCookie = await loginAdmin(app, "operator");
+    const supportCookie = await loginAdmin(app, "customerService");
+    const forbidden = await app.inject({ method: "GET", url: "/api/admin/analytics/overview?preset=7d", headers: { cookie: supportCookie } });
+    assert.equal(forbidden.statusCode, 403, forbidden.body);
+    const ok = await app.inject({ method: "GET", url: "/api/admin/analytics/overview?preset=7d", headers: { cookie: operatorCookie } });
+    assert.equal(ok.statusCode, 200, ok.body);
+    const body = ok.json() as any;
+    assert.equal(body.period.preset, "7d");
+    assert.equal(Array.isArray(body.funnel), true);
+    assert.equal(body.funnel.length, 5);
+    assert.equal(Array.isArray(body.preferences), true);
+    assert.equal(JSON.stringify(body).includes("analytics user"), false, "overview must not expose user identity");
+    assert.equal(JSON.stringify(body).includes("INT20260823000001"), false, "overview must not expose order identifiers");
+  } finally {
+    await app.close();
+  }
+});
+
 test("me preferences support save and clear without exposing raw sensitive fields", async () => {
   const app = await createApp(prisma);
   try {

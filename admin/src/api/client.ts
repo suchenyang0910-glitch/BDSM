@@ -68,6 +68,7 @@ import type {
   RegisterTelegramPublishResult,
   StartTelegramPublishInput,
   StartTelegramPublishResp,
+  AdminAnalyticsOverview,
 } from "./types";
 
 const http = axios.create({
@@ -308,6 +309,11 @@ export async function startAdminTelegramPublish(
 // ==========================================================================
 export async function listAdminPackages(): Promise<{ data: AdminPackageItem[] }> {
   const res = await http.get("/admin/packages");
+  return res.data;
+}
+
+export async function getAdminAnalyticsOverview(preset: "7d" | "30d" = "7d"): Promise<AdminAnalyticsOverview> {
+  const res = await http.get("/admin/analytics/overview", { params: { preset } });
   return res.data;
 }
 

@@ -15,6 +15,7 @@ import {
   SettingOutlined,
   ApiOutlined,
   DashboardOutlined,
+  BarChartOutlined,
 } from "@ant-design/icons";
 import { useNavigate, useLocation, Outlet } from "react-router-dom";
 import { Modal } from "antd";
@@ -36,6 +37,7 @@ const ROLE_LABEL: Record<AdminRole, string> = {
 
 const PAGE_TITLE_BY_PATH: Record<string, string> = {
   "/dashboard": "运营概览 · 数据看板",
+  "/analytics": "运营概览 · 数据分析",
   "/orders": "订单与权益 · 订单管理",
   "/entitlements": "订单与权益 · 权益管理",
   "/payment-addresses": "订单与权益 · USDT 收款地址",
@@ -59,6 +61,7 @@ const AdminLayout: React.FC = () => {
   const selectedKey = (() => {
     const p = location.pathname;
     if (p.startsWith("/dashboard")) return "/dashboard";
+    if (p.startsWith("/analytics")) return "/analytics";
     if (p.startsWith("/contents")) return "/contents";
     if (p.startsWith("/packages")) return "/packages";
     if (p.startsWith("/categories")) return "/categories";
@@ -133,6 +136,11 @@ const AdminLayout: React.FC = () => {
               key: "/dashboard",
               icon: <DashboardOutlined />,
               label: "运营看板",
+            },
+            {
+              key: "/analytics",
+              icon: <BarChartOutlined />,
+              label: "数据分析",
             },
             {
               key: "content",

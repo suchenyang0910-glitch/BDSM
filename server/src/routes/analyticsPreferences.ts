@@ -10,6 +10,7 @@ import {
 } from "../services/analytics.js";
 import { emitStructuredLog } from "../utils/structuredError.js";
 import { shortFingerprint } from "../utils/crypto.js";
+import { requireAdmin } from "./admin.js";
 
 const PREFERENCE_SOURCE_SCHEMA = z.enum([
   "guest_onboarding",
@@ -36,9 +37,63 @@ const NOTIFICATION_KEYS = ["order_status", "entitlement_reminder", "public_chann
 const FORMAT_KEYS = ["curated_on_demand", "creator_interview", "community_discussion", "event_preview"] as const;
 const DISCOVERY_KEYS = ["latest_first", "featured_first", "following_first"] as const;
 const PERSONALIZATION_KEY = "personalized_ranking";
+const ANALYTICS_ADMIN_QUERY = z.object({ preset: z.enum(["7d", "30d"]).optional().default("7d") }).strict();
+const FUNNEL_EVENTS = ["session_started", "content_opened", "unlock_clicked", "order_created", "payment_confirmed"] as const;
+
+function analyticsRange(preset: "7d" | "30d") {
+  const to = new Date();
+  return { from: new Date(to.getTime() - (preset === "30d" ? 30 : 7) * 24 * 60 * 60 * 1000), to };
+}
 
 export default async function analyticsAndPreferenceRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
+
+  fastify.get("/admin/analytics/overview", { preHandler: [requireAdmin("analytics:view")] }, async (req, reply) => {
+    const parsed = ANALYTICS_ADMIN_QUERY.safeParse(req.query || {});
+    if (!parsed.success) return reply.status(400).send({ error: "bad_request", message: "统计周期不合法" });
+    const { from, to } = analyticsRange(parsed.data.preset);
+    const [events, preferences] = await Promise.all([
+      prisma.analyticsEvent.findMany({
+        where: { occurredAt: { gte: from, lte: to } },
+        select: { occurredAt: true, eventName: true, platform: true, sessionIdHmac: true, userIdHmac: true },
+        orderBy: { occurredAt: "asc" },
+      }),
+      prisma.userContentPreference.groupBy({
+        by: ["preferenceType", "valueKey"], where: { isEnabled: true }, _count: { _all: true },
+        orderBy: { _count: { valueKey: "desc" } }, take: 20,
+      }),
+    ]);
+    const distinctByEvent = new Map<string, Set<string>>();
+    const platformTotals = new Map<string, number>();
+    const daily = new Map<string, { date: string; sessions: Set<string>; opens: Set<string>; paid: Set<string> }>();
+    for (const event of events) {
+      const eventSet = distinctByEvent.get(event.eventName) || new Set<string>();
+      eventSet.add(event.sessionIdHmac || event.userIdHmac || "unknown");
+      distinctByEvent.set(event.eventName, eventSet);
+      platformTotals.set(event.platform, (platformTotals.get(event.platform) || 0) + 1);
+      const date = event.occurredAt.toISOString().slice(0, 10);
+      const bucket = daily.get(date) || { date, sessions: new Set<string>(), opens: new Set<string>(), paid: new Set<string>() };
+      const key = event.sessionIdHmac || event.userIdHmac || "unknown";
+      if (event.eventName === "session_started") bucket.sessions.add(key);
+      if (event.eventName === "content_opened") bucket.opens.add(key);
+      if (event.eventName === "payment_confirmed") bucket.paid.add(key);
+      daily.set(date, bucket);
+    }
+    const start = distinctByEvent.get("session_started")?.size || 0;
+    const funnel = FUNNEL_EVENTS.map((eventName) => {
+      const value = distinctByEvent.get(eventName)?.size || 0;
+      return { eventName, value, conversionFromStart: start ? Number(((value / start) * 100).toFixed(1)) : 0 };
+    });
+    return reply.send({
+      period: { preset: parsed.data.preset, from: from.toISOString(), to: to.toISOString() },
+      totals: { eventCount: events.length, sessions: start, contentOpened: distinctByEvent.get("content_opened")?.size || 0, paymentsConfirmed: distinctByEvent.get("payment_confirmed")?.size || 0 },
+      funnel,
+      platforms: Array.from(platformTotals, ([platform, eventCount]) => ({ platform, eventCount })),
+      trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)).map((row) => ({ date: row.date, sessions: row.sessions.size, contentOpened: row.opens.size, paymentsConfirmed: row.paid.size })),
+      preferences: preferences.map((row: any) => ({ preferenceType: row.preferenceType, valueKey: row.valueKey, selectedUsers: row._count._all })),
+      privacy: "仅展示聚合统计；不展示用户身份、内容标题、会话标识或个人浏览轨迹。",
+    });
+  });
 
   fastify.post("/analytics/events", async (req, reply) => {
     const parsed = EVENT_BATCH_SCHEMA.safeParse(req.body);

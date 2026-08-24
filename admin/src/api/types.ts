@@ -7,6 +7,16 @@ export type AdminMe = {
   role: AdminRole;
 };
 
+export type AdminAnalyticsOverview = {
+  period: { preset: "7d" | "30d"; from: string; to: string };
+  totals: { eventCount: number; sessions: number; contentOpened: number; paymentsConfirmed: number };
+  funnel: Array<{ eventName: string; value: number; conversionFromStart: number }>;
+  platforms: Array<{ platform: string; eventCount: number }>;
+  trend: Array<{ date: string; sessions: number; contentOpened: number; paymentsConfirmed: number }>;
+  preferences: Array<{ preferenceType: string; valueKey: string; selectedUsers: number }>;
+  privacy: string;
+};
+
 export type OrderStatus = "pending" | "processing" | "paid" | "failed" | "refunded" | "cancelled" | "expired";
 
 export type TicketStatus = "open" | "in_progress" | "resolved" | "closed";

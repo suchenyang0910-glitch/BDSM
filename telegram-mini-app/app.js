@@ -128,6 +128,16 @@
     return payload;
   }
 
+  function trackAnalytics(eventName, payload) {
+    // 仅发送白名单事件与最小业务字段；服务端会再次校验、哈希化并丢弃未知字段。
+    requestWithCompatibility("/api/analytics/events", {
+      credentials: "include",
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ events: [{ eventName: eventName, payload: Object.assign({ platform: state.env.isTelegram ? "telegram_mini_app" : "h5" }, payload || {}) }] }),
+    }).catch(function () {});
+  }
+
   function isStarsProduct(product) {
     return product && String(product.currency || "").toUpperCase() === "XTR";
   }
@@ -742,6 +752,7 @@
       state.detailLoading = false;
     }
     const detail = state.detailCache[id];
+    trackAnalytics("content_opened", { contentId: detail.id, sourceModule: state.route.fromTab || "home" });
     rememberRecent(detail);
     renderRecentList();
     updatePageSeo(detail.effectiveSeo || { title: detail.title, description: detail.description, keywords: [] });
@@ -983,6 +994,7 @@
       showInlineMessage("当前内容没有可用商品。");
       return;
     }
+    trackAnalytics("unlock_clicked", { productId: detail.product.id, paymentMethod: state.env.isTelegram ? "telegram_stars" : "usdt_trc20" });
     if (state.env.isTelegram && isStarsProduct(detail.product)) {
       await createStarsOrderAndPay(detail);
       return;
@@ -1038,6 +1050,7 @@
 
   function routeTo(routeState) {
     state.route = routeState;
+    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.tab });
     const isDetail = routeState.view === "detail";
     const titleMap = {
       home: ["同频", ""],
@@ -1084,6 +1097,7 @@
     if (state.booting) return;
     try {
       await bootstrapSession();
+      trackAnalytics("session_started", { entrySource: state.env.isTelegram ? "telegram_mini_app" : "h5_direct" });
       await loadHome();
       await loadLibrary();
       await Promise.all([loadOrders(), loadEntitlements(), loadChannels()]);

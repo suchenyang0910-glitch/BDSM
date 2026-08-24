@@ -20,6 +20,7 @@ import BannersPage from "./pages/Banners";
 import HomepageConfigPage from "./pages/HomepageConfig";
 import ChannelsPage from "./pages/Channels";
 import PlatformMetadataPage from "./pages/PlatformMetadata";
+import AnalyticsPage from "./pages/Analytics";
 import "dayjs/locale/zh-cn";
 import dayjs from "dayjs";
 
@@ -51,6 +52,7 @@ const App: React.FC = () => (
             >
               <Route index element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/orders" element={<OrdersPage />} />
               <Route path="/entitlements" element={<EntitlementsPage />} />
               <Route path="/payment-addresses" element={<PaymentAddressesPage />} />
