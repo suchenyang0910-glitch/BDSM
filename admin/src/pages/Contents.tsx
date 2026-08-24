@@ -349,7 +349,6 @@ const ContentsPage: React.FC = () => {
 
   const accessTypeValue = Form.useWatch("accessType", form);
   const packageIdValue = Form.useWatch("packageId", form);
-  const freeChannelCodeValue = Form.useWatch("freeChannelCode", form);
 
   const selectedPackage = React.useMemo(
     () => packages.find((p) => p.id === packageIdValue) || null,
@@ -411,19 +410,13 @@ const ContentsPage: React.FC = () => {
       detail: "时长将在列表展示为「X分Y秒」",
     });
     if (accessTypeValue === "public") {
-      const fccOk =
-        typeof freeChannelCodeValue === "string" &&
-        freeChannelCodeValue.length > 0 &&
-        freeChannels.some((f) => f.code === freeChannelCodeValue);
       checks.push({
-        key: "freeChannelCode",
-        label: "公开内容已选择免费频道",
-        passed: fccOk,
-        detail: !freeChannelCodeValue
-          ? "请选择免费频道白名单（由服务端受控，不可自填）"
-          : !freeChannels.some((f) => f.code === freeChannelCodeValue)
-            ? "所选 freeChannelCode 不在当前白名单中，请刷新或更换"
-            : undefined,
+        key: "freeChannelPool",
+        label: "免费流量频道池已配置",
+        passed: freeChannels.length > 0,
+        detail: freeChannels.length === 0
+          ? "需由服务端启用至少一个免费频道；发布时会自动同步到全部已启用频道"
+          : `发布时将自动同步到全部 ${freeChannels.length} 个已启用免费频道`,
       });
     }
     if (accessTypeValue === "package") {
@@ -442,7 +435,7 @@ const ContentsPage: React.FC = () => {
       });
     }
     return checks;
-  }, [accessTypeValue, selectedPackage, form, freeChannelCodeValue, freeChannels]);
+  }, [accessTypeValue, selectedPackage, form, freeChannels]);
 
   const prePublishAllPassed = React.useMemo(
     () => prePublishChecklist.every((c) => c.passed),
@@ -531,7 +524,6 @@ const ContentsPage: React.FC = () => {
       geoKeywords: [],
       telegramTags: [],
       categoryIds: [],
-      freeChannelCode: freeChannels[0]?.code ?? null,
     });
     setDrawerOpen(true);
   };
@@ -545,16 +537,15 @@ const ContentsPage: React.FC = () => {
     setChannelMessages([]);
     // 默认勾选与 accessType 匹配的 channel kinds
     const defaultKinds: Array<TelegramPublishJobItem["channelKind"]> = [];
-    // 免费试看只在内容已经明确保存了白名单频道时默认勾选。
-    // 不能因“编辑旧内容”自动携带 public_free_preview，导致点击发布时才报错。
-    const hasSavedFreeChannel = !!row.freeChannelCode;
+    const rawAny = row as any;
+    const hasPreviewAsset = Boolean(rawAny.previewAssetId || rawAny.preview_asset_id);
     if (row.accessType === "public") defaultKinds.push("public_free_preview");
     if (row.accessType === "membership") {
-      if (hasSavedFreeChannel) defaultKinds.push("public_free_preview");
+      if (hasPreviewAsset) defaultKinds.push("public_free_preview");
       defaultKinds.push("membership_full");
     }
     if (row.accessType === "package") {
-      if (hasSavedFreeChannel) defaultKinds.push("public_free_preview");
+      if (hasPreviewAsset) defaultKinds.push("public_free_preview");
       defaultKinds.push("package_full");
     }
     setChannelKinds(defaultKinds);
@@ -582,11 +573,9 @@ const ContentsPage: React.FC = () => {
       scheduledAt: row.scheduledAt ? dayjs(row.scheduledAt) : null,
       productId: row.productId,
       packageId: row.packageId,
-      freeChannelCode: row.freeChannelCode,
       telegramTags: [],
     });
     // 拉取素材 FK 关联（若服务端返回了 coverAsset/previewAsset/fullVideoAsset，后续 getAdminContent 可能补充；这里先简单只拿已存在 FK，若已建 assetId，则刷新状态）
-    const rawAny = row as any;
     const caId = rawAny.coverAssetId || rawAny.cover_asset_id || null;
     const paId = rawAny.previewAssetId || rawAny.preview_asset_id || null;
     const faId = rawAny.fullVideoAssetId || rawAny.full_video_asset_id || null;
@@ -1229,44 +1218,10 @@ const ContentsPage: React.FC = () => {
                         icon={<InfoCircleOutlined />}
                         message={
                           accessTypeValue === "public"
-                            ? "公开内容：试看会发布到所选免费频道（由服务端映射，不允许运营自填频道 ID）"
-                            : "免费试看投放（可选）：选择后，发布内容时会将 30–60 秒试看自动投放到该免费频道；完整视频仍只发送到私密频道。"
+                            ? "公开试看会自动同步至所有已启用免费流量频道；无需选择频道或填写频道 ID。"
+                            : "上传试看视频后，可在发布页一键同步至所有免费流量频道；完整视频仍只发送到私密频道。"
                         }
                       />
-                      <Form.Item
-                        name="freeChannelCode"
-                        label={accessTypeValue === "public" ? "选择免费频道（必填）" : "选择免费试看频道（可选）"}
-                        rules={[
-                          { required: accessTypeValue === "public", message: "公开内容必须选择一个免费频道（由服务端受控白名单）" },
-                          {
-                            validator: (_, value) => {
-                              if (!value) return Promise.resolve();
-                              if (freeChannels.length === 0) {
-                                return Promise.reject(new Error("免费频道白名单尚未加载；请稍后重试或检查服务端配置"));
-                              }
-                              if (!freeChannels.some((f) => f.code === value)) {
-                                return Promise.reject(new Error("该 code 不在白名单中；请从下拉选择"));
-                              }
-                              return Promise.resolve();
-                            },
-                          },
-                        ]}
-                        style={{ marginBottom: 0 }}
-                      >
-                        <Select
-                          allowClear={accessTypeValue !== "public"}
-                          placeholder="选择服务端受控的免费频道"
-                          showSearch
-                          optionFilterProp="label"
-                          disabled={!canEdit}
-                          loading={freeChannels.length === 0}
-                          options={freeChannels.map((f) => ({
-                            value: f.code,
-                            label: `${f.label}  （${f.code}）`,
-                            title: f.description,
-                          }))}
-                        />
-                      </Form.Item>
                     </Space>
                   )}
 
@@ -1664,13 +1619,9 @@ const ContentsPage: React.FC = () => {
                                 <Space>
                                   <Tag color={CHANNEL_KIND_LABEL.public_free_preview.color}>{CHANNEL_KIND_LABEL.public_free_preview.label}</Tag>
                                   <span style={{ color: "#666", fontSize: 12 }}>
-                                    {
-                                      !freeChannelCodeValue || !freeChannels.some((f) => f.code === freeChannelCodeValue)
-                                        ? "（未满足：请先在下方选择免费频道）"
-                                        : !previewAssetId || previewAsset?.status !== "ready"
-                                          ? "（未满足：先在「素材上传」Tab 成功上传试看视频）"
-                                          : "✅ 试看素材已就绪；将发送到所选免费频道并附带站外 H5 收银台链接"
-                                    }
+                                    {!previewAssetId || previewAsset?.status !== "ready"
+                                      ? "（未满足：先在「素材上传」Tab 成功上传试看视频）"
+                                      : `✅ 试看素材已就绪；将自动同步至全部 ${freeChannels.length} 个已启用免费频道，并附带站外 H5 收银台链接`}
                                   </span>
                                 </Space>
                               </Checkbox>
@@ -1727,27 +1678,14 @@ const ContentsPage: React.FC = () => {
                             </Space>
                           </Checkbox.Group>
                           {channelKinds.includes("public_free_preview") && (
-                            <Card size="small" style={{ background: "#fafafa" }}>
-                              <Space direction="vertical" size={6} style={{ width: "100%" }}>
-                                <Text strong>免费试看发布到</Text>
-                                <Select
-                                  value={freeChannelCodeValue || undefined}
-                                  placeholder="选择已配置的免费频道"
-                                  style={{ width: "100%" }}
-                                  showSearch
-                                  optionFilterProp="label"
-                                  disabled={!canPublish}
-                                  options={freeChannels.map((f) => ({
-                                    value: f.code,
-                                    label: `${f.label}（${f.code}）`,
-                                  }))}
-                                  onChange={(value) => form.setFieldValue("freeChannelCode", value)}
-                                />
-                                <Text type="secondary" style={{ fontSize: 12 }}>
-                                  点击发布时会自动保存这项频道选择，再创建试看发布任务；频道 ID 始终不显示也不能手填。
-                                </Text>
-                              </Space>
-                            </Card>
+                            <Alert
+                              type={freeChannels.length > 0 ? "info" : "warning"}
+                              showIcon
+                              message="免费流量频道（自动分发）"
+                              description={freeChannels.length > 0
+                                ? `本次试看将同步到全部 ${freeChannels.length} 个已启用免费频道；频道池由服务端统一管理，内容里无需选择。`
+                                : "服务端尚未启用免费频道，暂时不能创建试看分发任务。"}
+                            />
                           )}
                           <Space wrap>
                             <Button
@@ -1764,24 +1702,6 @@ const ContentsPage: React.FC = () => {
                                 if (!editing?.id) return;
                                 setStartPublishing(true);
                                 try {
-                                  const wantsFreePreview = channelKinds.includes("public_free_preview");
-                                  const selectedFreeChannelCode = form.getFieldValue("freeChannelCode");
-                                  if (wantsFreePreview) {
-                                    if (!selectedFreeChannelCode || !freeChannels.some((f) => f.code === selectedFreeChannelCode)) {
-                                      message.error("请先选择一个已配置的免费频道，再发布试看视频");
-                                      return;
-                                    }
-                                    // 发布 Tab 内的选择也必须落库，避免仅存在于当前表单状态。
-                                    if (editing.freeChannelCode !== selectedFreeChannelCode) {
-                                      await updateAdminContent(editing.id, {
-                                        freeChannelCode: selectedFreeChannelCode,
-                                        reason: "发布试看前选择免费频道",
-                                      });
-                                      const refreshed = await getAdminContent(editing.id);
-                                      setEditing(refreshed);
-                                      fetchList();
-                                    }
-                                  }
                                   const rawTelegramTags = form.getFieldValue("telegramTags") || [];
                                   const r = await startTelegramPublish(editing.id, {
                                     channelKinds,
@@ -1809,7 +1729,7 @@ const ContentsPage: React.FC = () => {
                             message="发布模式说明"
                             description={
                               <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-                                <span>· 点击列表里的“发布”会自动创建完整视频的私密频道任务；已选免费试看频道且试看素材就绪时，也会自动创建免费频道预览任务。</span>
+                                <span>· 上传试看并勾选“免费频道试看”后，系统会自动为全部已启用免费频道创建预览任务；完整视频仍只发送到对应私密频道。</span>
                                 <span>· 此处用于查看状态、按需补发或取消。Bot 发送为异步：大视频可能需要较长时间，请查看下表状态与重试次数。</span>
                                 <span>· 最大重试 3 次，指数退避（5s / 10s / 20s），重试耗尽后可手动点击「重试」按钮重新入队。</span>
                               </Space>

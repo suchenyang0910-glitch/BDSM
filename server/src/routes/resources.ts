@@ -14,6 +14,7 @@ import {
   refFreeChannelByCode,
   tryGetFreeChannelPublicUrl,
   getFreeChannelEntry,
+  listConfiguredPublicFreeChannelOptions,
   PUBLIC_FREE_CHANNELS,
 } from "../services/freeChannels.js";
 import { emitSafetyEvent } from "../utils/structuredError.js";
@@ -78,7 +79,10 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
         where: { id: resourceId },
         select: { freeChannelCode: true, channelId: true, channelIdCiphertext: true },
       });
-      const code = publicContent?.freeChannelCode;
+      // 免费频道改为平台级流量池。保留旧内容的绑定值；未绑定时使用池内首个频道。
+      const code = publicContent?.freeChannelCode && isValidFreeChannelCode(publicContent.freeChannelCode)
+        ? publicContent.freeChannelCode
+        : listConfiguredPublicFreeChannelOptions()[0]?.code;
       if (code && isValidFreeChannelCode(code)) {
         // 优先走白名单（P1-#7 强制路由）
         publicDirectUrl = tryGetFreeChannelPublicUrl(code);
@@ -113,7 +117,7 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
         if (!ch) {
           return reply.status(409).send({
             error: "free_channel_code_required",
-            message: "公开内容尚未绑定免费频道白名单编码；请编辑该内容，从免费频道下拉中选择一个合法频道。",
+            message: "免费流量频道池尚未配置，请稍后重试或联系客服。",
           });
         }
         channelRef = refRawChatId(ch);

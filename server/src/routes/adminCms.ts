@@ -14,7 +14,7 @@ import { resolveMembershipChannelRef } from "../services/membershipChannel.js";
 import { emitSafetyEvent } from "../utils/structuredError.js";
 import {
   isValidFreeChannelCode,
-  listPublicFreeChannelOptions,
+  listConfiguredPublicFreeChannelOptions,
   refFreeChannelByCode,
   getFreeChannelEntry,
 } from "../services/freeChannels.js";
@@ -216,7 +216,7 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   | { ok: true }
   | { ok: false; status: number; error: string; message?: string; details?: any }
 > {
-  const { prisma, accessType, packageId, productId, freeChannelCode, coverAssetId, previewAssetId, fullVideoAssetId } = ctx;
+  const { prisma, accessType, packageId, productId, coverAssetId, previewAssetId, fullVideoAssetId } = ctx;
 
   if (accessType === "single") {
     return {
@@ -330,20 +330,13 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
         message: "公开内容不得绑定收费内容包 packageId。",
       };
     }
-    if (!freeChannelCode || typeof freeChannelCode !== "string") {
+    // 免费频道是平台级流量池，而不是每条内容的运营选择项。
+    if (listConfiguredPublicFreeChannelOptions().length === 0) {
       return {
         ok: false,
-        status: 400,
-        error: "free_channel_code_required",
-        message: "公开内容必须选择免费频道（只能从白名单枚举选，不能自定义 channelId）。",
-      };
-    }
-    if (!isValidFreeChannelCode(freeChannelCode)) {
-      return {
-        ok: false,
-        status: 400,
-        error: "free_channel_code_not_in_whitelist",
-        message: `免费频道编码不在白名单：${freeChannelCode}。请从白名单选择：${listPublicFreeChannelOptions().map((c) => c.code).join(" / ")}。`,
+        status: 503,
+        error: "free_channel_pool_not_configured",
+        message: "免费流量频道池尚未配置，请先在服务端启用至少一个免费频道。",
       };
     }
   }
@@ -441,13 +434,16 @@ async function queueTelegramPublishForContent(input: {
   }> = [];
   for (const kind of kinds) {
     if (kind === "public_free_preview") {
-      if (!content.freeChannelCode || !isValidFreeChannelCode(content.freeChannelCode)) {
-        return { ok: false, status: 400, error: "free_channel_code_required", message: "发布免费频道前必须先选择白名单免费频道。" };
-      }
       if (!content.previewAsset || content.previewAsset.status !== "ready") {
         return { ok: false, status: 409, error: "preview_asset_required", message: "免费预览必须先上传并校验试看视频。" };
       }
-      plans.push({ mediaAssetId: content.previewAsset.id, targetFreeChannelCode: content.freeChannelCode, channelKindDb: kind });
+      const freePool = listConfiguredPublicFreeChannelOptions();
+      if (freePool.length === 0) {
+        return { ok: false, status: 503, error: "free_channel_pool_not_configured", message: "免费流量频道池尚未配置，请先在服务端启用至少一个免费频道。" };
+      }
+      for (const channel of freePool) {
+        plans.push({ mediaAssetId: content.previewAsset.id, targetFreeChannelCode: channel.code, channelKindDb: kind });
+      }
       continue;
     }
     if (kind === "membership_full") {
@@ -673,7 +669,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     { preHandler: [requireAdmin("content:view")] },
     async (_req: any, reply) => {
       return reply.send({
-        items: listPublicFreeChannelOptions().map((c) => ({
+        items: listConfiguredPublicFreeChannelOptions().map((c) => ({
           code: c.code,
           label: c.label,
           description: c.description,
@@ -1081,7 +1077,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         await writeAudit(tx, meta, "content.publish", "content", id, stripSensitiveFields(before), stripSensitiveFields(after), reason);
       });
 
-      // 内容发布即启动频道交付：会员/内容包必发完整视频；已配置免费频道且有试看时，同时发预览。
+      // 内容发布即启动频道交付：会员/内容包必发完整视频；有试看时自动扇出至全部免费流量频道。
       // 历史已发布内容不会被本分支回放，避免升级代码后向频道重复投递。
       const automaticKinds: TelegramPublishPlanKind[] = [];
       if (before.accessType === "public") automaticKinds.push("public_free_preview");
@@ -1089,7 +1085,6 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       if (before.accessType === "package") automaticKinds.push("package_full");
       if (
         (before.accessType === "membership" || before.accessType === "package") &&
-        before.freeChannelCode &&
         before.previewAssetId
       ) {
         automaticKinds.unshift("public_free_preview");

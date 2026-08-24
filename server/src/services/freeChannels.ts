@@ -72,6 +72,26 @@ export function listPublicFreeChannelOptions(): Array<{
   }));
 }
 
+/**
+ * 实际启用的免费流量分发池。
+ * 仅返回服务端已配置合法 chatId 的频道，供发布扇出和后台展示使用；
+ * 不向前端泄露 chatId，也不会把“预设但未配置”的频道当成运营选项。
+ */
+export function listConfiguredPublicFreeChannelOptions(): Array<{
+  code: FreeChannelCode;
+  label: string;
+  description: string;
+}> {
+  return PUBLIC_FREE_CHANNELS.filter((entry) => {
+    try {
+      resolveFreeChannelCodeToChatId(entry.code);
+      return true;
+    } catch {
+      return false;
+    }
+  }).map(({ code, label, description }) => ({ code, label, description }));
+}
+
 /** 解析免费频道 code → 明文 chatId。缺 env 直接 Fail-Closed。 */
 export function resolveFreeChannelCodeToChatId(
   code: string,

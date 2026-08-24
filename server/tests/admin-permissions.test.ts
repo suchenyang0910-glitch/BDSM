@@ -222,6 +222,57 @@ test("start-telegram-publish 规范化标签、落库存储且不泄露 SEO/GEO 
   }
 });
 
+test("免费试看自动扇出到全部已启用免费流量频道，不要求内容选择频道", async () => {
+  const mainKey = "TELEGRAM_FREE_CHANNEL_PREVIEW_MAIN_CHAT_ID";
+  const tutorialKey = "TELEGRAM_FREE_CHANNEL_TUTORIAL_BASICS_CHAT_ID";
+  const announcementKey = "TELEGRAM_FREE_CHANNEL_ANNOUNCEMENTS_CHAT_ID";
+  const before = [process.env[mainKey], process.env[tutorialKey], process.env[announcementKey]];
+  process.env[mainKey] = "-1000000000001";
+  process.env[tutorialKey] = "-1000000000002";
+  delete process.env[announcementKey];
+
+  const app = await createApp(prisma);
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const editor = await prisma.adminUser.findUnique({ where: { email: TEST_CREDENTIALS.editor.email } });
+    assert.ok(editor, "editor seed should exist");
+    const previewAsset = await seedReadyMediaAsset(prisma, {
+      id: crypto.randomUUID(), kind: "preview_video", ownerAdminId: editor.id, filename: "preview.mp4",
+    });
+    const contentId = crypto.randomUUID();
+    await prisma.content.create({
+      data: {
+        id: contentId,
+        title: "免费流量池扇出测试",
+        accessType: "public",
+        status: "draft",
+        previewAssetId: previewAsset.id,
+        // 故意不填 freeChannelCode：频道池为平台配置，而非内容字段。
+        freeChannelCode: null,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${contentId}/start-telegram-publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { channelKinds: ["public_free_preview"], reason: "验证自动扇出" },
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    const body = response.json() as any;
+    assert.equal(body.jobs.length, 2, "two enabled free channels should create two independent jobs");
+    assert.deepEqual(
+      new Set(body.jobs.map((job: any) => job.targetFreeChannelCode)),
+      new Set(["free_preview_main", "free_tutorial_basics"]),
+    );
+  } finally {
+    await app.close();
+    for (const [key, value] of [[mainKey, before[0]], [tutorialKey, before[1]], [announcementKey, before[2]]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test("越权3：auditor 不允许发布内容/分类写操作，仅读=200/写=403", async () => {
   const app = await createApp(prisma);
   try {
