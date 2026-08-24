@@ -22,6 +22,9 @@ import {
   chatIdFingerprint,
   maskChatIdSafe,
   answerPreCheckoutQuery,
+  sendDirectMessage,
+  resolveMiniAppUrl,
+  type TelegramInlineKeyboardMarkup,
 } from "../services/telegramBot.js";
 import { encryptChatIdAesGcm, chatIdIndexKey, hmacSha256Hex } from "../utils/crypto.js";
 import {
@@ -57,6 +60,55 @@ type ChannelPostMessageInfo = {
   postedAt: Date;
   captionFingerprint: string | null;
 };
+
+const CONTENT_START_PAYLOAD_RE = /^content_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+/** 只接受 Telegram 私聊中的 /start [payload]，群组内不回复，避免打扰频道运营。 */
+export function parsePrivateStartCommand(update: any): { telegramUserId: string; contentId: string | null } | null {
+  const message = update?.message;
+  if (!message || typeof message !== "object" || message?.chat?.type !== "private") return null;
+  const telegramUserId = message?.from?.id;
+  const text = typeof message?.text === "string" ? message.text.trim() : "";
+  if (telegramUserId == null || !/^\/start(?:\s+\S+)?$/i.test(text)) return null;
+  const payload = text.split(/\s+/, 2)[1] || "";
+  const match = CONTENT_START_PAYLOAD_RE.exec(payload);
+  return { telegramUserId: String(telegramUserId), contentId: match ? match[1] : null };
+}
+
+export function miniAppContentUrl(contentId: string): string {
+  const url = new URL(resolveMiniAppUrl());
+  url.hash = `view=content&id=${encodeURIComponent(contentId)}&from=bot`;
+  return url.toString();
+}
+
+async function replyToPrivateStart(prisma: any, update: any): Promise<boolean> {
+  const start = parsePrivateStartCommand(update);
+  if (!start) return false;
+
+  let title: string | null = null;
+  if (start.contentId) {
+    const content = await prisma.content.findUnique({
+      where: { id: start.contentId },
+      select: { title: true, status: true },
+    });
+    if (content?.status === "published") title = String(content.title || "").trim().slice(0, 160) || null;
+  }
+
+  const miniAppUrl = title && start.contentId ? miniAppContentUrl(start.contentId) : resolveMiniAppUrl();
+  const replyMarkup: TelegramInlineKeyboardMarkup = {
+    inline_keyboard: [[{ text: "打开 Mini App", web_app: { url: miniAppUrl } }]],
+  };
+  const text = title
+    ? `你正在查看《${title}》\n\n可先免费观看试看；如需观看完整内容，请在同频内开通对应会员权益。`
+    : "欢迎来到同频。\n\n你可以先浏览精选内容与免费试看；开通会员后，可进入会员频道观看完整内容。";
+  const result = await sendDirectMessage({
+    telegramUserId: start.telegramUserId,
+    text,
+    replyMarkup,
+    disableWebPagePreview: true,
+  });
+  return result.success;
+}
 
 function extractChatFromUpdate(raw: any): UpdateChatInfo | null {
   const u = raw && typeof raw === "object" ? raw : null;
@@ -217,8 +269,11 @@ export default async function telegramWebhookRoutes(fastify: FastifyInstance) {
       // PAY-1) pre_checkout_query → 只 answer，不发权益，不写 payment_transaction
       // 幂等：短窗内 rawEventHash 相同（updateId + pre_checkout_query.id）时跳过重复 answer
       // ================================================================
+      const started = await replyToPrivateStart(prisma, body);
       const pcq = (body as any).pre_checkout_query;
-      if (pcq && typeof pcq === "object" && typeof pcq.id === "string") {
+      if (started) {
+        // /start 已回复；不继续进入频道发现，防止把用户私聊错误登记为频道。
+      } else if (pcq && typeof pcq === "object" && typeof pcq.id === "string") {
         const pcqId: string = pcq.id;
         const totalAmountRaw = pcq.total_amount; // Telegram: number (int)
         const currencyRaw: string = (pcq.currency || "").toString();

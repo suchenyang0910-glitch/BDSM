@@ -400,7 +400,7 @@ export function withMiniAppLaunchButton(
   if (rows.some((row) => row.some((button) => !!button.web_app))) {
     return { inline_keyboard: rows };
   }
-  rows.push([{ text: "打开同频", web_app: { url: miniAppUrl } }]);
+  rows.push([{ text: "打开 Mini App", web_app: { url: miniAppUrl } }]);
   return { inline_keyboard: rows };
 }
 

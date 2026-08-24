@@ -32,6 +32,7 @@ import {
   sendMediaFromStorage,
   refMembershipMain,
   refRawChatId,
+  TELEGRAM_CONFIG,
   chatIdFingerprint,
   maskChatIdSafe,
   usesTelegramCloudBotApi,
@@ -62,7 +63,10 @@ const DB_POLL_INTERVAL_MS = 15_000;
 const TELEGRAM_CLOUD_SAFE_UPLOAD_BYTES = 49 * 1024 * 1024;
 // 免费频道不直接把用户送往站外网页；统一先进入官方 Bot 对话，由 Bot 提供
 // Mini App / 支付 / 支持入口，避免用户离开 Telegram 的上下文。
-const OFFICIAL_BOT_DIALOG_URL = "https://t.me/InTune_bdsm_bot";
+function officialBotContentStartUrl(contentId: string): string {
+  // content.id 是平台 UUID；仅在 Telegram 深链 payload 中使用，支付与频道标识不在此暴露。
+  return `https://t.me/${TELEGRAM_CONFIG.botUsername}?start=content_${encodeURIComponent(contentId)}`;
+}
 
 // ====================== 类型定义 ======================
 type JobToken = string;
@@ -110,7 +114,7 @@ export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" |
     `${safeDesc}`,
     "完整内容已收录于同频。",
     "",
-    `<a href="${OFFICIAL_BOT_DIALOG_URL}">打开同频 Bot 查看详情与解锁方式</a>`,
+    `<a href="${officialBotContentStartUrl(content.id)}">打开同频 Bot 查看试看与完整内容</a>`,
   ].join("\n");
   return { caption, parseMode: "HTML" };
 }

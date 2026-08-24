@@ -5,6 +5,7 @@ import test from "node:test";
 import { getTelegramBotCredentials, validateTelegramInitData } from "../src/utils/telegram.js";
 import { createStreamingMultipartPayload, resolveMiniAppUrl, withMiniAppLaunchButton } from "../src/services/telegramBot.js";
 import { buildFullVideoCaption, buildPreviewVideoCaption } from "../src/services/telegramPublisher.js";
+import { miniAppContentUrl, parsePrivateStartCommand } from "../src/routes/telegramWebhook.js";
 
 function makeInitData(token: string, authDate: number): string {
   const params = new URLSearchParams({
@@ -58,7 +59,7 @@ test("Bot 私信统一追加受控 Mini App 入口，且不重复覆盖业务按
   }, "https://mini.example.com/");
   assert.deepEqual(markup.inline_keyboard, [
     [{ text: "复制订单号", copy_text: { text: "INT202608240001" } }],
-    [{ text: "打开同频", web_app: { url: "https://mini.example.com/" } }],
+    [{ text: "打开 Mini App", web_app: { url: "https://mini.example.com/" } }],
   ]);
   const stable = withMiniAppLaunchButton(markup, "https://other.example.com/");
   assert.equal(stable.inline_keyboard.length, 2, "已有 Mini App 按钮时不得重复追加");
@@ -73,7 +74,7 @@ test("免费频道试看文案只导向官方 Bot 对话，不直跳站外收银
     title: "测试试看",
     description: "测试说明",
   });
-  assert.match(withProduct.caption, /https:\/\/t\.me\/InTune_bdsm_bot/);
+  assert.match(withProduct.caption, /https:\/\/t\.me\/InTune_bdsm_bot\?start=content_content-test-001/);
   assert.doesNotMatch(withProduct.caption, /h5-pay\.html|bdsm\.linkx\.club/);
 
   const withoutProduct = buildPreviewVideoCaption({
@@ -84,6 +85,17 @@ test("免费频道试看文案只导向官方 Bot 对话，不直跳站外收银
   });
   assert.match(withoutProduct.caption, /https:\/\/t\.me\/InTune_bdsm_bot/);
   assert.doesNotMatch(withoutProduct.caption, /h5-pay\.html|\?content=/);
+});
+
+test("Bot /start content payload 只接受私聊 UUID，并生成直达内容详情的 Mini App 地址", () => {
+  const contentId = "d271bf24-a872-42e3-a8af-ae83a738b1e5";
+  assert.deepEqual(
+    parsePrivateStartCommand({ message: { chat: { type: "private" }, from: { id: 123456 }, text: `/start content_${contentId}` } }),
+    { telegramUserId: "123456", contentId },
+  );
+  assert.equal(parsePrivateStartCommand({ message: { chat: { type: "group" }, from: { id: 123456 }, text: "/start" } }), null);
+  assert.equal(parsePrivateStartCommand({ message: { chat: { type: "private" }, from: { id: 123456 }, text: "/start content_not-a-uuid" } })?.contentId, null);
+  assert.equal(miniAppContentUrl(contentId), `https://bdsm.linkx.club/#view=content&id=${contentId}&from=bot`);
 });
 
 test("私密频道完整视频文案必须包含标题与简介", () => {
