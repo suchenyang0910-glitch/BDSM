@@ -272,7 +272,15 @@ function resolveTgMethodForAsset(
 // ====================== 核心作业处理函数（同步/队列/DB 轮询 都走这一个函数）======================
 type PublishJobIncludes = TelegramPublishJob & {
   mediaAsset: MediaAsset | null;
-  content: ({ id: string; title: string; description: string | null; accessType: string; packageId: string | null; productId: string | null }) | null;
+  content: ({
+    id: string;
+    title: string;
+    description: string | null;
+    accessType: string;
+    packageId: string | null;
+    productId: string | null;
+    coverAsset: MediaAsset | null;
+  }) | null;
   package: ({ id: string; title: string }) | null;
 };
 
@@ -288,7 +296,12 @@ export async function processPublishJob(
       where: { jobToken: jobData.jobToken },
       include: {
         mediaAsset: true,
-        content: { select: { id: true, title: true, description: true, accessType: true, packageId: true, productId: true } },
+        content: {
+          select: {
+            id: true, title: true, description: true, accessType: true, packageId: true, productId: true,
+            coverAsset: true,
+          },
+        },
         package: { select: { id: true, title: true } },
       },
     }) as unknown as PublishJobIncludes | null;
@@ -326,7 +339,12 @@ export async function processPublishJob(
       where: { id: initialJobId },
       include: {
         mediaAsset: true,
-        content: { select: { id: true, title: true, description: true, accessType: true, packageId: true, productId: true } },
+        content: {
+          select: {
+            id: true, title: true, description: true, accessType: true, packageId: true, productId: true,
+            coverAsset: true,
+          },
+        },
         package: { select: { id: true, title: true } },
       },
     }) as unknown as PublishJobIncludes | null;
@@ -422,11 +440,11 @@ export async function processPublishJob(
   }
 
   // Step 4: 流式读对象存储 → 组装 multipart payload → 调 sendMediaFromStorage
-  let streamCleanup: { client?: any; command?: any } = {};
+  let streamCleanup: { clients: any[] } = { clients: [] };
   try {
     const meta = resolveTgMethodForAsset(asset);
     const { client, command, sseErrorEvent } = streamObjectForRead(asset.storageBucket, asset.storageKey);
-    streamCleanup = { client, command };
+    streamCleanup.clients.push(client);
     // 把 S3 响应 body 作为 ReadableStream 直接交给 Blob body
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const resp: any = await (client as any).send(command);
@@ -435,6 +453,36 @@ export async function processPublishJob(
       throw new Error("s3_empty_body");
     }
     const readable = resp.Body as unknown as NodeJS.ReadableStream;
+    // Telegram 客户端首帧会使用 sendVideo.thumbnail。封面不可用时只降级为 Telegram
+    // 自动生成缩略图，绝不影响完整视频发布。
+    let thumbnail: SendMediaFromStoragePayload["thumbnail"] = null;
+    const coverAsset = job.content?.coverAsset;
+    if (
+      meta.tgMethod === "sendVideo" &&
+      coverAsset?.kind === "cover_image" &&
+      coverAsset.status === "ready" &&
+      coverAsset.storageBucket &&
+      coverAsset.storageKey
+    ) {
+      try {
+        const coverStream = streamObjectForRead(coverAsset.storageBucket, coverAsset.storageKey);
+        streamCleanup.clients.push(coverStream.client);
+        const coverResp: any = await (coverStream.client as any).send(coverStream.command);
+        if (coverResp?.Body) {
+          thumbnail = {
+            filename: coverAsset.originalFilename || "cover.jpg",
+            contentType: coverAsset.mimeType || "image/jpeg",
+            body: coverResp.Body as unknown as NodeJS.ReadableStream,
+          };
+        }
+      } catch (err) {
+        emitSafetyEvent({
+          event: "tg_publish_cover_thumbnail_unavailable",
+          errorClass: "asset_unavailable",
+          note: `content_fp=${safeHexDigest(job.contentId || "none", 16)}`,
+        }, err);
+      }
+    }
     const payload: SendMediaFromStoragePayload = {
       tgMethod: meta.tgMethod,
       mediaFilename: meta.mediaFilename,
@@ -443,6 +491,7 @@ export async function processPublishJob(
       supportsStreaming: meta.supportsStreaming,
       caption: captionBundle.caption,
       parseMode: captionBundle.parseMode,
+      thumbnail,
     };
     const slot: TelegramBotSlot | undefined = ctx.botSlotOverride || (job.botKey === "primary" || job.botKey === "invite_bot" ? "invite_bot" : (job.botKey as TelegramBotSlot));
     const result = await sendMediaFromStorage(slot, resolved.channelRef, payload);
@@ -563,8 +612,9 @@ export async function processPublishJob(
   } finally {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const c: any = streamCleanup.client;
-      if (c && typeof c.destroy === "function") c.destroy();
+      for (const c of streamCleanup.clients) {
+        if (c && typeof c.destroy === "function") c.destroy();
+      }
     } catch {
       /* ignore */
     }
