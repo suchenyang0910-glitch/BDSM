@@ -72,6 +72,12 @@
     });
   }
 
+  function imageTag(url, className, alt, eager) {
+    if (!url) return "";
+    return '<img class="' + className + '" src="' + escapeHtml(url) + '" alt="' + escapeHtml(alt || "") + '"' +
+      (eager ? ' loading="eager" decoding="async"' : ' loading="lazy" decoding="async"') + " />";
+  }
+
   function apiText(err) {
     const payload = err && err.payload ? err.payload : {};
     const code = payload.userError || payload.error || payload.errorClass || "";
@@ -311,11 +317,11 @@
     const template = $("contentCardTemplate");
     items.forEach(function (item) {
       const node = template.content.cloneNode(true);
-      const cover = node.querySelector(".card-cover");
-      if (item.coverUrl) {
-        cover.style.backgroundImage = "linear-gradient(135deg, rgba(166, 107, 255, 0.24), rgba(38, 34, 54, 0.72)), url('" + String(item.coverUrl).replace(/'/g, "%27") + "')";
-        cover.style.backgroundSize = "cover";
-        cover.style.backgroundPosition = "center";
+      const coverImage = node.querySelector(".cover-image");
+      if (item.coverUrl && coverImage) {
+        coverImage.src = item.coverUrl;
+        coverImage.alt = item.title || "内容封面";
+        coverImage.classList.remove("is-hidden");
       }
       node.querySelector(".cover-duration").textContent = item.duration || "—";
       node.querySelector(".card-tag").textContent = (item.tags || []).join(" · ") || getAccessLabel(item);
@@ -348,10 +354,8 @@
     home.banners.forEach(function (banner) {
       const card = document.createElement("article");
       card.className = "banner-card" + (banner.imageUrl ? " has-image" : "");
-      if (banner.imageUrl) {
-        card.style.backgroundImage = "linear-gradient(140deg, rgba(166, 107, 255, 0.3), rgba(38, 34, 54, 0.92)), url('" + String(banner.imageUrl).replace(/'/g, "%27") + "')";
-      }
       card.innerHTML =
+        imageTag(banner.imageUrl, "banner-image", banner.title || "首页 Banner", true) +
         '<h3>' + escapeHtml(banner.title || "") + '</h3>' +
         '<button class="banner-action" type="button">' + escapeHtml(banner.actionLabel || "查看") + '</button>';
       card.addEventListener("click", function () {
@@ -386,11 +390,8 @@
     recent.forEach(function (item) {
       const card = document.createElement("article");
       card.className = "recent-visual-card";
-      const safeCover = item.coverUrl ? String(item.coverUrl).replace(/'/g, "%27") : "";
-      if (safeCover) {
-        card.style.backgroundImage = "linear-gradient(180deg, transparent 25%, rgba(10, 8, 18, 0.82)), url('" + safeCover + "')";
-      }
       card.innerHTML =
+        imageTag(item.coverUrl, "recent-visual-image", item.title || "最近浏览封面") +
         '<button class="recent-visual-action" type="button" aria-label="继续查看 ' + escapeHtml(item.title) + '">' +
         '<span class="cover-duration">' + escapeHtml(item.duration || "—") + "</span>" +
         '<strong>' + escapeHtml(item.title) + "</strong>" +
@@ -751,7 +752,7 @@
     const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;
     const coverClass = detail.coverUrl ? "detail-cover has-image" : "detail-cover";
     $("detailContent").innerHTML =
-      '<div class="' + coverClass + '"' + (detail.coverUrl ? ' style="background-image:url(\'' + String(detail.coverUrl).replace(/'/g, "%27") + '\')"' : "") + '></div>' +
+      '<div class="' + coverClass + '">' + imageTag(detail.coverUrl, "detail-image", detail.title || "内容封面", true) + '</div>' +
       '<div class="detail-copy">' +
       '<p class="eyebrow">' + escapeHtml((detail.tags || []).join(" · ") || getAccessLabel(detail)) + '</p>' +
       '<h2>' + escapeHtml(detail.title || "") + '</h2>' +
