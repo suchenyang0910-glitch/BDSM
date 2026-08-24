@@ -235,6 +235,14 @@ interface ContentAccessValidationContext {
   coverAssetId?: string | null;
   previewAssetId?: string | null;
   fullVideoAssetId?: string | null;
+  fullVideoAssetIds?: string[];
+  allowDraftWithoutDeliveryMedia?: boolean;
+}
+
+/** Preserve upload order, reject duplicate media references, and retain legacy callers. */
+function normalizeFullVideoAssetIds(input?: string[] | null, legacy?: string | null): string[] {
+  const source = Array.isArray(input) && input.length > 0 ? input : legacy ? [legacy] : [];
+  return Array.from(new Set(source.filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
 }
 
 async function validateContentAccessTypeConstraints(ctx: ContentAccessValidationContext): Promise<
@@ -242,6 +250,7 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   | { ok: false; status: number; error: string; message?: string; details?: any }
 > {
   const { prisma, accessType, packageId, productId, coverAssetId, previewAssetId, fullVideoAssetId } = ctx;
+  const fullVideoAssetIds = normalizeFullVideoAssetIds(ctx.fullVideoAssetIds, fullVideoAssetId);
 
   if (accessType === "single") {
     return {
@@ -257,7 +266,7 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   const fkChecks: Array<{ key: "coverAssetId" | "previewAssetId" | "fullVideoAssetId"; id: string | null | undefined; expectedKind?: "cover_image" | "preview_video" | "full_video" }> = [
     { key: "coverAssetId", id: coverAssetId, expectedKind: "cover_image" },
     { key: "previewAssetId", id: previewAssetId, expectedKind: "preview_video" },
-    { key: "fullVideoAssetId", id: fullVideoAssetId, expectedKind: "full_video" },
+    ...fullVideoAssetIds.map((id) => ({ key: "fullVideoAssetId" as const, id, expectedKind: "full_video" as const })),
   ];
   for (const fk of fkChecks) {
     if (!fk.id) continue;
@@ -278,10 +287,10 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
 
   // —— 强业务矩阵校验：accessType × 素材
   if (accessType === "public") {
-    if (fullVideoAssetId) {
+    if (fullVideoAssetIds.length > 0) {
       return { ok: false, status: 400, error: "full_video_not_allowed_for_public", message: "public（免费预览）类型禁止上传或绑定完整视频；完整视频仅允许在会员/内容包私密频道交付。" };
     }
-    if (!previewAssetId) {
+    if (!previewAssetId && !ctx.allowDraftWithoutDeliveryMedia) {
       return { ok: false, status: 400, error: "public_requires_preview_asset", message: "public 类型必须上传并绑定试看视频（previewAssetId，30–60 秒并已加水印）。" };
     }
   }
@@ -328,10 +337,10 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
     }
   }
 
-  if (accessType === "membership" && !fullVideoAssetId) {
+  if (accessType === "membership" && fullVideoAssetIds.length === 0 && !ctx.allowDraftWithoutDeliveryMedia) {
     return { ok: false, status: 400, error: "membership_requires_full_video", message: "会员交付内容必须上传并绑定完整视频（fullVideoAssetId）。" };
   }
-  if (accessType === "package" && !fullVideoAssetId) {
+  if (accessType === "package" && fullVideoAssetIds.length === 0 && !ctx.allowDraftWithoutDeliveryMedia) {
     return { ok: false, status: 400, error: "package_requires_full_video", message: "内容包交付内容必须上传并绑定完整视频（fullVideoAssetId）。" };
   }
 
@@ -384,6 +393,7 @@ async function validatePublishReady(
       coverAssetId: true,
       previewAssetId: true,
       fullVideoAssetId: true,
+      fullVideoSegments: { orderBy: { segmentOrder: "asc" }, select: { mediaAssetId: true } },
     },
   });
   if (!row) return { ok: false, status: 404, error: "not_found", message: "内容不存在" };
@@ -396,6 +406,7 @@ async function validatePublishReady(
     coverAssetId: row.coverAssetId,
     previewAssetId: row.previewAssetId,
     fullVideoAssetId: row.fullVideoAssetId,
+    fullVideoAssetIds: row.fullVideoSegments.map((segment) => segment.mediaAssetId),
   });
 }
 
@@ -425,6 +436,7 @@ async function queueTelegramPublishForContent(input: {
       coverAsset: true,
       previewAsset: true,
       fullVideoAsset: true,
+      fullVideoSegments: { orderBy: { segmentOrder: "asc" }, include: { mediaAsset: true } },
       package: { select: { id: true, status: true, channelId: true, channelIdCiphertext: true, title: true } },
     },
   });
@@ -439,6 +451,7 @@ async function queueTelegramPublishForContent(input: {
     coverAssetId: content.coverAssetId,
     previewAssetId: content.previewAssetId,
     fullVideoAssetId: content.fullVideoAssetId,
+    fullVideoAssetIds: content.fullVideoSegments.map((segment) => segment.mediaAssetId),
   });
   if (!baseOk.ok) {
     return {
@@ -463,10 +476,20 @@ async function queueTelegramPublishForContent(input: {
   }
   const plans: Array<{
     mediaAssetId: string;
+    contentSegmentId?: string | null;
+    segmentOrder?: number | null;
+    segmentCount?: number | null;
     targetFreeChannelCode?: string | null;
     channelKindDb: TelegramPublishPlanKind;
     packageId?: string | null;
   }> = [];
+  // Migration populates historic single-file records. The fallback is deliberately
+  // retained for a deployment where code has restarted before the migration is run.
+  const fullSegments = content.fullVideoSegments.length > 0
+    ? content.fullVideoSegments
+    : content.fullVideoAsset
+      ? [{ id: null, segmentOrder: 1, mediaAssetId: content.fullVideoAsset.id, mediaAsset: content.fullVideoAsset }]
+      : [];
   for (const kind of kinds) {
     if (kind === "public_free_preview") {
       if (!content.previewAsset || content.previewAsset.status !== "ready") {
@@ -485,10 +508,12 @@ async function queueTelegramPublishForContent(input: {
       if (content.accessType !== "membership") {
         return { ok: false, status: 409, error: "publish_kind_mismatch", message: "只有会员内容可发送到会员私密频道。" };
       }
-      if (!content.fullVideoAsset || content.fullVideoAsset.status !== "ready") {
+      if (fullSegments.length === 0 || fullSegments.some((segment) => segment.mediaAsset.status !== "ready" || segment.mediaAsset.kind !== "full_video")) {
         return { ok: false, status: 409, error: "full_video_asset_required", message: "会员内容必须先上传并校验完整视频。" };
       }
-      plans.push({ mediaAssetId: content.fullVideoAsset.id, channelKindDb: kind });
+      for (const segment of fullSegments) {
+        plans.push({ mediaAssetId: segment.mediaAssetId, contentSegmentId: segment.id, segmentOrder: segment.segmentOrder, segmentCount: fullSegments.length, channelKindDb: kind });
+      }
       continue;
     }
     if (kind === "package_full") {
@@ -498,10 +523,12 @@ async function queueTelegramPublishForContent(input: {
       if (!content.package || resolvePackageChannelId({ channelId: content.package.channelId, channelIdCiphertext: content.package.channelIdCiphertext }) == null) {
         return { ok: false, status: 409, error: "package_channel_not_configured", message: "内容包尚未配置受控交付频道。" };
       }
-      if (!content.fullVideoAsset || content.fullVideoAsset.status !== "ready") {
+      if (fullSegments.length === 0 || fullSegments.some((segment) => segment.mediaAsset.status !== "ready" || segment.mediaAsset.kind !== "full_video")) {
         return { ok: false, status: 409, error: "full_video_asset_required", message: "内容包内容必须先上传并校验完整视频。" };
       }
-      plans.push({ mediaAssetId: content.fullVideoAsset.id, channelKindDb: kind, packageId: content.package.id });
+      for (const segment of fullSegments) {
+        plans.push({ mediaAssetId: segment.mediaAssetId, contentSegmentId: segment.id, segmentOrder: segment.segmentOrder, segmentCount: fullSegments.length, channelKindDb: kind, packageId: content.package.id });
+      }
     }
   }
   if (plans.length === 0) return { ok: false, status: 400, error: "publish_plan_empty", message: "没有任何合法的频道发布计划。" };
@@ -545,7 +572,6 @@ async function queueTelegramPublishForContent(input: {
           mediaAssetId: plan.mediaAssetId,
           channelKind: plan.channelKindDb,
           targetFreeChannelCode: plan.targetFreeChannelCode ?? null,
-          status: { in: ["queued", "processing", "sent", "failed"] },
         },
         orderBy: { createdAt: "desc" },
       });
@@ -571,6 +597,8 @@ async function queueTelegramPublishForContent(input: {
           packageId: plan.packageId ?? null,
           adminId: meta.adminId,
           mediaAssetId: plan.mediaAssetId,
+          contentSegmentId: plan.contentSegmentId ?? null,
+          segmentOrder: plan.segmentOrder ?? null,
           channelKind: plan.channelKindDb,
           targetFreeChannelCode: plan.targetFreeChannelCode ?? null,
           jobToken,
@@ -579,6 +607,7 @@ async function queueTelegramPublishForContent(input: {
           captionText: captionBundle.captionText ?? null,
           parseMode: captionBundle.parseMode ?? null,
           telegramTagsJson: normalizedTelegramTags,
+          sendOptionsJson: plan.segmentCount ? { segmentCount: plan.segmentCount } : undefined,
         },
       });
       jobs.push(job);
@@ -673,6 +702,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     coverAssetId: ZID.optional().nullable(),
     previewAssetId: ZID.optional().nullable(),
     fullVideoAssetId: ZID.optional().nullable(),
+    fullVideoAssetIds: z.array(ZID).max(50).optional(),
     isRecommended: z.boolean().optional().default(false),
     isFeatured: z.boolean().optional().default(false),
     isNewArrival: z.boolean().optional().default(false),
@@ -835,6 +865,18 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
                 lastVerifiedAt: true, createdAt: true,
               },
             },
+            fullVideoSegments: {
+              orderBy: { segmentOrder: "asc" },
+              include: {
+                mediaAsset: {
+                  select: {
+                    id: true, kind: true, status: true, originalFilename: true, mimeType: true,
+                    contentLength: true, durationSeconds: true, widthPixels: true, heightPixels: true,
+                    lastVerifiedAt: true, createdAt: true,
+                  },
+                },
+              },
+            },
           },
         }),
         getPlatformMetadataRow(prisma),
@@ -906,16 +948,19 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         coverAssetId: body.coverAssetId ?? null,
         previewAssetId: body.previewAssetId ?? null,
         fullVideoAssetId: body.fullVideoAssetId ?? null,
+        fullVideoAssetIds: body.fullVideoAssetIds,
+        allowDraftWithoutDeliveryMedia: true,
       });
       if (!preCheck.ok) {
         return reply.status(preCheck.status).send({ error: preCheck.error, message: preCheck.message, details: preCheck.details });
       }
       const { reason, categoryIds, ...payload } = body;
+      const fullVideoAssetIds = normalizeFullVideoAssetIds(payload.fullVideoAssetIds, payload.fullVideoAssetId);
       const parseDates = (d: any) => (d ? new Date(d) : null);
       const normalizedSeo = normalizeSeoPayload(payload);
 
       // 根据 3 FK 查对应 MediaAsset.storagePublicUrl / durationSeconds，回填冗余列（方便不 JOIN 时直接用）
-      const assetFk: Array<string | null> = [payload.coverAssetId ?? null, payload.previewAssetId ?? null, payload.fullVideoAssetId ?? null];
+      const assetFk: Array<string | null> = [payload.coverAssetId ?? null, payload.previewAssetId ?? null, ...fullVideoAssetIds];
       const assets = assetFk.some((x) => x != null)
         ? await prisma.mediaAsset.findMany({
             where: { id: { in: assetFk.filter((x): x is string => x != null) } },
@@ -925,10 +970,13 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const am = new Map(assets.map((a) => [a.id, a]));
       const coverAsset = payload.coverAssetId ? am.get(payload.coverAssetId) : undefined;
       const previewAsset = payload.previewAssetId ? am.get(payload.previewAssetId) : undefined;
-      const fullAsset = payload.fullVideoAssetId ? am.get(payload.fullVideoAssetId) : undefined;
+      const fullAsset = fullVideoAssetIds[0] ? am.get(fullVideoAssetIds[0]) : undefined;
       const redundantCoverUrl = coverAsset?.storagePublicUrl || null;
       const redundantPreviewUrl = previewAsset?.storagePublicUrl || null;
-      const redundantDuration = fullAsset?.durationSeconds ?? previewAsset?.durationSeconds ?? null;
+      const fullDuration = fullVideoAssetIds.length > 0
+        ? fullVideoAssetIds.reduce((sum, id) => sum + Number(am.get(id)?.durationSeconds || 0), 0) || null
+        : null;
+      const redundantDuration = fullDuration ?? fullAsset?.durationSeconds ?? previewAsset?.durationSeconds ?? null;
 
       const data: any = {
         title: payload.title,
@@ -955,7 +1003,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         productId: payload.productId ?? null,
         coverAssetId: payload.coverAssetId ?? null,
         previewAssetId: payload.previewAssetId ?? null,
-        fullVideoAssetId: payload.fullVideoAssetId ?? null,
+        fullVideoAssetId: fullVideoAssetIds[0] ?? null,
         status: "draft",
         lastEditorId: meta.adminId,
       };
@@ -969,6 +1017,11 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           },
           include: { categories: { orderBy: { displayOrder: "asc" } } },
         });
+        if (fullVideoAssetIds.length > 0) {
+          await tx.contentFullVideoSegment.createMany({
+            data: fullVideoAssetIds.map((mediaAssetId, index) => ({ contentId: created.id, mediaAssetId, segmentOrder: index + 1 })),
+          });
+        }
         await writeAudit(
           tx, meta, "content.create", "content", created.id,
           null,
@@ -991,7 +1044,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const { reason, categoryIds, ...payload } = body;
       const before = await prisma.content.findUnique({
         where: { id },
-        include: { categories: { orderBy: { displayOrder: "asc" } } },
+        include: { categories: { orderBy: { displayOrder: "asc" } }, fullVideoSegments: { orderBy: { segmentOrder: "asc" } } },
       });
       if (!before) return reply.status(404).send({ error: "not_found" });
 
@@ -1007,7 +1060,13 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const mergedFreeChannelCode = payload.freeChannelCode !== undefined ? payload.freeChannelCode : before.freeChannelCode;
       const mergedCoverAssetId = payload.coverAssetId !== undefined ? payload.coverAssetId : before.coverAssetId;
       const mergedPreviewAssetId = payload.previewAssetId !== undefined ? payload.previewAssetId : before.previewAssetId;
-      const mergedFullVideoAssetId = payload.fullVideoAssetId !== undefined ? payload.fullVideoAssetId : before.fullVideoAssetId;
+      const segmentInputProvided = payload.fullVideoAssetIds !== undefined || payload.fullVideoAssetId !== undefined;
+      const mergedFullVideoAssetIds = segmentInputProvided
+        ? normalizeFullVideoAssetIds(payload.fullVideoAssetIds, payload.fullVideoAssetId)
+        : before.fullVideoSegments.length > 0
+          ? before.fullVideoSegments.map((segment) => segment.mediaAssetId)
+          : normalizeFullVideoAssetIds(undefined, before.fullVideoAssetId);
+      const mergedFullVideoAssetId = mergedFullVideoAssetIds[0] ?? null;
       const preCheck = await validateContentAccessTypeConstraints({
         prisma,
         accessType: mergedAccessType,
@@ -1017,6 +1076,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         coverAssetId: mergedCoverAssetId ?? null,
         previewAssetId: mergedPreviewAssetId ?? null,
         fullVideoAssetId: mergedFullVideoAssetId ?? null,
+        fullVideoAssetIds: mergedFullVideoAssetIds,
       });
       if (!preCheck.ok) {
         return reply.status(preCheck.status).send({ error: preCheck.error, message: preCheck.message, details: preCheck.details });
@@ -1026,9 +1086,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const touchedAssetFks = [
         payload.coverAssetId !== undefined ? (payload.coverAssetId ?? null) : null,
         payload.previewAssetId !== undefined ? (payload.previewAssetId ?? null) : null,
-        payload.fullVideoAssetId !== undefined ? (payload.fullVideoAssetId ?? null) : null,
+        segmentInputProvided ? (mergedFullVideoAssetIds[0] ?? null) : null,
       ];
-      const touchedAnyAsset = payload.coverAssetId !== undefined || payload.previewAssetId !== undefined || payload.fullVideoAssetId !== undefined;
+      const touchedAnyAsset = payload.coverAssetId !== undefined || payload.previewAssetId !== undefined || segmentInputProvided;
       let assetRedundancies: { coverUrl?: string | null; previewUrl?: string | null; durationSeconds?: number | null } | null = null;
       if (touchedAnyAsset) {
         const ids = touchedAssetFks.filter((x): x is string => x != null);
@@ -1043,9 +1103,11 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         if (payload.previewAssetId !== undefined) {
           assetRedundancies.previewUrl = payload.previewAssetId ? rm.get(payload.previewAssetId)?.storagePublicUrl || null : null;
         }
-        if (payload.fullVideoAssetId !== undefined || payload.previewAssetId !== undefined) {
-          const full = payload.fullVideoAssetId !== undefined
-            ? (payload.fullVideoAssetId ? rm.get(payload.fullVideoAssetId)?.durationSeconds ?? null : null)
+        if (segmentInputProvided || payload.previewAssetId !== undefined) {
+          const full = segmentInputProvided
+            ? (mergedFullVideoAssetIds.length > 0
+              ? mergedFullVideoAssetIds.reduce((sum, assetId) => sum + Number(rm.get(assetId)?.durationSeconds || 0), 0) || null
+              : null)
             : undefined;
           const prev = payload.previewAssetId !== undefined
             ? (payload.previewAssetId ? rm.get(payload.previewAssetId)?.durationSeconds ?? null : null)
@@ -1058,12 +1120,14 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       for (const k of Object.keys(payload)) {
         const v = (payload as any)[k];
         if (v === undefined) continue;
+        if (k === "fullVideoAssetIds") continue;
         if (k === "recommendStartsAt" || k === "recommendEndsAt" || k === "scheduledAt") {
           (data as any)[k] = v ? new Date(v) : null;
         } else {
           (data as any)[k] = v;
         }
       }
+      if (segmentInputProvided) data.fullVideoAssetId = mergedFullVideoAssetId;
       if (assetRedundancies) {
         if (assetRedundancies.coverUrl !== undefined && payload.coverUrl === undefined) data.coverUrl = assetRedundancies.coverUrl;
         if (assetRedundancies.previewUrl !== undefined && payload.previewUrl === undefined) data.previewUrl = assetRedundancies.previewUrl;
@@ -1093,6 +1157,14 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           data,
           include: { categories: { orderBy: { displayOrder: "asc" } } },
         });
+        if (segmentInputProvided) {
+          await tx.contentFullVideoSegment.deleteMany({ where: { contentId: id } });
+          if (mergedFullVideoAssetIds.length > 0) {
+            await tx.contentFullVideoSegment.createMany({
+              data: mergedFullVideoAssetIds.map((mediaAssetId, index) => ({ contentId: id, mediaAssetId, segmentOrder: index + 1 })),
+            });
+          }
+        }
         if (Array.isArray(categoryIds)) {
           await tx.contentCategory.deleteMany({ where: { contentId: id } });
           if (categoryIds.length) {

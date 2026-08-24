@@ -377,6 +377,7 @@ model Content {
   coverAsset         MediaAsset?    @relation("ContentCoverAsset", fields: [coverAssetId], references: [id], onDelete: SetNull)
   previewAsset       MediaAsset?    @relation("ContentPreviewAsset", fields: [previewAssetId], references: [id], onDelete: SetNull)
   fullVideoAsset     MediaAsset?    @relation("ContentFullVideoAsset", fields: [fullVideoAssetId], references: [id], onDelete: SetNull)
+  fullVideoSegments  ContentFullVideoSegment[]
   publishJobs        TelegramPublishJob[]
   linkedChannelMessages TelegramChannelMessage[]
 
@@ -1012,6 +1013,7 @@ model MediaAsset {
   usedAsCoverByContents      Content[]       @relation("ContentCoverAsset")
   usedAsPreviewByContents    Content[]       @relation("ContentPreviewAsset")
   usedAsFullByContents       Content[]       @relation("ContentFullVideoAsset")
+  usedByFullVideoSegments    ContentFullVideoSegment[]
   usedAsCoverByPackages      ContentPackage[] @relation("PackageCoverAsset")
   usedAsPreviewByPackages    ContentPackage[] @relation("PackagePreviewAsset")
   publishJobs       TelegramPublishJob[]
@@ -1045,6 +1047,8 @@ model TelegramPublishJob {
   packageId             String?                      @map("package_id") @db.VarChar(64)
   adminId               String?                      @map("admin_id") @db.VarChar(64)
   mediaAssetId          String                       @map("media_asset_id") @db.VarChar(64)
+  contentSegmentId      String?                      @map("content_segment_id") @db.VarChar(64)
+  segmentOrder          Int?                         @map("segment_order")
   channelKind           TelegramPublishChannelKind   @map("channel_kind")
   targetFreeChannelCode String?                      @map("target_free_channel_code") @db.VarChar(64)
   targetChatFingerprint String?                      @map("target_chat_fingerprint") @db.VarChar(128)
@@ -1078,13 +1082,39 @@ model TelegramPublishJob {
   admin                 AdminUser?                   @relation("PublishJobAdmin", fields: [adminId], references: [id], onDelete: SetNull)
   cancelledByAdmin      AdminUser?                   @relation("PublishJobCancelAdmin", fields: [cancelledByAdminId], references: [id], onDelete: SetNull)
   mediaAsset            MediaAsset                   @relation(fields: [mediaAssetId], references: [id], onDelete: Restrict)
+  contentSegment        ContentFullVideoSegment?     @relation(fields: [contentSegmentId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([contentId, createdAt])
   @@index([packageId, createdAt])
   @@index([mediaAssetId])
+  @@index([contentSegmentId])
+  @@index([contentId, channelKind, segmentOrder])
   @@index([adminId, createdAt])
   @@index([channelKind, status])
   @@index([nextRetryAt, status])
   @@map("telegram_publish_jobs")
+}
+
+/// 完整视频可拆为多个 Telegram 单文件可承载的分段。
+/// fullVideoAssetId 保留为第一段兼容字段；新流程以此表为准。
+model ContentFullVideoSegment {
+  id                       String                @id @default(uuid())
+  contentId                String                @map("content_id") @db.VarChar(64)
+  mediaAssetId             String                @map("media_asset_id") @db.VarChar(64)
+  segmentOrder             Int                   @map("segment_order")
+  telegramMessageId        BigInt?               @map("telegram_message_id") @db.BigInt
+  telegramSentAt           DateTime?             @map("telegram_sent_at")
+  telegramChatFingerprint  String?               @map("telegram_chat_fingerprint") @db.VarChar(128)
+  createdAt                DateTime              @default(now()) @map("created_at")
+  updatedAt                DateTime              @updatedAt @map("updated_at")
+
+  content                  Content               @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  mediaAsset               MediaAsset            @relation(fields: [mediaAssetId], references: [id], onDelete: Restrict)
+  publishJobs              TelegramPublishJob[]
+
+  @@unique([contentId, segmentOrder])
+  @@unique([contentId, mediaAssetId])
+  @@index([mediaAssetId])
+  @@map("content_full_video_segments")
 }

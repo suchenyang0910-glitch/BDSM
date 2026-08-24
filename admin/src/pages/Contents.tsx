@@ -295,6 +295,7 @@ const ContentsPage: React.FC = () => {
 
   const [fullVideoAssetId, setFullVideoAssetId] = React.useState<string | null>(null);
   const [fullVideoAsset, setFullVideoAsset] = React.useState<MediaAssetItem | null>(null);
+  const [fullVideoSegments, setFullVideoSegments] = React.useState<MediaAssetItem[]>([]);
   const [fullVideoProgress, setFullVideoProgress] = React.useState<number>(0);
   const [fullVideoUploading, setFullVideoUploading] = React.useState(false);
 
@@ -499,7 +500,7 @@ const ContentsPage: React.FC = () => {
   const resetMediaState = React.useCallback(() => {
     setCoverAssetId(null); setCoverAsset(null); setCoverProgress(0); setCoverUploading(false);
     setPreviewAssetId(null); setPreviewAsset(null); setPreviewProgress(0); setPreviewUploading(false);
-    setFullVideoAssetId(null); setFullVideoAsset(null); setFullVideoProgress(0); setFullVideoUploading(false);
+    setFullVideoAssetId(null); setFullVideoAsset(null); setFullVideoSegments([]); setFullVideoProgress(0); setFullVideoUploading(false);
   }, []);
 
   const openCreate = () => {
@@ -581,7 +582,14 @@ const ContentsPage: React.FC = () => {
     const faId = rawAny.fullVideoAssetId || rawAny.full_video_asset_id || null;
     if (caId) { setCoverAssetId(caId); getMediaAsset(caId).then(setCoverAsset).catch(() => {}); }
     if (paId) { setPreviewAssetId(paId); getMediaAsset(paId).then(setPreviewAsset).catch(() => {}); }
-    if (faId) { setFullVideoAssetId(faId); getMediaAsset(faId).then(setFullVideoAsset).catch(() => {}); }
+    const savedSegments = Array.isArray(rawAny.fullVideoSegments)
+      ? rawAny.fullVideoSegments.map((segment: any) => normalizeMediaAsset(segment.mediaAsset || segment)).filter((asset: MediaAssetItem) => Boolean(asset.id))
+      : [];
+    if (savedSegments.length > 0) {
+      setFullVideoSegments(savedSegments);
+      setFullVideoAssetId(savedSegments[0].id);
+      setFullVideoAsset(savedSegments[0]);
+    } else if (faId) { setFullVideoAssetId(faId); getMediaAsset(faId).then((asset) => { setFullVideoAsset(asset); setFullVideoSegments([asset]); }).catch(() => {}); }
     setDrawerOpen(true);
   };
 
@@ -695,7 +703,8 @@ const ContentsPage: React.FC = () => {
         scheduledAt: values.scheduledAt ? values.scheduledAt.toISOString() : null,
         coverAssetId: coverAssetId ?? undefined,
         previewAssetId: previewAssetId ?? undefined,
-        fullVideoAssetId: fullVideoAssetId ?? undefined,
+        fullVideoAssetId: fullVideoSegments[0]?.id ?? fullVideoAssetId ?? undefined,
+        fullVideoAssetIds: fullVideoSegments.map((asset) => asset.id),
         reason: editing ? `编辑内容：${editing.title}` : `新建内容：${values.title}`,
       };
       if (editing) {
@@ -1563,21 +1572,26 @@ const ContentsPage: React.FC = () => {
                       )}
                     </Space>
                   </Card>
-                  {/* 完整视频 */}
+                  {/* 完整视频：可由多个 Telegram 单文件上限内的分段组成 */}
                   <Card
                     size="small"
                     title={
                       <Space>
                         <span>③ 完整视频（{accessTypeValue === "public" ? "public 类型禁止上传，请改用 membership/package" : `会员/内容包必填 · 发送到${accessTypeValue === "package" ? "内容包独立" : "会员主"}私密频道`}）</span>
-                        {fullVideoAsset?.status === "ready" ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : fullVideoAsset?.status === "failed" ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
+                        {fullVideoSegments.length > 0 && fullVideoSegments.every((asset) => asset.status === "ready") ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
                       </Space>
                     }
-                    extra={<Tag color={accessTypeValue === "public" ? "default" : "purple"}>≤ 2GB</Tag>}
+                    extra={<Tag color={accessTypeValue === "public" ? "default" : "purple"}>每段 ≤ 2GB</Tag>}
                   >
                     <Space direction="vertical" size={12} style={{ width: "100%" }}>
                       {accessTypeValue === "public" ? (
                         <Alert type="info" showIcon message="public 内容仅用于免费频道引流，完整视频交付需升级为 membership 或 package。" />
                       ) : null}
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="超过 2GB 的完整内容请先在本地切成多个文件，再按顺序逐段添加；系统会按“第 1 部分 → 第 N 部分”发送到私密频道。"
+                      />
                       <Upload
                         multiple={false}
                         maxCount={1}
@@ -1585,25 +1599,35 @@ const ContentsPage: React.FC = () => {
                         disabled={!canEdit || fullVideoUploading || accessTypeValue === "public"}
                         showUploadList={false}
                         beforeUpload={(f) => doDirectUpload(f as File, "full_video", {
-                          setAssetId: setFullVideoAssetId, setAsset: setFullVideoAsset,
+                          setAssetId: setFullVideoAssetId,
+                          setAsset: (asset) => {
+                            setFullVideoAsset(asset);
+                            if (asset?.status === "ready") {
+                              setFullVideoSegments((current) => current.some((item) => item.id === asset.id) ? current : [...current, asset]);
+                            }
+                          },
                           setProgress: setFullVideoProgress, setUploading: setFullVideoUploading,
                         }, 2 * 1024 * 1024 * 1024)}
                       >
                         <Button icon={<UploadOutlined />} loading={fullVideoUploading} disabled={!canEdit || accessTypeValue === "public"}>
-                          {fullVideoAssetId ? (fullVideoAsset?.status === "ready" ? "重新上传完整视频" : "重新上传（上次未完成）") : "上传完整视频（会员/内容包私密频道交付）"}
+                          {fullVideoSegments.length > 0 ? "添加下一段完整视频" : "上传第 1 段完整视频"}
                         </Button>
                       </Upload>
                       <Progress percent={fullVideoProgress} status={fullVideoAsset?.status === "failed" ? "exception" : fullVideoProgress === 100 ? "success" : fullVideoUploading ? "active" : undefined} />
-                      {fullVideoAsset && (
-                        <Space direction="vertical" size={4} style={{ fontSize: 12 }}>
-                          <span>文件名：{fullVideoAsset.originalFilename}</span>
-                          <span>大小：{(fullVideoAsset.contentLength / 1024 / 1024 / 1024).toFixed(3)} GB</span>
-                          {fullVideoAsset.durationSeconds && <span>时长：{Math.floor(fullVideoAsset.durationSeconds / 60)}分{fullVideoAsset.durationSeconds % 60}秒</span>}
-                          {fullVideoAsset.widthPixels && fullVideoAsset.heightPixels && <span>尺寸：{fullVideoAsset.widthPixels}×{fullVideoAsset.heightPixels}</span>}
-                          <span>状态：<Tag color={fullVideoAsset.status === "ready" ? "green" : fullVideoAsset.status === "failed" ? "red" : "default"}>{fullVideoAsset.status}</Tag></span>
-                          {fullVideoAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>失败原因：{fullVideoAsset.lastErrorClass}{fullVideoAsset.lastErrorNote ? `（${fullVideoAsset.lastErrorNote}）` : ""}</span>}
-                        </Space>
-                      )}
+                      {fullVideoSegments.map((asset, index) => (
+                        <Card key={asset.id} size="small" style={{ background: "#fafafa" }}>
+                          <Space wrap size={8}>
+                            <Tag color="purple">第 {index + 1} 部分</Tag>
+                            <span>{asset.originalFilename || "未命名视频"}</span>
+                            <span>{(asset.contentLength / 1024 / 1024 / 1024).toFixed(3)} GB</span>
+                            {asset.durationSeconds ? <span>{Math.floor(asset.durationSeconds / 60)}分{asset.durationSeconds % 60}秒</span> : null}
+                            <Tag color={asset.status === "ready" ? "green" : asset.status === "failed" ? "red" : "default"}>{asset.status}</Tag>
+                            <Button size="small" disabled={index === 0 || fullVideoUploading} onClick={() => setFullVideoSegments((items) => { const next = [...items]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; return next; })}>上移</Button>
+                            <Button size="small" disabled={index === fullVideoSegments.length - 1 || fullVideoUploading} onClick={() => setFullVideoSegments((items) => { const next = [...items]; [next[index], next[index + 1]] = [next[index + 1], next[index]]; return next; })}>下移</Button>
+                            <Button size="small" danger disabled={fullVideoUploading} onClick={() => setFullVideoSegments((items) => items.filter((item) => item.id !== asset.id))}>移除</Button>
+                          </Space>
+                        </Card>
+                      ))}
                       <Alert
                         type="warning"
                         showIcon
@@ -1669,8 +1693,8 @@ const ContentsPage: React.FC = () => {
                                 disabled={
                                   !canPublish ||
                                   accessTypeValue !== "membership" ||
-                                  !!fullVideoAssetId === false ||
-                                  fullVideoAsset?.status !== "ready"
+                                  fullVideoSegments.length === 0 ||
+                                  fullVideoSegments.some((asset) => asset.status !== "ready")
                                 }
                               >
                                 <Space>
@@ -1679,7 +1703,7 @@ const ContentsPage: React.FC = () => {
                                     {
                                       accessTypeValue !== "membership"
                                         ? "（未满足：仅 accessType=membership 可选）"
-                                        : !fullVideoAssetId || fullVideoAsset?.status !== "ready"
+                                        : fullVideoSegments.length === 0 || fullVideoSegments.some((asset) => asset.status !== "ready")
                                           ? "（未满足：先在「素材上传」Tab 成功上传完整视频）"
                                           : "✅ 将发送到服务端配置的 TELEGRAM_CHANNEL_MEMBERSHIP 私密主频道（用户交付时自动获取邀请）"
                                     }
@@ -1692,8 +1716,8 @@ const ContentsPage: React.FC = () => {
                                   !canPublish ||
                                   accessTypeValue !== "package" ||
                                   !packageIdValue ||
-                                  !!fullVideoAssetId === false ||
-                                  fullVideoAsset?.status !== "ready" ||
+                                  fullVideoSegments.length === 0 ||
+                                  fullVideoSegments.some((asset) => asset.status !== "ready") ||
                                   (!!selectedPackage && !selectedPackage.channelConfigured)
                                 }
                               >
@@ -1705,7 +1729,7 @@ const ContentsPage: React.FC = () => {
                                         ? "（未满足：仅 accessType=package 可选）"
                                         : !packageIdValue
                                           ? "（未满足：请在基本信息选择一个内容包）"
-                                          : !fullVideoAssetId || fullVideoAsset?.status !== "ready"
+                                          : fullVideoSegments.length === 0 || fullVideoSegments.some((asset) => asset.status !== "ready")
                                             ? "（未满足：先上传完整视频）"
                                             : selectedPackage && !selectedPackage.channelConfigured
                                               ? `（未满足：内容包 ${selectedPackage.title} 尚未在服务端配置加密 channelId，请先完成频道映射）`

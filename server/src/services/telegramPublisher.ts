@@ -120,14 +120,17 @@ export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" |
 }
 
 /** 私密频道完整视频也必须有可读的标题与简介；标签由调用方统一追加。 */
-export function buildFullVideoCaption(content: Pick<Content, "title" | "description">): {
+export function buildFullVideoCaption(content: Pick<Content, "title" | "description">, segment?: { order?: number | null; count?: number | null }): {
   caption: string;
   parseMode: "HTML";
 } {
   const safeTitle = escapeHtml(String(content.title || "未命名内容"));
   const safeDesc = escapeHtml(String(content.description || "同频会员专享内容。\n仅限已解锁成员观看。")).slice(0, 760);
+  const segmentLine = segment?.count && segment.count > 1
+    ? `<i>第 ${segment.order || 1} 部分 / 共 ${segment.count} 部分</i>`
+    : null;
   return {
-    caption: [`<b>《${safeTitle}》</b>`, "", safeDesc].join("\n"),
+    caption: [`<b>《${safeTitle}》</b>`, segmentLine, "", safeDesc].filter(Boolean).join("\n"),
     parseMode: "HTML",
   };
 }
@@ -418,7 +421,10 @@ export async function processPublishJob(
     (job.channelKind === "membership_full" || job.channelKind === "package_full") &&
     asset.kind === "full_video";
   if (isFullVideoKind && job.content) {
-    const fullBundle = buildFullVideoCaption(job.content);
+    const fullBundle = buildFullVideoCaption(job.content, {
+      order: (job as any).segmentOrder,
+      count: Number((job as any).sendOptionsJson?.segmentCount || 1),
+    });
     captionBundle = {
       caption: appendTelegramTagLine(fullBundle.caption, normalizedTelegramTags),
       parseMode: fullBundle.parseMode,
@@ -535,19 +541,38 @@ export async function processPublishJob(
         },
       });
       if (job!.contentId) {
-        const contentUpdate: any = {
-          telegramMessageId: BigInt(result.messageId!),
-          telegramSentAt: now,
-          telegramChatFingerprint: resolved.chatFingerprint,
-        };
+        const isFirstFullSegment =
+          (job!.channelKind === "membership_full" || job!.channelKind === "package_full") &&
+          ((job as any).segmentOrder == null || Number((job as any).segmentOrder) === 1);
+        const contentUpdate: any = isFirstFullSegment || job!.channelKind === "public_free_preview"
+          ? {
+              telegramMessageId: BigInt(result.messageId!),
+              telegramSentAt: now,
+              telegramChatFingerprint: resolved.chatFingerprint,
+            }
+          : {};
         // 完整视频的 Telegram metadata 是最终时长；免费试看仅在内容尚无时长时兜底回填。
-        if (typeof result.durationSeconds === "number" && result.durationSeconds > 0 && job!.channelKind !== "public_free_preview") {
+        if (
+          typeof result.durationSeconds === "number" && result.durationSeconds > 0 &&
+          job!.channelKind !== "public_free_preview" &&
+          Number((job as any).sendOptionsJson?.segmentCount || 1) === 1
+        ) {
           contentUpdate.durationSeconds = result.durationSeconds;
         }
         await tx.content.update({
           where: { id: job!.contentId },
           data: contentUpdate,
         });
+        if ((job as any).contentSegmentId) {
+          await (tx as any).contentFullVideoSegment.update({
+            where: { id: (job as any).contentSegmentId },
+            data: {
+              telegramMessageId: BigInt(result.messageId!),
+              telegramSentAt: now,
+              telegramChatFingerprint: resolved.chatFingerprint,
+            },
+          });
+        }
         if (typeof result.durationSeconds === "number" && result.durationSeconds > 0 && job!.channelKind === "public_free_preview") {
           await tx.content.updateMany({
             where: { id: job!.contentId, durationSeconds: null },
