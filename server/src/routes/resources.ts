@@ -19,6 +19,7 @@ import {
 } from "../services/freeChannels.js";
 import { emitSafetyEvent } from "../utils/structuredError.js";
 import { resolveMembershipChannelRef } from "../services/membershipChannel.js";
+import { decryptChatIdAesGcm } from "../utils/crypto.js";
 
 export default async function resourceRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
@@ -79,11 +80,25 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
         where: { id: resourceId },
         select: { freeChannelCode: true, channelId: true, channelIdCiphertext: true },
       });
+      const managedFreeChannel = await prisma.adminManagedChannel.findFirst({
+        where: { purpose: "free_preview", chatType: "channel", isPrivate: false },
+        select: { deprecatedChatIdBig: true, chatIdCiphertextB64: true, publicUrl: true },
+        orderBy: [{ updatedAt: "desc" }],
+      });
+      let managedChatId: bigint | null = managedFreeChannel?.deprecatedChatIdBig ?? null;
+      if (managedChatId == null && managedFreeChannel?.chatIdCiphertextB64) {
+        try { managedChatId = decryptChatIdAesGcm(managedFreeChannel.chatIdCiphertextB64); } catch { managedChatId = null; }
+      }
+      if (managedChatId != null) {
+        channelRef = refRawChatId(managedChatId);
+        resolvedChatIdForInvite = managedChatId;
+        publicDirectUrl = managedFreeChannel?.publicUrl || null;
+      }
       // 免费频道改为平台级流量池。保留旧内容的绑定值；未绑定时使用池内首个频道。
       const code = publicContent?.freeChannelCode && isValidFreeChannelCode(publicContent.freeChannelCode)
         ? publicContent.freeChannelCode
         : listConfiguredPublicFreeChannelOptions()[0]?.code;
-      if (code && isValidFreeChannelCode(code)) {
+      if (channelRef == null && code && isValidFreeChannelCode(code)) {
         // 优先走白名单（P1-#7 强制路由）
         publicDirectUrl = tryGetFreeChannelPublicUrl(code);
         try {
@@ -108,7 +123,7 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
             message: "该免费频道服务端未配置，请稍后重试或联系客服",
           });
         }
-      } else {
+      } else if (channelRef == null) {
         // 迁移期回退：老数据没 freeChannelCode，尝试解密 channelIdCiphertext（Fail-Closed：解析不到直接 409）
         const ch = resolveContentChannelId({
           channelId: publicContent?.channelId ?? null,

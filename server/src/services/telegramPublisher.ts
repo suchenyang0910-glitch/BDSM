@@ -139,7 +139,30 @@ async function resolveJobTargetChannelRef(
   const kind: TelegramPublishChannelKind = job.channelKind as any;
   switch (kind) {
     case "public_free_preview": {
-      if (!job.targetFreeChannelCode || !isValidFreeChannelCode(job.targetFreeChannelCode)) {
+      if (!job.targetFreeChannelCode) {
+        throw new Error(`[publisher:public_free_preview] missing/invalid targetFreeChannelCode`);
+      }
+      if (job.targetFreeChannelCode.startsWith("managed:")) {
+        const id = job.targetFreeChannelCode.slice("managed:".length);
+        const managed = await extras.prisma.adminManagedChannel.findFirst({
+          where: { id, purpose: "free_preview", chatType: "channel", isPrivate: false },
+          select: { id: true, deprecatedChatIdBig: true, chatIdCiphertextB64: true },
+        });
+        if (!managed) throw new Error(`[publisher:public_free_preview] managed target unavailable`);
+        let chatId: bigint | null = managed.deprecatedChatIdBig ?? null;
+        if (chatId == null) {
+          try { chatId = decryptChatIdAesGcm(managed.chatIdCiphertextB64); } catch { chatId = null; }
+        }
+        if (chatId == null) throw new Error(`[publisher:public_free_preview] managed target decrypt failed`);
+        return {
+          channelRef: refRawChatId(chatId),
+          chatFingerprint: chatIdFingerprint(chatId),
+          chatMasked: maskChatIdSafe(chatId),
+          chatId,
+          managedChannelId: managed.id,
+        };
+      }
+      if (!isValidFreeChannelCode(job.targetFreeChannelCode)) {
         throw new Error(`[publisher:public_free_preview] missing/invalid targetFreeChannelCode`);
       }
       const channelRef = refFreeChannelByCode(job.targetFreeChannelCode);

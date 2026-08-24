@@ -201,6 +201,28 @@ function serializeChannelMessageRow(row: any) {
 }
 
 type AccessTypeBound = "public" | "single" | "membership" | "package";
+type FreePreviewDistributionTarget = { code: string; label: string; description: string };
+
+/**
+ * 免费频道是后台绑定的「free_preview」频道池。优先使用后台已登记频道，
+ * 以便运营无需维护环境变量或在每条内容中重复选择；保留 env 白名单作为旧部署兼容兜底。
+ */
+async function listFreePreviewDistributionTargets(prisma: PrismaClient): Promise<FreePreviewDistributionTarget[]> {
+  const managed = await (prisma as any).adminManagedChannel.findMany({
+    where: { purpose: "free_preview", chatType: "channel", isPrivate: false },
+    select: { id: true, title: true, username: true },
+    orderBy: [{ updatedAt: "desc" }],
+  });
+  if (managed.length > 0) {
+    return managed.map((channel: any, index: number) => ({
+      code: `managed:${channel.id}`,
+      label: channel.title || channel.username || `免费流量频道 ${index + 1}`,
+      description: "后台已绑定的免费流量入口",
+    }));
+  }
+  return listConfiguredPublicFreeChannelOptions();
+}
+
 interface ContentAccessValidationContext {
   prisma: PrismaClient;
   accessType: AccessTypeBound;
@@ -331,7 +353,7 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
       };
     }
     // 免费频道是平台级流量池，而不是每条内容的运营选择项。
-    if (listConfiguredPublicFreeChannelOptions().length === 0) {
+    if ((await listFreePreviewDistributionTargets(prisma)).length === 0) {
       return {
         ok: false,
         status: 503,
@@ -437,7 +459,7 @@ async function queueTelegramPublishForContent(input: {
       if (!content.previewAsset || content.previewAsset.status !== "ready") {
         return { ok: false, status: 409, error: "preview_asset_required", message: "免费预览必须先上传并校验试看视频。" };
       }
-      const freePool = listConfiguredPublicFreeChannelOptions();
+      const freePool = await listFreePreviewDistributionTargets(prisma);
       if (freePool.length === 0) {
         return { ok: false, status: 503, error: "free_channel_pool_not_configured", message: "免费流量频道池尚未配置，请先在服务端启用至少一个免费频道。" };
       }
@@ -669,7 +691,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     { preHandler: [requireAdmin("content:view")] },
     async (_req: any, reply) => {
       return reply.send({
-        items: listConfiguredPublicFreeChannelOptions().map((c) => ({
+        items: (await listFreePreviewDistributionTargets(prisma)).map((c) => ({
           code: c.code,
           label: c.label,
           description: c.description,
