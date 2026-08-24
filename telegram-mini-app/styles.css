@@ -823,6 +823,41 @@ h3 {
   white-space: pre-wrap;
 }
 
+.detail-preview-section {
+  margin-top: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.detail-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.detail-preview-head strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.detail-preview-head span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: right;
+}
+
+.detail-preview-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  object-fit: contain;
+}
+
 .detail-meta {
   margin-top: 12px;
   flex-wrap: wrap;

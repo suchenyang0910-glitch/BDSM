@@ -751,6 +751,15 @@
     const primaryAction = getPrimaryDetailAction(detail);
     const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;
     const coverClass = detail.coverUrl ? "detail-cover has-image" : "detail-cover";
+    const previewPlayer = detail.previewUrl
+      ? '<section class="detail-preview-section" aria-label="免费试看">' +
+        '<div class="detail-preview-head"><strong>免费试看</strong><span>试看不需要开通会员</span></div>' +
+        '<video class="detail-preview-video" controls playsinline preload="metadata" src="' + escapeHtml(detail.previewUrl) + '"' +
+          (detail.coverUrl ? ' poster="' + escapeHtml(detail.coverUrl) + '"' : '') + '>' +
+          '当前浏览器不支持视频在线播放。' +
+        '</video>' +
+        '</section>'
+      : '';
     $("detailContent").innerHTML =
       '<div class="' + coverClass + '">' + imageTag(detail.coverUrl, "detail-image", detail.title || "内容封面", true) + '</div>' +
       '<div class="detail-copy">' +
@@ -758,6 +767,7 @@
       '<h2>' + escapeHtml(detail.title || "") + '</h2>' +
       '<div class="detail-meta"><span>' + escapeHtml(detail.duration || "—") + '</span><span>' + escapeHtml(detail.categories && detail.categories[0] ? detail.categories[0].name : "未分类") + '</span><span>' + escapeHtml(formatDateShort(detail.publishedAt)) + '</span></div>' +
       '<div class="detail-description">' + escapeHtml(detail.description || "暂无内容介绍。") + '</div>' +
+      previewPlayer +
       '<div class="detail-status-card">' +
       '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(detail.unlocked ? "已解锁，可直接进入频道" : getAccessLabel(detail)) + '</div>' +
       '<div class="stack-subtitle">' + escapeHtml(detail.unlocked
