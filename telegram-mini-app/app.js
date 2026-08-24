@@ -713,7 +713,7 @@
 
   function getPrimaryDetailAction(detail) {
     if (detail.unlocked) {
-      return { text: "前往频道", handler: function () { openChannelAccess(detail.id); } };
+      return { text: "观看完整视频", handler: function () { openChannelAccess(detail.id); } };
     }
     if (detail.accessType === "membership") {
       return { text: "开通会员", handler: function () { startPurchase(detail); } };
@@ -750,24 +750,26 @@
 
     const primaryAction = getPrimaryDetailAction(detail);
     const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;
-    const coverClass = detail.coverUrl ? "detail-cover has-image" : "detail-cover";
-    const previewPlayer = detail.previewUrl
-      ? '<section class="detail-preview-section" aria-label="免费试看">' +
-        '<div class="detail-preview-head"><strong>免费试看</strong><span>试看不需要开通会员</span></div>' +
+    // 详情页只保留一个 16:9 媒体位：有试看直接播放试看；无试看才展示封面。
+    // 这样不会把同一张封面和同一段视频上下重复展示，首屏也更聚焦。
+    const mediaSlot = detail.previewUrl
+      ? '<section class="detail-media detail-media-preview" aria-label="免费试看">' +
         '<video class="detail-preview-video" controls playsinline preload="metadata" src="' + escapeHtml(detail.previewUrl) + '"' +
           (detail.coverUrl ? ' poster="' + escapeHtml(detail.coverUrl) + '"' : '') + '>' +
           '当前浏览器不支持视频在线播放。' +
         '</video>' +
+        '<div class="detail-media-label"><strong>免费试看</strong><span>试看不需要开通会员</span></div>' +
         '</section>'
-      : '';
+      : '<div class="detail-cover' + (detail.coverUrl ? ' has-image' : '') + '">' +
+        imageTag(detail.coverUrl, "detail-image", detail.title || "内容封面", true) +
+        '</div>';
     $("detailContent").innerHTML =
-      '<div class="' + coverClass + '">' + imageTag(detail.coverUrl, "detail-image", detail.title || "内容封面", true) + '</div>' +
+      mediaSlot +
       '<div class="detail-copy">' +
       '<p class="eyebrow">' + escapeHtml((detail.tags || []).join(" · ") || getAccessLabel(detail)) + '</p>' +
       '<h2>' + escapeHtml(detail.title || "") + '</h2>' +
       '<div class="detail-meta"><span>' + escapeHtml(detail.duration || "—") + '</span><span>' + escapeHtml(detail.categories && detail.categories[0] ? detail.categories[0].name : "未分类") + '</span><span>' + escapeHtml(formatDateShort(detail.publishedAt)) + '</span></div>' +
       '<div class="detail-description">' + escapeHtml(detail.description || "暂无内容介绍。") + '</div>' +
-      previewPlayer +
       '<div class="detail-status-card">' +
       '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(detail.unlocked ? "已解锁，可直接进入频道" : getAccessLabel(detail)) + '</div>' +
       '<div class="stack-subtitle">' + escapeHtml(detail.unlocked

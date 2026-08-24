@@ -418,6 +418,83 @@ test("[S1-F] membership 内容 access-link：优先解析后台登记会员频�
 });
 
 // ============================================================
+// [S1-F2] 已交付且已关联频道消息的会员内容：应直达该条视频消息，
+// 不再把用户只带到频道首页；Location 可以是 Telegram 的受控跳转，
+// JSON 正文不可出现频道原始 ID。
+// ============================================================
+test("[S1-F2] 已解锁会员内容 access-link 定位到指定频道视频", async () => {
+  const originalAesKey = process.env.CRYPTO_CHAT_ID_AES_KEY;
+  process.env.CRYPTO_CHAT_ID_AES_KEY = "12345678901234567890123456789012";
+  const app = await buildTestApp(prisma);
+  const suffix = String(Date.now()).slice(-9);
+  const channelId = BigInt(`-1008${suffix}`);
+  let userId: string | null = null;
+  let managedChannelId: string | null = null;
+  let contentId: string | null = null;
+  try {
+    const user = await prisma.user.create({ data: { displayName: `S1-F2 User ${suffix}` } });
+    userId = user.id;
+    await prisma.entitlement.create({
+      data: {
+        userId: user.id,
+        resourceType: "membership_channel",
+        resourceId: "membership-main",
+        status: "active",
+        startsAt: new Date(),
+        expiresAt: new Date(Date.now() + 24 * 3600 * 1000),
+      },
+    });
+    const managed = await prisma.adminManagedChannel.create({
+      data: {
+        chatIdHmac: chatIdIndexKey(channelId),
+        chatIdCiphertextB64: encryptChatIdAesGcm(channelId),
+        deprecatedChatIdBig: channelId,
+        chatType: "channel",
+        title: `S1-F2 Channel ${suffix}`,
+        isPrivate: true,
+        purpose: "membership_main",
+        source: "manual_add",
+        botIsAdmin: true,
+        botCanInviteUsers: true,
+      },
+    });
+    managedChannelId = managed.id;
+    const content = await prisma.content.create({
+      data: {
+        title: `S1-F2 Target ${suffix}`,
+        accessType: "membership",
+        status: "published",
+        telegramMessageId: BigInt(418),
+        telegramChatFingerprint: chatIdIndexKey(channelId),
+      },
+    });
+    contentId = content.id;
+    const userCookie = await loginAs(app, user.id);
+    const resp = await app.inject({
+      method: "POST",
+      url: `/api/resources/${content.id}/access-link`,
+      headers: { cookie: userCookie, "Content-Type": "application/json" },
+      payload: {},
+    });
+    assert.equal(resp.statusCode, 302, resp.body);
+    assert.equal(
+      resp.headers.location,
+      `https://t.me/c/${String(channelId).slice(4)}/418`,
+      "unlocked content must route to its exact Telegram message",
+    );
+    assertNoSensitiveLeaks(resp.body, "target-post delivery response");
+    assert.equal((resp.json() as any).delivery?.target, "content_message");
+  } finally {
+    if (contentId) await prisma.content.delete({ where: { id: contentId } }).catch(() => {});
+    if (managedChannelId) await prisma.adminManagedChannel.delete({ where: { id: managedChannelId } }).catch(() => {});
+    if (userId) await prisma.user.delete({ where: { id: userId } }).catch(() => {});
+    if (originalAesKey === undefined) delete process.env.CRYPTO_CHAT_ID_AES_KEY;
+    else process.env.CRYPTO_CHAT_ID_AES_KEY = originalAesKey;
+    await app.close();
+  }
+});
+
+// ============================================================
 // [G] membership 内容：CREATE → PATCH → SUBMIT_REVIEW → PUBLISH
 //     全链路每个动作的审计日志 before/after 均 stripSensitiveFields 无 -100 / t.me/+
 // ============================================================

@@ -94,6 +94,23 @@ function resolveChannelRefToChatId(ref: ChannelRef): bigint {
   }
 }
 
+/**
+ * Builds a Telegram private-channel post link only at the delivery boundary.
+ * The raw chat id never leaves a JSON API response or audit/log record; the
+ * browser receives it solely as a 302 Location after the entitlement check.
+ */
+export function buildPrivateChannelPostUrl(ref: ChannelRef, messageId: bigint | number | string): string | null {
+  const chatId = String(resolveChannelRefToChatId(ref));
+  const postId = String(messageId);
+  if (!/^-100\d{6,22}$/.test(chatId) || !/^\d{1,20}$/.test(postId)) return null;
+  return `https://t.me/c/${chatId.slice(4)}/${postId}`;
+}
+
+/** Keeps channel-id resolution inside this service boundary. */
+export function channelRefFingerprint(ref: ChannelRef): string {
+  return chatIdFingerprint(resolveChannelRefToChatId(ref));
+}
+
 export function maskChatIdSafe(chatId: bigint | number | string): string {
   const raw = String(chatId);
   if (!raw) return "****";

@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import {
   createChannelInvite,
+  buildPrivateChannelPostUrl,
+  channelRefFingerprint,
   sendDirectMessage,
   refRawChatId,
   type ChannelRef,
@@ -51,6 +53,8 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
         accessType: true,
         packageId: true,
         title: true,
+        telegramMessageId: true,
+        telegramChatFingerprint: true,
       },
     });
 
@@ -198,6 +202,27 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
 
     if (!channelRef) {
       return reply.status(500).send({ error: "internal_error", message: "交付通道解析失败" });
+    }
+
+    // 已完成付费且已绑定到目标频道消息时，直接定位到那一条完整视频。
+    // 首次交付仍保留下面的邀请码回退：支付完成流程会先发放频道入口；
+    // 用户尚未加入、或历史内容没有可靠频道映射时，不能生成可能指向错误频道的链接。
+    if (
+      content.accessType !== "public" &&
+      content.telegramMessageId != null &&
+      content.telegramChatFingerprint &&
+      content.telegramChatFingerprint === channelRefFingerprint(channelRef)
+    ) {
+      const targetPostUrl = buildPrivateChannelPostUrl(channelRef, content.telegramMessageId);
+      if (targetPostUrl) {
+        return reply.status(302).header("Location", targetPostUrl).send({
+          delivery: {
+            method: "private_channel_target_post_redirect",
+            target: "content_message",
+            stub: false,
+          },
+        });
+      }
     }
 
     // 公开免费频道的直接 t.me URL（不走一次性 invite 创建，也不消耗 Bot 配额）
