@@ -10,9 +10,8 @@ import {
   Input,
   Form,
   Drawer,
-  InputNumber,
   Select,
-  DatePicker,
+  Radio,
   message,
   Modal,
   Image,
@@ -20,7 +19,6 @@ import {
 } from "antd";
 import { PlusOutlined, EditOutlined, DeleteOutlined, UploadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
-import type { Dayjs } from "dayjs";
 import dayjs from "dayjs";
 import {
   listAdminBanners,
@@ -28,29 +26,16 @@ import {
   updateAdminBanner,
   deleteAdminBanner,
   adminMe,
-  listAdminCategories,
   listAdminContents,
   errMsg,
   listAdminBannerImageAssets,
   initAdminBannerImageUpload,
   completeAdminBannerImageUpload,
 } from "../api/client";
-import type { BannerItem, BannerStatus, BannerTargetType, AdminMe, CategoryItem, ContentItem, BannerImageAsset } from "../api/types";
+import type { BannerItem, BannerStatus, BannerTargetType, AdminMe, ContentItem, BannerImageAsset } from "../api/types";
 
 const { Title } = Typography;
 const { Option } = Select;
-const { RangePicker } = DatePicker;
-const { TextArea } = Input;
-
-const SLOT_OPTIONS = [
-  { value: "home_primary", label: "首页 Banner" },
-];
-
-const SLOT_LABEL: Record<string, string> = SLOT_OPTIONS.reduce((acc, o) => {
-  acc[o.value] = o.label;
-  return acc;
-}, {} as Record<string, string>);
-
 const STATUS_TAG: Record<BannerStatus, { color: string; label: string }> = {
   draft: { color: "default", label: "草稿" },
   scheduled: { color: "geekblue", label: "定时投放" },
@@ -59,14 +44,9 @@ const STATUS_TAG: Record<BannerStatus, { color: string; label: string }> = {
   archived: { color: "grey", label: "归档" },
 };
 
-const STATUS_OPTIONS = Object.entries(STATUS_TAG).map(([v, l]) => ({ value: v, label: l.label }));
-
 const TARGET_TYPE_OPTIONS: { value: BannerTargetType; label: string; hint: string }[] = [
-  { value: "content", label: "跳转内容详情", hint: "需选择内容 ID" },
-  { value: "category", label: "跳转分类页", hint: "需选择分类 ID" },
-  { value: "package", label: "跳转内容包", hint: "需填写内容包 ID" },
-  { value: "membership", label: "跳转会员页", hint: "前台直接打开会员页" },
-  { value: "external", label: "外部 URL", hint: "仅允许 HTTPS 页面或公开 Telegram 链接" },
+  { value: "content", label: "站内视频详情", hint: "选择一个已发布视频" },
+  { value: "external", label: "外网链接", hint: "填写合规 HTTPS 链接" },
 ];
 
 const BannersPage: React.FC = () => {
@@ -79,7 +59,6 @@ const BannersPage: React.FC = () => {
   const [submitting, setSubmitting] = React.useState(false);
   const [me, setMe] = React.useState<AdminMe | null>(null);
 
-  const [categories, setCategories] = React.useState<CategoryItem[]>([]);
   const [contents, setContents] = React.useState<ContentItem[]>([]);
   const [pickLoading, setPickLoading] = React.useState(false);
   const [imageAssets, setImageAssets] = React.useState<BannerImageAsset[]>([]);
@@ -103,13 +82,9 @@ const BannersPage: React.FC = () => {
   const fetchPickers = React.useCallback(async () => {
     setPickLoading(true);
     try {
-      const [cResp, tResp] = await Promise.all([
-        listAdminCategories(),
-        // 与服务端分页契约保持一致，单次请求最大 100 条。
-        listAdminContents({ limit: 100 }),
-      ]);
-      setCategories(cResp.data);
-      setContents(tResp.data);
+      // 与服务端分页契约保持一致，单次请求最大 100 条。
+      const tResp = await listAdminContents({ limit: 100 });
+      setContents(tResp.data.filter((item) => item.status === "published"));
     } catch {
       // ignore
     } finally {
@@ -148,32 +123,20 @@ const BannersPage: React.FC = () => {
     setEditing(null);
     form.resetFields();
     form.setFieldsValue({
-      slot: "home_primary",
       targetType: "content",
-      status: "draft",
-      sortOrder: 0,
-      actionLabel: "查看详情",
+      title: "首页运营图",
     });
     setDrawerOpen(true);
   };
 
   const openEdit = (row: BannerItem) => {
     setEditing(row);
-    const range: [Dayjs, Dayjs] | null = row.startsAt && row.endsAt
-      ? [dayjs(row.startsAt), dayjs(row.endsAt)]
-      : null;
     form.setFieldsValue({
       title: row.title,
-      description: row.description,
       imageAssetId: undefined,
-      actionLabel: row.actionLabel,
-      slot: row.slot,
       targetType: row.targetType,
       targetId: row.targetId,
       externalUrl: row.externalUrl,
-      status: row.status,
-      sortOrder: row.sortOrder,
-      period: range,
     });
     setDrawerOpen(true);
   };
@@ -234,22 +197,20 @@ const BannersPage: React.FC = () => {
     try {
       const values = await form.validateFields();
       setSubmitting(true);
-      const [startsAt, endsAt] = values.period || [null, null];
       const payload: any = {
         title: values.title,
-        description: values.description || null,
         imageAssetId: values.imageAssetId || undefined,
-        actionLabel: values.actionLabel,
-        slot: values.slot,
         targetType: values.targetType,
         targetId: values.targetId || null,
         externalUrl: values.externalUrl || null,
-        status: values.status,
-        sortOrder: values.sortOrder,
-        startsAt: startsAt ? startsAt.toISOString() : null,
-        endsAt: endsAt ? endsAt.toISOString() : null,
         reason: editing ? `编辑 Banner：${editing.title}` : `新建 Banner：${values.title}`,
       };
+      if (!editing) Object.assign(payload, {
+        actionLabel: "查看详情",
+        slot: "home_primary",
+        status: "active",
+        sortOrder: 0,
+      });
       if (editing) {
         await updateAdminBanner(editing.id, payload);
         message.success("Banner 已更新");
@@ -302,13 +263,6 @@ const BannersPage: React.FC = () => {
       ),
     },
     {
-      title: "投放位置",
-      dataIndex: "slot",
-      key: "slot",
-      width: 160,
-      render: (s: string) => SLOT_LABEL[s] || s,
-    },
-    {
       title: "跳转目标",
       key: "target",
       width: 200,
@@ -324,7 +278,6 @@ const BannersPage: React.FC = () => {
         );
       },
     },
-    { title: "排序", dataIndex: "sortOrder", key: "sortOrder", width: 70 },
     {
       title: "状态",
       dataIndex: "status",
@@ -333,21 +286,6 @@ const BannersPage: React.FC = () => {
       render: (s: BannerStatus) => (
         <Tag color={STATUS_TAG[s]?.color || "default"}>{STATUS_TAG[s]?.label || s}</Tag>
       ),
-    },
-    {
-      title: "投放时段",
-      key: "period",
-      width: 280,
-      render: (_: any, r) => {
-        if (!r.startsAt && !r.endsAt) return <Tag color="default">永久</Tag>;
-        return (
-          <span style={{ fontSize: 12 }}>
-            {r.startsAt ? dayjs(r.startsAt).format("YYYY-MM-DD HH:mm") : "立即"}
-            <span style={{ color: "#999" }}> ～ </span>
-            {r.endsAt ? dayjs(r.endsAt).format("YYYY-MM-DD HH:mm") : "不限"}
-          </span>
-        );
-      },
     },
     {
       title: "更新",
@@ -388,7 +326,7 @@ const BannersPage: React.FC = () => {
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card>
-        首页 Banner 严格按 PRD 执行：仅支持 `0-3` 个运营位；每条都必须有明确跳转目标。图片只能上传或从已验证的素材库中选择，外链仅允许合规 `HTTPS` 页面或公开 Telegram 链接，禁止私密邀请链接与支付链接。
+        只需三步：上传或选择封面图片 → 选择站内视频，或填写外网链接 → 创建即显示在首页。最多保留 3 张；私密邀请与支付链接不能作为 Banner 跳转目标。
       </Card>
       <Card
         title={<Title level={5} style={{ margin: 0 }}>Banner 运营位</Title>}
@@ -425,11 +363,8 @@ const BannersPage: React.FC = () => {
         }
       >
         <Form form={form} layout="vertical" preserve={false}>
-          <Form.Item name="title" label="标题" rules={[{ required: true, message: "请输入标题" }]}>
-            <Input placeholder="例如：春季会员 8 折" maxLength={200} />
-          </Form.Item>
-          <Form.Item name="description" label="副标题 / 描述">
-            <TextArea rows={2} placeholder="在 Banner 上展示的副标题" maxLength={500} />
+          <Form.Item name="title" label="后台备注名称" rules={[{ required: true, message: "请输入便于识别的名称" }]} extra="仅用于后台识别；前台以图片为主展示。">
+            <Input placeholder="例如：本周主推视频" maxLength={200} />
           </Form.Item>
           <Form.Item
             name="imageAssetId"
@@ -466,22 +401,8 @@ const BannersPage: React.FC = () => {
             </Select>
           </Form.Item>
           {imagePreviewUrl ? <Image src={imagePreviewUrl} width={240} height={135} preview style={{ objectFit: "cover", borderRadius: 8, marginBottom: 16 }} /> : null}
-          <Form.Item name="actionLabel" label="按钮文案">
-            <Input placeholder="例如：查看详情" maxLength={50} />
-          </Form.Item>
-          <Space size={16} style={{ width: "100%" }}>
-            <Form.Item name="slot" label="投放位置" rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Select options={SLOT_OPTIONS} />
-            </Form.Item>
-            <Form.Item name="sortOrder" label="排序（越小越靠前）" style={{ width: 180 }}>
-              <InputNumber style={{ width: "100%" }} />
-            </Form.Item>
-            <Form.Item name="status" label="状态" rules={[{ required: true }]} style={{ width: 160 }}>
-              <Select options={STATUS_OPTIONS} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="targetType" label="跳转目标类型" rules={[{ required: true }]}>
-            <Select options={TARGET_TYPE_OPTIONS.map((o) => ({ value: o.value, label: `${o.label}（${o.hint}）` }))} />
+          <Form.Item name="targetType" label="点击 Banner 后跳转到" rules={[{ required: true }]}>
+            <Radio.Group options={TARGET_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))} />
           </Form.Item>
 
           {targetType === "content" && (
@@ -504,36 +425,6 @@ const BannersPage: React.FC = () => {
             </Form.Item>
           )}
 
-          {targetType === "category" && (
-            <Form.Item
-              name="targetId"
-              label="选择跳转分类"
-              rules={[{ required: true, message: "请选择分类" }]}
-            >
-              <Select>
-                {categories.map((c) => (
-                  <Option key={c.id} value={c.id}>{c.name}（{c.slug}）</Option>
-                ))}
-              </Select>
-            </Form.Item>
-          )}
-
-          {targetType === "package" && (
-            <Form.Item
-              name="targetId"
-              label="内容包 ID"
-              rules={[{ required: true, message: "请填写 ID" }]}
-            >
-              <Input placeholder="粘贴目标 ID" />
-            </Form.Item>
-          )}
-
-          {targetType === "membership" && (
-            <Form.Item label="会员页跳转">
-              <Input value="固定跳转到前台会员页" disabled />
-            </Form.Item>
-          )}
-
           {targetType === "external" && (
             <Form.Item
               name="externalUrl"
@@ -548,9 +439,6 @@ const BannersPage: React.FC = () => {
             </Form.Item>
           )}
 
-          <Form.Item name="period" label="投放时段（留空则立即投放且不停止）">
-            <RangePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: "100%" }} />
-          </Form.Item>
         </Form>
       </Drawer>
     </Space>
