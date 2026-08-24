@@ -44,7 +44,8 @@ import { decryptChatIdAesGcm } from "../utils/crypto.js";
 const ContentStatusZ = z.enum(["draft", "pending_review", "published", "archived", "scheduled"]);
 const BannerStatusZ = z.enum(["draft", "active", "inactive", "scheduled", "archived"]);
 const BannerTargetTypeZ = z.enum(["content", "category", "package", "membership", "external"]);
-const MAX_FULL_VIDEO_BYTES = 8n * 1024n * 1024n * 1024n;
+// Telegram 本地 Bot API 对单文件上传的实际能力上限为 2GB；后台与 API 必须一致。
+const MAX_FULL_VIDEO_BYTES = 2n * 1024n * 1024n * 1024n;
 
 function adminMeta(req: FastifyRequest) {
   const sess = (req as any).admin as AdminSession;
@@ -269,7 +270,7 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
       return { ok: false, status: 409, error: `${fk.key}_kind_mismatch`, message: `素材类型不匹配：${fk.key} 必须是 ${fk.expectedKind}，实际为 ${a.kind}。` };
     }
     if (fk.key === "fullVideoAssetId" && a.contentLength != null && BigInt(String(a.contentLength)) > MAX_FULL_VIDEO_BYTES) {
-      return { ok: false, status: 400, error: "full_video_too_large", message: "完整视频文件超过 8GB，服务端拒绝保存或发布该素材。" };
+      return { ok: false, status: 400, error: "full_video_too_large", message: "完整视频文件超过 2GB，服务端拒绝保存或发布该素材。" };
     }
   }
 
@@ -1958,8 +1959,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         emitSafetyEvent({ event: "media_init_upload_env_missing", errorClass: "exhausted", adminId: meta.adminId, retryHint: 0 });
         return reply.status(503).send({ error: "object_storage_unavailable", userError: "对象存储服务未上线，请联系技术支持" });
       }
-      if (body.contentLength > 8 * 1024 * 1024 * 1024) {
-        return reply.status(400).send({ error: "file_too_large", userError: "文件大小上限 8GB，请分块或压缩后再试" });
+      if (body.contentLength > 2 * 1024 * 1024 * 1024) {
+        return reply.status(400).send({ error: "file_too_large", userError: "完整视频文件大小上限 2GB，请分段或压缩后再试" });
       }
       if (body.kind === "cover_image" && body.contentLength > 20 * 1024 * 1024) {
         return reply.status(400).send({ error: "cover_too_large", userError: "封面图片大小上限 20MB" });

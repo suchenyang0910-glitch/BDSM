@@ -1533,7 +1533,7 @@ const ContentsPage: React.FC = () => {
                         {fullVideoAsset?.status === "ready" ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : fullVideoAsset?.status === "failed" ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
                       </Space>
                     }
-                    extra={<Tag color={accessTypeValue === "public" ? "default" : "purple"}>≤ 8GB</Tag>}
+                    extra={<Tag color={accessTypeValue === "public" ? "default" : "purple"}>≤ 2GB</Tag>}
                   >
                     <Space direction="vertical" size={12} style={{ width: "100%" }}>
                       {accessTypeValue === "public" ? (
@@ -1548,7 +1548,7 @@ const ContentsPage: React.FC = () => {
                         beforeUpload={(f) => doDirectUpload(f as File, "full_video", {
                           setAssetId: setFullVideoAssetId, setAsset: setFullVideoAsset,
                           setProgress: setFullVideoProgress, setUploading: setFullVideoUploading,
-                        }, 8 * 1024 * 1024 * 1024)}
+                        }, 2 * 1024 * 1024 * 1024)}
                       >
                         <Button icon={<UploadOutlined />} loading={fullVideoUploading} disabled={!canEdit || accessTypeValue === "public"}>
                           {fullVideoAssetId ? (fullVideoAsset?.status === "ready" ? "重新上传完整视频" : "重新上传（上次未完成）") : "上传完整视频（会员/内容包私密频道交付）"}
