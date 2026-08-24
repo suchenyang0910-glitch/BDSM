@@ -212,6 +212,12 @@
   }
 
   function parseHash() {
+    // Telegram 免费频道/H5 外链使用 ?content=<UUID>；查询参数优先于首页 hash，
+    // 确保用户点击推广链接时直接进入对应内容详情，而不是落回首页。
+    const queryContentId = new URLSearchParams(window.location.search).get("content");
+    if (queryContentId) {
+      return { view: "detail", id: queryContentId, tab: "home", fromTab: "home" };
+    }
     const raw = String(window.location.hash || "").replace(/^#/, "");
     const params = new URLSearchParams(raw);
     if (params.get("view") === "content" && params.get("id")) {
@@ -227,6 +233,9 @@
   }
 
   function setHashForTab(tab) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("content");
+    window.history.replaceState(null, "", url.pathname + (url.search || ""));
     const params = new URLSearchParams();
     params.set("tab", tab);
     window.location.hash = params.toString();
