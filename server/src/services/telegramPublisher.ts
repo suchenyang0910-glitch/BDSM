@@ -120,6 +120,19 @@ export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" |
   return { caption, parseMode: "HTML" };
 }
 
+/** 私密频道完整视频也必须有可读的标题与简介；标签由调用方统一追加。 */
+export function buildFullVideoCaption(content: Pick<Content, "title" | "description">): {
+  caption: string;
+  parseMode: "HTML";
+} {
+  const safeTitle = escapeHtml(String(content.title || "未命名内容"));
+  const safeDesc = escapeHtml(String(content.description || "同频会员专享内容。\n仅限已解锁成员观看。")).slice(0, 760);
+  return {
+    caption: [`<b>《${safeTitle}》</b>`, "", safeDesc].join("\n"),
+    parseMode: "HTML",
+  };
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -378,13 +391,22 @@ export async function processPublishJob(
     return { ok: false, reason: "target_channel_invalid" };
   }
 
-  // Step 3: 组装 caption（public_free_preview 才走模板；其余纯无 caption 或未来扩展）
+  // Step 3: 组装 caption。免费试看和私密完整视频都必须带标题、简介与标签。
   const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([
     Array.isArray((job as any).telegramTagsJson) ? (job as any).telegramTagsJson : [],
   ]);
   const isPreviewKind = job.channelKind === "public_free_preview" && asset.kind === "preview_video";
   let captionBundle: { caption?: string; parseMode?: "HTML" } = {};
-  if (typeof job.captionText === "string" && job.captionText.trim()) {
+  const isFullVideoKind =
+    (job.channelKind === "membership_full" || job.channelKind === "package_full") &&
+    asset.kind === "full_video";
+  if (isFullVideoKind && job.content) {
+    const fullBundle = buildFullVideoCaption(job.content);
+    captionBundle = {
+      caption: appendTelegramTagLine(fullBundle.caption, normalizedTelegramTags),
+      parseMode: fullBundle.parseMode,
+    };
+  } else if (typeof job.captionText === "string" && job.captionText.trim()) {
     captionBundle = {
       caption: appendTelegramTagLine(job.captionText, normalizedTelegramTags),
       parseMode: job.parseMode === "HTML" ? "HTML" : undefined,

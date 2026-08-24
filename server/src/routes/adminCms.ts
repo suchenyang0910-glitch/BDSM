@@ -449,6 +449,16 @@ async function queueTelegramPublishForContent(input: {
   }
 
   const kinds = Array.from(new Set(input.channelKinds));
+  // 会员/内容包的试看是固定流量入口：只要素材就绪，后台即自动补齐免费频道分发，
+  // 不再让运营在“完整视频”和“免费预览”之间手工做易错的二选一。
+  if (
+    (content.accessType === "membership" || content.accessType === "package") &&
+    content.previewAsset?.status === "ready" &&
+    content.previewAsset.kind === "preview_video" &&
+    !kinds.includes("public_free_preview")
+  ) {
+    kinds.unshift("public_free_preview");
+  }
   const plans: Array<{
     mediaAssetId: string;
     targetFreeChannelCode?: string | null;
@@ -505,6 +515,9 @@ async function queueTelegramPublishForContent(input: {
       if (plan.channelKindDb === "public_free_preview") {
         const { caption, parseMode } = buildPreviewVideoCaption(content);
         captionBundle = { captionText: appendTelegramTagLine(caption, normalizedTelegramTags), parseMode };
+      } else if (plan.channelKindDb === "membership_full" || plan.channelKindDb === "package_full") {
+        // 私密频道完整视频不再只显示标签；worker 会以标题、简介为主体并追加这些标签。
+        captionBundle = { captionText: null, parseMode: "HTML" };
       } else if (normalizedTelegramTags.length > 0) {
         captionBundle = { captionText: normalizedTelegramTags.join(" "), parseMode: null };
       }

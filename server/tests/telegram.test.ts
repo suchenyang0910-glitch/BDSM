@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { getTelegramBotCredentials, validateTelegramInitData } from "../src/utils/telegram.js";
 import { createStreamingMultipartPayload, resolveMiniAppUrl, withMiniAppLaunchButton } from "../src/services/telegramBot.js";
-import { buildPreviewVideoCaption } from "../src/services/telegramPublisher.js";
+import { buildFullVideoCaption, buildPreviewVideoCaption } from "../src/services/telegramPublisher.js";
 
 function makeInitData(token: string, authDate: number): string {
   const params = new URLSearchParams({
@@ -84,6 +84,13 @@ test("免费频道试看文案只导向站外 H5 的 USDT 收银台，不导向 
   });
   assert.match(withoutProduct.caption, /\?content=content-test-002/);
   assert.doesNotMatch(withoutProduct.caption, /h5-pay\.html/);
+});
+
+test("私密频道完整视频文案必须包含标题与简介", () => {
+  const caption = buildFullVideoCaption({ title: "会员完整内容", description: "仅对已解锁成员开放。" });
+  assert.match(caption.caption, /会员完整内容/);
+  assert.match(caption.caption, /仅对已解锁成员开放/);
+  assert.equal(caption.parseMode, "HTML");
 });
 
 test("对象存储视频以真实流式 multipart 字节上传，绝不把 Readable 序列化成对象", async () => {

@@ -265,6 +265,32 @@ test("免费试看自动扇出到全部已启用免费流量频道，不要求�
       new Set(body.jobs.map((job: any) => job.targetFreeChannelCode)),
       new Set(["free_preview_main", "free_tutorial_basics"]),
     );
+
+    const fullAsset = await seedReadyMediaAsset(prisma, {
+      id: crypto.randomUUID(), kind: "full_video", ownerAdminId: editor.id, filename: "membership-full.mp4",
+    });
+    const membershipContentId = crypto.randomUUID();
+    await prisma.content.create({
+      data: {
+        id: membershipContentId,
+        title: "会员内容自动补免费试看",
+        accessType: "membership",
+        status: "draft",
+        previewAssetId: previewAsset.id,
+        fullVideoAssetId: fullAsset.id,
+      },
+    });
+    const membershipResponse = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${membershipContentId}/start-telegram-publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { channelKinds: ["membership_full"], reason: "会员视频自动附带免费试看" },
+    });
+    assert.equal(membershipResponse.statusCode, 201, membershipResponse.body);
+    const membershipJobs = (membershipResponse.json() as any).jobs;
+    assert.equal(membershipJobs.length, 3, "会员完整视频加上已就绪试看，应自动投放 2 个免费频道和 1 个会员频道");
+    assert.equal(membershipJobs.filter((job: any) => job.channelKind === "public_free_preview").length, 2);
+    assert.equal(membershipJobs.filter((job: any) => job.channelKind === "membership_full").length, 1);
   } finally {
     await app.close();
     for (const [key, value] of [[mainKey, before[0]], [tutorialKey, before[1]], [announcementKey, before[2]]] as const) {
