@@ -527,6 +527,30 @@ async function queueTelegramPublishForContent(input: {
     const jobs: any[] = [];
     const now = Date.now();
     for (const plan of plans) {
+      // 发布按钮可被重复点击、网络层也可能重放请求。用 PostgreSQL 事务咨询锁把
+      // “内容 + 素材 + 目标频道”收敛为一个交付任务，避免同一视频在同一频道重复发送。
+      // 后续若需要重新发片，必须走显式的 re-publish 动作，而不是复用这个默认入口。
+      const deliveryIdentity = [
+        content.id,
+        plan.mediaAssetId,
+        plan.channelKindDb,
+        plan.targetFreeChannelCode || "private-channel",
+      ].join(":");
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${deliveryIdentity}))`;
+      const existing = await tx.telegramPublishJob.findFirst({
+        where: {
+          contentId: content.id,
+          mediaAssetId: plan.mediaAssetId,
+          channelKind: plan.channelKindDb,
+          targetFreeChannelCode: plan.targetFreeChannelCode ?? null,
+          status: { in: ["queued", "processing", "sent", "failed"] },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      if (existing) {
+        jobs.push(existing);
+        continue;
+      }
       const jobSeed = `${plan.channelKindDb}|${content.id}|${plan.mediaAssetId}|${meta.adminId}|${now}|${cryptoRandomUuid()}`;
       const jobToken = `tgj_${createHash("sha256").update(jobSeed).digest("hex").slice(0, 48)}`;
       let captionBundle: { captionText?: string | null; parseMode?: string | null } = {};

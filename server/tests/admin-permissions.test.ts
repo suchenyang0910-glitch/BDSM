@@ -317,6 +317,22 @@ test("免费试看自动扇出到全部已启用免费流量频道，不要求�
     assert.equal(membershipJobs.length, 3, "会员完整视频加上已就绪试看，应自动投放 2 个免费频道和 1 个会员频道");
     assert.equal(membershipJobs.filter((job: any) => job.channelKind === "public_free_preview").length, 2);
     assert.equal(membershipJobs.filter((job: any) => job.channelKind === "membership_full").length, 1);
+
+    const repeatedMembershipResponse = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${membershipContentId}/start-telegram-publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { channelKinds: ["membership_full"], reason: "重复点击不得重复发片" },
+    });
+    assert.equal(repeatedMembershipResponse.statusCode, 201, repeatedMembershipResponse.body);
+    const repeatedJobs = (repeatedMembershipResponse.json() as any).jobs;
+    assert.deepEqual(
+      new Set(repeatedJobs.map((job: any) => job.id)),
+      new Set(membershipJobs.map((job: any) => job.id)),
+      "同一内容重复请求必须复用原任务，而不是再创建一组频道发布任务",
+    );
+    const storedJobCount = await prisma.telegramPublishJob.count({ where: { contentId: membershipContentId } });
+    assert.equal(storedJobCount, 3, "重复请求后数据库只能保留 2 个免费试看 + 1 个会员完整视频任务");
   } finally {
     await app.close();
     for (const [key, value] of [[mainKey, before[0]], [tutorialKey, before[1]], [announcementKey, before[2]]] as const) {
