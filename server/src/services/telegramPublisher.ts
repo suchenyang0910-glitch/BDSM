@@ -60,8 +60,9 @@ const BASE_RETRY_SECONDS = 5;
 const DB_POLL_INTERVAL_MS = 15_000;
 // 预留 multipart 边界/元数据空间；达到此值应先转码，或改用自托管 Telegram Bot API。
 const TELEGRAM_CLOUD_SAFE_UPLOAD_BYTES = 49 * 1024 * 1024;
-const H5_USDT_CHECKOUT_PREFIX = "https://bdsm.linkx.club/h5-pay.html?productId=";
-const WEB_CONTENT_LINK_PREFIX = "https://bdsm.linkx.club/?content=";
+// 免费频道不直接把用户送往站外网页；统一先进入官方 Bot 对话，由 Bot 提供
+// Mini App / 支付 / 支持入口，避免用户离开 Telegram 的上下文。
+const OFFICIAL_BOT_DIALOG_URL = "https://t.me/InTune_bdsm_bot";
 
 // ====================== 类型定义 ======================
 type JobToken = string;
@@ -94,7 +95,7 @@ function safeHexDigest(input: string, len = 32): string {
 }
 
 // 给运营侧后台的免费频道试看文案模板。
-// 推广/公开频道一律进入站外 H5 的 USDT 收银台；不将 USDT 伪装成 Mini App 内支付。
+// 推广/公开频道一律先进入官方 Bot 对话；不直跳站外网页或暴露支付链路。
 export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" | "description" | "productId">): {
   caption: string;
   parseMode: "HTML";
@@ -103,19 +104,13 @@ export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" |
   const safeDesc = escapeHtml(
     String(content.description || "30–60 秒试看说明（运营需确保上传前已加水印）")
   ).slice(0, 280);
-  const checkoutLink = content.productId
-    ? `${H5_USDT_CHECKOUT_PREFIX}${encodeURIComponent(content.productId)}`
-    : null;
-  const contentLink = `${WEB_CONTENT_LINK_PREFIX}${encodeURIComponent(content.id)}`;
   const caption = [
     `<b>《${safeTitle}》</b>`,
     "",
     `${safeDesc}`,
     "完整内容已收录于同频。",
     "",
-    checkoutLink
-      ? `使用 USDT-TRC20 解锁：<a href="${checkoutLink}">前往同频收银台</a>`
-      : `<a href="${contentLink}">前往同频查看详情</a>`,
+    `<a href="${OFFICIAL_BOT_DIALOG_URL}">打开同频 Bot 查看详情与解锁方式</a>`,
   ].join("\n");
   return { caption, parseMode: "HTML" };
 }
@@ -426,7 +421,9 @@ export async function processPublishJob(
     };
   } else if (typeof job.captionText === "string" && job.captionText.trim()) {
     captionBundle = {
-      caption: appendTelegramTagLine(job.captionText, normalizedTelegramTags),
+      // 队列创建阶段已将 public 试看文案与标签组合完成；此处不得再追加，
+      // 否则同一组 hashtag 会在频道消息中出现两行。
+      caption: job.captionText,
       parseMode: job.parseMode === "HTML" ? "HTML" : undefined,
     };
   } else if (isPreviewKind && job.content) {

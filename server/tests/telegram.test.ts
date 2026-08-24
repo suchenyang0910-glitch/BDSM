@@ -66,15 +66,15 @@ test("Bot 私信统一追加受控 Mini App 入口，且不重复覆盖业务按
   assert.equal(resolveMiniAppUrl("javascript:alert(1)"), "https://bdsm.linkx.club/");
 });
 
-test("免费频道试看文案只导向站外 H5 的 USDT 收银台，不导向 Mini App", () => {
+test("免费频道试看文案只导向官方 Bot 对话，不直跳站外收银台", () => {
   const withProduct = buildPreviewVideoCaption({
     id: "content-test-001",
     productId: "product-test-001",
     title: "测试试看",
     description: "测试说明",
   });
-  assert.match(withProduct.caption, /h5-pay\.html\?productId=product-test-001/);
-  assert.doesNotMatch(withProduct.caption, /startapp=|Mini App/);
+  assert.match(withProduct.caption, /https:\/\/t\.me\/InTune_bdsm_bot/);
+  assert.doesNotMatch(withProduct.caption, /h5-pay\.html|bdsm\.linkx\.club/);
 
   const withoutProduct = buildPreviewVideoCaption({
     id: "content-test-002",
@@ -82,8 +82,8 @@ test("免费频道试看文案只导向站外 H5 的 USDT 收银台，不导向 
     title: "免费内容",
     description: "测试说明",
   });
-  assert.match(withoutProduct.caption, /\?content=content-test-002/);
-  assert.doesNotMatch(withoutProduct.caption, /h5-pay\.html/);
+  assert.match(withoutProduct.caption, /https:\/\/t\.me\/InTune_bdsm_bot/);
+  assert.doesNotMatch(withoutProduct.caption, /h5-pay\.html|\?content=/);
 });
 
 test("私密频道完整视频文案必须包含标题与简介", () => {
