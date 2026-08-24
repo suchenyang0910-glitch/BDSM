@@ -769,10 +769,11 @@
       if (detail.accessType === "membership") {
         purchaseHost.innerHTML =
           '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 开通会员，持续获得会员主频道更新。' +
-          (detail.product && detail.product.usdtPriceMinor ? ' 支持 USDT-TRC20：' + escapeHtml(formatPriceMinor(detail.product.usdtPriceMinor, "USDT")) + '。' : '') + '</p>' +
-          (state.env.isTelegram && detail.product && detail.product.usdtPriceMinor
-            ? '<button id="detailUsdtButton" class="text-button" type="button">使用 USDT-TRC20 支付</button>'
-            : '') + '</div>';
+          (state.env.isTelegram
+            ? ' 请使用 Telegram Stars 完成开通。'
+            : (detail.product && detail.product.usdtPriceMinor
+              ? ' 站外 H5 支持 USDT-TRC20：' + escapeHtml(formatPriceMinor(detail.product.usdtPriceMinor, "USDT")) + '。'
+              : '')) + '</p></div>';
       } else if (detail.accessType === "package") {
         purchaseHost.innerHTML =
           '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 解锁所属内容包；2. 若你已经拥有该包权益，可直接前往频道。</p></div>';
@@ -780,12 +781,6 @@
     }
 
     $("detailPrimaryButton").addEventListener("click", primaryAction.handler);
-    const usdtButton = $("detailUsdtButton");
-    if (usdtButton && detail.product) {
-      usdtButton.addEventListener("click", function () {
-        window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id));
-      });
-    }
     $("detailBackButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
     });
@@ -970,8 +965,8 @@
       await createStarsOrderAndPay(detail);
       return;
     }
-    // H5 always uses USDT-TRC20. In Mini App Stars stays the primary route,
-    // while products without Stars can still use the same lightweight USDT page.
+    // Standalone H5 always uses USDT-TRC20. Inside Telegram, digital-content
+    // checkout remains Stars-only; do not expose an in-app USDT detour.
     window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id));
   }
 
@@ -999,10 +994,23 @@
       showInlineMessage("未获得有效 Stars 发票链接。");
       return;
     }
-    tg.openInvoice(invoiceLink, function () {
+    tg.openInvoice(invoiceLink, function (status) {
+      // Telegram 会返回 paid / cancelled / failed / pending。不能把关闭、失败误报为成功。
       loadOrders();
       loadEntitlements();
-      showInlineMessage("Stars 支付已提交，请稍后在「我的」查看订单与权益状态。");
+      if (status === "paid") {
+        showInlineMessage("Stars 支付成功，权益正在发放。可在「我的」查看订单与频道入口。");
+        return;
+      }
+      if (status === "pending") {
+        showInlineMessage("Stars 支付正在处理中，请稍后在「我的」查看订单与权益状态。");
+        return;
+      }
+      if (status === "failed") {
+        showInlineMessage("Stars 支付未完成。请确认 Telegram 账户可购买 Stars 后重新发起，或联系支持。");
+        return;
+      }
+      showInlineMessage("已取消 Stars 支付，订单仍可在「我的」中继续处理。");
     });
   }
 

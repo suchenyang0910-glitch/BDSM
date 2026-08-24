@@ -60,8 +60,8 @@ const BASE_RETRY_SECONDS = 5;
 const DB_POLL_INTERVAL_MS = 15_000;
 // 预留 multipart 边界/元数据空间；达到此值应先转码，或改用自托管 Telegram Bot API。
 const TELEGRAM_CLOUD_SAFE_UPLOAD_BYTES = 49 * 1024 * 1024;
-const BOT_DEEPLINK_PREFIX = "https://t.me/InTune_bdsm_bot?startapp=content_";
-const WEB_DIRECT_LINK_PREFIX = "https://bdsm.linkx.club/?content=";
+const H5_USDT_CHECKOUT_PREFIX = "https://bdsm.linkx.club/h5-pay.html?productId=";
+const WEB_CONTENT_LINK_PREFIX = "https://bdsm.linkx.club/?content=";
 
 // ====================== 类型定义 ======================
 type JobToken = string;
@@ -93,8 +93,9 @@ function safeHexDigest(input: string, len = 32): string {
   return crypto.createHash("sha256").update(input).digest("hex").slice(0, Math.max(8, len));
 }
 
-// 给运营侧后台的免费频道试看文案模板（HTML parse_mode，同时放两种链接）
-export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" | "description">): {
+// 给运营侧后台的免费频道试看文案模板。
+// 推广/公开频道一律进入站外 H5 的 USDT 收银台；不将 USDT 伪装成 Mini App 内支付。
+export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" | "description" | "productId">): {
   caption: string;
   parseMode: "HTML";
 } {
@@ -102,17 +103,19 @@ export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" |
   const safeDesc = escapeHtml(
     String(content.description || "30–60 秒试看说明（运营需确保上传前已加水印）")
   ).slice(0, 280);
-  const tgDeep = `${BOT_DEEPLINK_PREFIX}${encodeURIComponent(content.id)}`;
-  const webDirect = `${WEB_DIRECT_LINK_PREFIX}${encodeURIComponent(content.id)}`;
+  const checkoutLink = content.productId
+    ? `${H5_USDT_CHECKOUT_PREFIX}${encodeURIComponent(content.productId)}`
+    : null;
+  const contentLink = `${WEB_CONTENT_LINK_PREFIX}${encodeURIComponent(content.id)}`;
   const caption = [
     `<b>《${safeTitle}》</b>`,
     "",
     `${safeDesc}`,
     "完整内容已收录于同频。",
     "",
-    "点击进入 Mini App：",
-    `<a href="${tgDeep}">同频 Mini App</a>`,
-    `（无法打开 Mini App？<a href="${webDirect}">点击网页版</a>）`,
+    checkoutLink
+      ? `使用 USDT-TRC20 解锁：<a href="${checkoutLink}">前往同频收银台</a>`
+      : `<a href="${contentLink}">前往同频查看详情</a>`,
   ].join("\n");
   return { caption, parseMode: "HTML" };
 }
@@ -233,7 +236,7 @@ function resolveTgMethodForAsset(
 // ====================== 核心作业处理函数（同步/队列/DB 轮询 都走这一个函数）======================
 type PublishJobIncludes = TelegramPublishJob & {
   mediaAsset: MediaAsset | null;
-  content: ({ id: string; title: string; description: string | null; accessType: string; packageId: string | null }) | null;
+  content: ({ id: string; title: string; description: string | null; accessType: string; packageId: string | null; productId: string | null }) | null;
   package: ({ id: string; title: string }) | null;
 };
 
@@ -249,7 +252,7 @@ export async function processPublishJob(
       where: { jobToken: jobData.jobToken },
       include: {
         mediaAsset: true,
-        content: { select: { id: true, title: true, description: true, accessType: true, packageId: true } },
+        content: { select: { id: true, title: true, description: true, accessType: true, packageId: true, productId: true } },
         package: { select: { id: true, title: true } },
       },
     }) as unknown as PublishJobIncludes | null;
@@ -287,7 +290,7 @@ export async function processPublishJob(
       where: { id: initialJobId },
       include: {
         mediaAsset: true,
-        content: { select: { id: true, title: true, description: true, accessType: true, packageId: true } },
+        content: { select: { id: true, title: true, description: true, accessType: true, packageId: true, productId: true } },
         package: { select: { id: true, title: true } },
       },
     }) as unknown as PublishJobIncludes | null;

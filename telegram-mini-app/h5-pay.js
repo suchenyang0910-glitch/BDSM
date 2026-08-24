@@ -569,13 +569,13 @@
       box.innerHTML = items.map((o) => {
         const amount = o.currency === "USDT" ? minorToDecimalUsdt(o.amountMinor) :
           o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : o.amountMinor;
-        const isUsdt = o.currency === "USDT" || o.paymentMethod === "usdt_trc20";
-        const isStars = o.currency === "XTR" || o.paymentMethod === "telegram_stars" || o.paymentProvider === "telegram_stars";
+        const isUsdt = o.currency === "USDT" || o.paymentMethod === "usdt_trc20" || o.paymentMethod === "usdt_trc20_external";
         const canContinueUsdt = ["pending", "processing"].includes(o.status) && isUsdt;
-        const canContinueStars = ["pending", "processing"].includes(o.status) && isStars;
-        const canContinue = canContinueUsdt || canContinueStars;
+        // Standalone H5 is the USDT checkout only. Stars stay inside Telegram
+        // Mini App, so historical Stars orders are intentionally view-only here.
+        const canContinue = canContinueUsdt;
         const canViewPaid = ["paid", "expired", "cancelled", "failed", "refunded"].includes(o.status);
-        const payBtnLabel = canContinueStars ? "继续 Stars 支付" : "继续支付";
+        const payBtnLabel = "继续支付";
         return `
           <div class="order-list-item">
             <div class="oli-head">
@@ -590,7 +590,7 @@
             </div>
             ${o._h5QuickNote ? `<div class="ent-sub" style="margin-bottom:8px;">${o._h5QuickNote}</div>` : ""}
             <div class="oli-cta">
-              ${canContinue ? `<button class="btn btn-primary" data-act="pay" data-pay="${canContinueStars ? "stars" : "usdt"}" data-no="${o.orderNo}">${payBtnLabel}</button>` : ""}
+              ${canContinue ? `<button class="btn btn-primary" data-act="pay" data-pay="usdt" data-no="${o.orderNo}">${payBtnLabel}</button>` : ""}
               ${canViewPaid ? `<button class="btn btn-ghost" data-act="view" data-no="${o.orderNo}">查看详情</button>` : ""}
               <button class="btn btn-ghost" data-act="copy" data-no="${o.orderNo}" title="复制订单号">复制单号</button>
             </div>

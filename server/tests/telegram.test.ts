@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { getTelegramBotCredentials, validateTelegramInitData } from "../src/utils/telegram.js";
 import { createStreamingMultipartPayload, resolveMiniAppUrl, withMiniAppLaunchButton } from "../src/services/telegramBot.js";
+import { buildPreviewVideoCaption } from "../src/services/telegramPublisher.js";
 
 function makeInitData(token: string, authDate: number): string {
   const params = new URLSearchParams({
@@ -63,6 +64,26 @@ test("Bot 私信统一追加受控 Mini App 入口，且不重复覆盖业务按
   assert.equal(stable.inline_keyboard.length, 2, "已有 Mini App 按钮时不得重复追加");
   assert.equal(stable.inline_keyboard[1]?.[0]?.web_app?.url, "https://mini.example.com/");
   assert.equal(resolveMiniAppUrl("javascript:alert(1)"), "https://bdsm.linkx.club/");
+});
+
+test("免费频道试看文案只导向站外 H5 的 USDT 收银台，不导向 Mini App", () => {
+  const withProduct = buildPreviewVideoCaption({
+    id: "content-test-001",
+    productId: "product-test-001",
+    title: "测试试看",
+    description: "测试说明",
+  });
+  assert.match(withProduct.caption, /h5-pay\.html\?productId=product-test-001/);
+  assert.doesNotMatch(withProduct.caption, /startapp=|Mini App/);
+
+  const withoutProduct = buildPreviewVideoCaption({
+    id: "content-test-002",
+    productId: null,
+    title: "免费内容",
+    description: "测试说明",
+  });
+  assert.match(withoutProduct.caption, /\?content=content-test-002/);
+  assert.doesNotMatch(withoutProduct.caption, /h5-pay\.html/);
 });
 
 test("对象存储视频以真实流式 multipart 字节上传，绝不把 Readable 序列化成对象", async () => {
