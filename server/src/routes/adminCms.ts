@@ -504,7 +504,25 @@ async function queueTelegramPublishForContent(input: {
   }
   if (plans.length === 0) return { ok: false, status: 400, error: "publish_plan_empty", message: "没有任何合法的频道发布计划。" };
 
-  const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([content.tags, input.telegramTags || []]);
+  // 内容的 SEO/GEO 关键词优先；若单条内容未配置关键词，则继承平台默认关键词。
+  // 这些词经统一清洗后作为 Telegram Hashtag，不会泄露任何频道或支付信息。
+  const platformMetadata = await prisma.platformMetadata.findUnique({ where: { id: "default" } });
+  const contentKeywordSources = [
+    normalizeKeywordList(content.seoKeywords),
+    normalizeKeywordList(content.geoKeywords),
+  ];
+  const hasContentKeywords = contentKeywordSources.some((items) => items.length > 0);
+  const effectiveTelegramKeywordSources = hasContentKeywords
+    ? contentKeywordSources
+    : [
+      normalizeKeywordList(platformMetadata?.seoKeywords),
+      normalizeKeywordList(platformMetadata?.geoKeywords),
+    ];
+  const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([
+    content.tags,
+    input.telegramTags || [],
+    ...effectiveTelegramKeywordSources,
+  ]);
   const createdJobs = await prisma.$transaction(async (tx: any) => {
     const jobs: any[] = [];
     const now = Date.now();

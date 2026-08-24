@@ -1597,7 +1597,7 @@ const ContentsPage: React.FC = () => {
                             name="telegramTags"
                             label="Telegram 标签（可选，仅用于发布 caption）"
                             style={{ marginBottom: 0 }}
-                            extra="服务端会自动清洗、去重、限长，并与内容标签合并生成 #标签1 #标签2。SEO/GEO 关键词不会自动进入这里。"
+                            extra="服务端会自动清洗、去重、限长，并与内容标签合并生成 #标签1 #标签2。内容 SEO/GEO 关键词优先；未配置时自动继承平台默认关键词。"
                           >
                             <Select mode="tags" placeholder="例如：夜间, calm_mode" />
                           </Form.Item>

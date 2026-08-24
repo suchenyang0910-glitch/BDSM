@@ -162,7 +162,7 @@ test("平台 SEO 设置遵循读写权限：operator 可读，auditor 可读，e
   }
 });
 
-test("start-telegram-publish 规范化标签、落库存储且不泄露 SEO/GEO 关键词", async () => {
+test("start-telegram-publish 优先使用内容关键词，并在内容未配置时继承平台关键词", async () => {
   const app = await createApp(prisma);
   try {
     const editorCookie = await loginAdmin(app, "editor");
@@ -185,7 +185,7 @@ test("start-telegram-publish 规范化标签、落库存储且不泄露 SEO/GEO 
         accessType: "membership",
         status: "draft",
         tags: ["睡眠"],
-        seoKeywords: ["不应泄露", "默认词"],
+        seoKeywords: ["内容关键词", "默认词"],
         fullVideoAssetId: mediaAsset.id,
       },
     });
@@ -204,8 +204,8 @@ test("start-telegram-publish 规范化标签、落库存储且不泄露 SEO/GEO 
     const startBody = startResp.json() as any;
     assert.deepEqual(
       startBody.normalizedTelegramTags,
-      ["#睡眠", "#夜间", "#calmmode", "#默认词"],
-      "should normalize, dedupe and clip telegram tags only from content tags + telegramTags",
+      ["#睡眠", "#夜间", "#calmmode", "#默认词", "#内容关键词"],
+      "内容标签、手填标签和内容 SEO/GEO 关键词均应清洗后写入 Telegram tags",
     );
 
     const jobsResp = await app.inject({
@@ -215,8 +215,34 @@ test("start-telegram-publish 规范化标签、落库存储且不泄露 SEO/GEO 
     });
     assert.equal(jobsResp.statusCode, 200, jobsResp.body);
     const firstJob = (jobsResp.json() as any).items[0];
-    assert.deepEqual(firstJob.telegramTags, ["#睡眠", "#夜间", "#calmmode", "#默认词"]);
-    assert.ok(!String(firstJob.captionText || "").includes("不应泄露"), "SEO/GEO keywords must not leak into caption");
+    assert.deepEqual(firstJob.telegramTags, ["#睡眠", "#夜间", "#calmmode", "#默认词", "#内容关键词"]);
+
+    await prisma.platformMetadata.upsert({
+      where: { id: "default" },
+      update: { seoKeywords: ["平台关键词"], geoKeywords: ["平台主题"] },
+      create: { id: "default", seoKeywords: ["平台关键词"], geoKeywords: ["平台主题"] },
+    });
+    const fallbackContentId = crypto.randomUUID();
+    await prisma.content.create({
+      data: {
+        id: fallbackContentId,
+        title: "平台关键词回退测试",
+        accessType: "membership",
+        status: "draft",
+        fullVideoAssetId: mediaAsset.id,
+        seoKeywords: [],
+        geoKeywords: [],
+        tags: [],
+      },
+    });
+    const fallbackResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${fallbackContentId}/start-telegram-publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { channelKinds: ["membership_full"], reason: "验证平台关键词回退" },
+    });
+    assert.equal(fallbackResp.statusCode, 201, fallbackResp.body);
+    assert.deepEqual((fallbackResp.json() as any).normalizedTelegramTags, ["#平台关键词", "#平台主题"]);
   } finally {
     await app.close();
   }
