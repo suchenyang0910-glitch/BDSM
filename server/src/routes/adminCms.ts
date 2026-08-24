@@ -7,6 +7,8 @@ import { resolvePackageChannelId, resolveContentChannelId } from "../services/ch
 import {
   refRawChatId,
   type ChannelRef,
+  buildPrivateChannelPostUrl,
+  channelRefFingerprint,
   chatIdFingerprint,
   maskChatIdSafe,
 } from "../services/telegramBot.js";
@@ -842,6 +844,50 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         ...row,
         categories: row.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
       }, platform)));
+    },
+  );
+
+  // 后台内容列表的“前往私密视频”入口。链接只在此受控跳转边界生成，
+  // 不把 t.me/c/... 或频道标识作为 JSON 字段返回给浏览器。
+  fastify.get(
+    "/admin/contents/:id/private-video",
+    { preHandler: [requireAdmin("content:view")] },
+    async (req: any, reply) => {
+      const id = ZID.parse(req.params.id);
+      const content = await prisma.content.findUnique({
+        where: { id },
+        select: {
+          accessType: true,
+          packageId: true,
+          telegramMessageId: true,
+          telegramChatFingerprint: true,
+          package: { select: { channelId: true, channelIdCiphertext: true } },
+        },
+      });
+      if (!content) return reply.status(404).send({ error: "not_found", message: "内容不存在" });
+      if (content.accessType === "public" || content.accessType === "single") {
+        return reply.status(409).send({ error: "private_video_not_applicable", message: "该内容不使用私密频道完整视频交付" });
+      }
+      if (content.telegramMessageId == null || !content.telegramChatFingerprint) {
+        return reply.status(409).send({ error: "private_video_not_linked", message: "该内容尚未关联私密频道的视频消息" });
+      }
+
+      let channelRef: ChannelRef | null = null;
+      if (content.accessType === "membership") {
+        channelRef = await resolveMembershipChannelRef(prisma);
+      } else if (content.accessType === "package") {
+        const channelId = resolvePackageChannelId({
+          channelId: content.package?.channelId ?? null,
+          channelIdCiphertext: content.package?.channelIdCiphertext ?? null,
+        });
+        if (channelId != null) channelRef = refRawChatId(channelId);
+      }
+      if (!channelRef || content.telegramChatFingerprint !== channelRefFingerprint(channelRef)) {
+        return reply.status(409).send({ error: "private_video_channel_mismatch", message: "私密频道映射未完成或已变更，请重新关联频道消息" });
+      }
+      const targetUrl = buildPrivateChannelPostUrl(channelRef, content.telegramMessageId);
+      if (!targetUrl) return reply.status(409).send({ error: "private_video_link_unavailable", message: "无法生成该私密视频跳转入口" });
+      return reply.redirect(targetUrl, 302);
     },
   );
 

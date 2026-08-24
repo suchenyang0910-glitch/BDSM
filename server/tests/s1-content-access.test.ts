@@ -495,6 +495,62 @@ test("[S1-F2] 已解锁会员内容 access-link 定位到指定频道视频", as
 });
 
 // ============================================================
+// [S1-F3] 后台内容列表的私密视频入口：仅管理员会话可触发 302，
+// 频道标识不得出现在 JSON 响应体；该入口用于后台快速校验已发布视频。
+// ============================================================
+test("[S1-F3] 后台私密视频入口受控跳转到关联频道消息", async () => {
+  const originalAesKey = process.env.CRYPTO_CHAT_ID_AES_KEY;
+  process.env.CRYPTO_CHAT_ID_AES_KEY = "12345678901234567890123456789012";
+  const app = await buildTestApp(prisma);
+  const suffix = String(Date.now()).slice(-9);
+  const channelId = BigInt(`-1007${suffix}`);
+  let managedChannelId: string | null = null;
+  let contentId: string | null = null;
+  try {
+    const managed = await prisma.adminManagedChannel.create({
+      data: {
+        chatIdHmac: chatIdIndexKey(channelId),
+        chatIdCiphertextB64: encryptChatIdAesGcm(channelId),
+        deprecatedChatIdBig: channelId,
+        chatType: "channel",
+        title: `S1-F3 Channel ${suffix}`,
+        isPrivate: true,
+        purpose: "membership_main",
+        source: "manual_add",
+        botIsAdmin: true,
+        botCanInviteUsers: true,
+      },
+    });
+    managedChannelId = managed.id;
+    const content = await prisma.content.create({
+      data: {
+        title: `S1-F3 Target ${suffix}`,
+        accessType: "membership",
+        status: "published",
+        telegramMessageId: BigInt(419),
+        telegramChatFingerprint: chatIdIndexKey(channelId),
+      },
+    });
+    contentId = content.id;
+    const adminCookie = await loginAdmin(app, "editor");
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/admin/contents/${content.id}/private-video`,
+      headers: { cookie: adminCookie },
+    });
+    assert.equal(response.statusCode, 302, response.body);
+    assert.equal(response.headers.location, `https://t.me/c/${String(channelId).slice(4)}/419`);
+    assertNoSensitiveLeaks(response.body, "admin private-video redirect body");
+  } finally {
+    if (contentId) await prisma.content.delete({ where: { id: contentId } }).catch(() => {});
+    if (managedChannelId) await prisma.adminManagedChannel.delete({ where: { id: managedChannelId } }).catch(() => {});
+    if (originalAesKey === undefined) delete process.env.CRYPTO_CHAT_ID_AES_KEY;
+    else process.env.CRYPTO_CHAT_ID_AES_KEY = originalAesKey;
+    await app.close();
+  }
+});
+
+// ============================================================
 // [G] membership 内容：CREATE → PATCH → SUBMIT_REVIEW → PUBLISH
 //     全链路每个动作的审计日志 before/after 均 stripSensitiveFields 无 -100 / t.me/+
 // ============================================================

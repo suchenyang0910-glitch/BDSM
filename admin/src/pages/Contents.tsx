@@ -887,6 +887,23 @@ const ContentsPage: React.FC = () => {
 
   const columns: ColumnsType<ContentItem> = [
     {
+      title: "封面",
+      key: "cover",
+      width: 88,
+      render: (_: any, r) => {
+        const src = r.coverUrl || r.thumbnailUrl;
+        if (!src) return <Text type="secondary">—</Text>;
+        return (
+          <img
+            src={src}
+            alt=""
+            style={{ width: 76, height: 43, display: "block", objectFit: "cover", borderRadius: 6, background: "#f0f0f0" }}
+            onError={(event) => { event.currentTarget.style.visibility = "hidden"; }}
+          />
+        );
+      },
+    },
+    {
       title: "标题",
       dataIndex: "title",
       key: "title",
@@ -957,6 +974,28 @@ const ContentsPage: React.FC = () => {
         const m = Math.floor(s / 60);
         const r = s % 60;
         return `${m}分${r > 0 ? `${r}秒` : ""}`;
+      },
+    },
+    {
+      title: "私密视频",
+      key: "privateVideo",
+      width: 128,
+      render: (_: any, r) => {
+        const isPrivateContent = r.accessType === "membership" || r.accessType === "package";
+        const isLinked = Boolean(r.telegramMessageId && r.telegramChatFingerprint);
+        if (!isPrivateContent) return <Text type="secondary">—</Text>;
+        if (!isLinked) return <Tag>未关联</Tag>;
+        return (
+          <Button
+            type="link"
+            size="small"
+            href={`/api/admin/contents/${encodeURIComponent(r.id)}/private-video`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            前往视频
+          </Button>
+        );
       },
     },
     { title: "排序", dataIndex: "sortOrder", key: "sortOrder", width: 70 },
