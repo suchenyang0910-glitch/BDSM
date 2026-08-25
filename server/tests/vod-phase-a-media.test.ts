@@ -992,17 +992,31 @@ test("Phase A: multipart full video auto-binds content and publish jobs referenc
       orderBy: [{ contentId: "asc" }],
       select: { contentId: true, mediaAssetId: true, videoAssetId: true, channelKind: true },
     });
+    const sortByDeliveryKind = (rows: Array<{ contentId: string | null; mediaAssetId: string | null; videoAssetId: string | null; channelKind: string }>) =>
+      rows.slice().sort((left, right) => {
+        const rank = (channelKind: string) => {
+          switch (channelKind) {
+            case "membership_full":
+              return 1;
+            case "package_full":
+              return 2;
+            default:
+              return 9;
+          }
+        };
+        return rank(left.channelKind) - rank(right.channelKind) || String(left.contentId || "").localeCompare(String(right.contentId || ""));
+      });
     assert.deepEqual(
-      storedJobs.map((job) => ({
+      sortByDeliveryKind(storedJobs.map((job) => ({
         contentId: job.contentId,
         mediaAssetId: job.mediaAssetId,
         videoAssetId: job.videoAssetId,
         channelKind: job.channelKind,
-      })),
-      [
+      }))),
+      sortByDeliveryKind([
         { contentId: membershipContentId, mediaAssetId: null, videoAssetId: membershipAssetId, channelKind: "membership_full" },
         { contentId: packageContentId, mediaAssetId: null, videoAssetId: packageAssetId, channelKind: "package_full" },
-      ],
+      ]),
     );
   } finally {
     restore();

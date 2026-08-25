@@ -1073,7 +1073,7 @@ model VideoAsset {
   contentId         String           @map("content_id")
   uploadSessionId   String?          @unique @map("upload_session_id")
   kind              VideoAssetKind   @map("kind")
-  objectKey         String           @unique @map("object_key") @db.VarChar(1024)
+  objectKey         String           @map("object_key") @db.VarChar(1024)
   originalFilename  String?          @map("original_filename") @db.VarChar(512)
   mimeType          String           @map("mime_type") @db.VarChar(128)
   byteSize          BigInt           @map("byte_size")
@@ -1095,6 +1095,7 @@ model VideoAsset {
   @@index([contentId, kind, createdAt])
   @@index([contentId, status])
   @@index([status, createdAt])
+  @@index([objectKey])
   @@map("video_assets")
 }
 

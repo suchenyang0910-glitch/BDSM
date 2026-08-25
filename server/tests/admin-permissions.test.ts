@@ -693,7 +693,7 @@ test("public 内容绑定完整视频必须返回 full_video_not_allowed_for_pub
     const superCookie = await loginAdmin(app, "superAdmin");
     const mediaAsset = await seedReadyVideoAsset(prisma, {
       id: `full-video-public-forbidden-${crypto.randomUUID()}`,
-      contentId: TEST_KNOWN_IDS.contentMembership,
+      contentId: TEST_KNOWN_IDS.contentPublic,
       filename: "public-full.mp4",
     });
     const resp = await app.inject({
@@ -707,6 +707,72 @@ test("public 内容绑定完整视频必须返回 full_video_not_allowed_for_pub
     });
     assert.equal(resp.statusCode, 400, resp.body);
     assert.equal((resp.json() as any).error, "full_video_not_allowed_for_public");
+  } finally {
+    await app.close();
+  }
+});
+
+test("create 内容时跨内容绑定完整视频必须返回 asset_content_mismatch", async () => {
+  const app = await createApp(prisma);
+  try {
+    const superCookie = await loginAdmin(app, "superAdmin");
+    const foreignAsset = await seedReadyVideoAsset(prisma, {
+      id: `foreign-create-video-${crypto.randomUUID()}`,
+      contentId: TEST_KNOWN_IDS.contentMembership,
+      filename: "foreign-create.mp4",
+    });
+    const beforeCount = await prisma.content.count();
+    const resp = await app.inject({
+      method: "POST",
+      url: "/api/admin/contents",
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        title: "跨内容绑定完整视频（创建）",
+        accessType: "membership",
+        fullVideoAssetId: foreignAsset.id,
+        fullVideoAssetIds: [foreignAsset.id],
+        reason: "create should reject foreign full video asset",
+      },
+    });
+    assert.equal(resp.statusCode, 409, resp.body);
+    assert.equal((resp.json() as any).error, "asset_content_mismatch");
+    const afterCount = await prisma.content.count();
+    assert.equal(afterCount, beforeCount, "跨内容绑定在创建阶段被拦截后，不应留下新内容脏写");
+  } finally {
+    await app.close();
+  }
+});
+
+test("edit 内容时跨内容绑定完整视频必须返回 asset_content_mismatch", async () => {
+  const app = await createApp(prisma);
+  try {
+    const superCookie = await loginAdmin(app, "superAdmin");
+    const foreignContentId = crypto.randomUUID();
+    await prisma.content.create({
+      data: {
+        id: foreignContentId,
+        title: "foreign membership draft",
+        accessType: "membership",
+        status: "draft",
+      },
+    });
+    const foreignAsset = await seedReadyVideoAsset(prisma, {
+      id: `foreign-edit-video-${crypto.randomUUID()}`,
+      contentId: foreignContentId,
+      filename: "foreign-edit.mp4",
+    });
+    const resp = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/contents/${encodeURIComponent(TEST_KNOWN_IDS.contentMembership)}`,
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        fullVideoAssetId: foreignAsset.id,
+        fullVideoAssetIds: [foreignAsset.id],
+        reason: "edit should reject foreign full video asset",
+      },
+    });
+    assert.equal(resp.statusCode, 409, resp.body);
+    assert.equal((resp.json() as any).error, "asset_content_mismatch");
   } finally {
     await app.close();
   }

@@ -362,6 +362,7 @@ async function listFreePreviewDistributionTargets(prisma: PrismaClient): Promise
 
 interface ContentAccessValidationContext {
   prisma: PrismaClient;
+  targetContentId?: string | null;
   accessType: AccessTypeBound;
   packageId?: string | null;
   productId?: string | null;
@@ -411,7 +412,7 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   | { ok: true }
   | { ok: false; status: number; error: string; message?: string; details?: any }
 > {
-  const { prisma, accessType, packageId, productId, coverAssetId, previewAssetId, fullVideoAssetId } = ctx;
+  const { prisma, targetContentId, accessType, packageId, productId, coverAssetId, previewAssetId, fullVideoAssetId } = ctx;
   const fullVideoAssetIds = normalizeFullVideoAssetIds(ctx.fullVideoAssetIds, fullVideoAssetId);
 
   if (accessType === "single") {
@@ -445,10 +446,19 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   for (const assetId of fullVideoAssetIds) {
     const asset = await prisma.videoAsset.findUnique({
       where: { id: assetId },
-      select: { id: true, status: true, kind: true, deletedAt: true },
+      select: { id: true, contentId: true, status: true, kind: true, deletedAt: true },
     });
     if (!asset) {
       return { ok: false, status: 404, error: "fullVideoAssetId_not_found", message: `指定的完整视频不存在（fullVideoAssetId=${assetId}），请先完成完整视频上传。` };
+    }
+    if (targetContentId && asset.contentId !== targetContentId) {
+      return {
+        ok: false,
+        status: 409,
+        error: "asset_content_mismatch",
+        message: "完整视频只允许绑定到其所属内容，不能跨内容复用或挪用其他内容的源视频。",
+        details: { assetId, assetContentId: asset.contentId, targetContentId },
+      };
     }
     if (asset.deletedAt || asset.status === "deleted") {
       return { ok: false, status: 409, error: "fullVideoAssetId_not_ready", message: "指定的完整视频已删除，请重新上传。" };
@@ -2032,8 +2042,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     async (req: any, reply) => {
       const body = ZCONTENT_CREATE.parse(req.body);
       const meta = adminMeta(req);
+      const contentId = cryptoRandomUuid();
       const preCheck = await validateContentAccessTypeConstraints({
         prisma,
+        targetContentId: contentId,
         accessType: body.accessType as AccessTypeBound,
         packageId: body.packageId,
         productId: body.productId,
@@ -2099,6 +2111,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const result = await prisma.$transaction(async (tx: any) => {
         const created = await tx.content.create({
           data: {
+            id: contentId,
             ...data,
             categories: categoryIds.length
               ? { create: categoryIds.map((cid, i) => ({ categoryId: cid, displayOrder: i, assignedBy: meta.adminId })) }
@@ -2158,6 +2171,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const mergedFullVideoAssetId = mergedFullVideoAssetIds[0] ?? null;
       const preCheck = await validateContentAccessTypeConstraints({
         prisma,
+        targetContentId: id,
         accessType: mergedAccessType,
         packageId: mergedPackageId,
         productId: mergedProductId,
