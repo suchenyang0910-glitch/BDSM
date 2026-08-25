@@ -60,17 +60,33 @@ export type RequiredObjectStorageEnv = {
   publicBaseUrl?: string;
 };
 
+export type PrivateObjectStorageAssetKind = "cover" | "preview_source" | "full_source";
+
+export type PrivateObjectStorageInitInput = {
+  sessionId: string;
+  objectKey: string;
+  mimeType: string;
+  contentLength: number;
+  expectedSha256: string;
+};
+
+export type PrivateObjectStorageInitResult = {
+  uploadUrl: string;
+  uploadExpiresAt: Date;
+  expectedHttpHeaders: Record<string, string>;
+};
+
 /** Only assets that are intended to appear in the public catalog may be public. */
 export function isPublicMediaAssetKind(kind: MediaAssetKind): boolean {
   return kind === "cover_image" || kind === "preview_video";
 }
 
 const REQUIRED_ENV_KEYS = [
-  "S3_ENDPOINT",
-  "S3_REGION",
-  "S3_BUCKET",
-  "S3_ACCESS_KEY_ID",
-  "S3_SECRET_ACCESS_KEY",
+  "OBJECT_STORAGE_ENDPOINT",
+  "OBJECT_STORAGE_REGION",
+  "OBJECT_STORAGE_BUCKET",
+  "OBJECT_STORAGE_ACCESS_KEY",
+  "OBJECT_STORAGE_SECRET_KEY",
 ] as const;
 
 let _cachedEnv: RequiredObjectStorageEnv | null = null;
@@ -80,7 +96,7 @@ export function requireObjectStorageEnv(): RequiredObjectStorageEnv {
   if (_cachedEnv) return _cachedEnv;
   const missing: string[] = [];
   for (const k of REQUIRED_ENV_KEYS) {
-    const v = process.env[k];
+    const v = readObjectStorageEnvValue(k);
     if (!v || !String(v).trim()) missing.push(k);
   }
   if (missing.length > 0) {
@@ -93,12 +109,14 @@ export function requireObjectStorageEnv(): RequiredObjectStorageEnv {
     throw new Error("OBJECT_STORAGE_ENV_MISSING");
   }
   const env: RequiredObjectStorageEnv = {
-    endpoint: String(process.env.S3_ENDPOINT).trim(),
-    region: String(process.env.S3_REGION).trim(),
-    bucket: String(process.env.S3_BUCKET).trim(),
-    accessKeyId: String(process.env.S3_ACCESS_KEY_ID).trim(),
-    secretAccessKey: String(process.env.S3_SECRET_ACCESS_KEY).trim(),
-    publicBaseUrl: process.env.S3_PUBLIC_BASE_URL ? String(process.env.S3_PUBLIC_BASE_URL).trim() : undefined,
+    endpoint: String(readObjectStorageEnvValue("OBJECT_STORAGE_ENDPOINT")).trim(),
+    region: String(readObjectStorageEnvValue("OBJECT_STORAGE_REGION")).trim(),
+    bucket: String(readObjectStorageEnvValue("OBJECT_STORAGE_BUCKET")).trim(),
+    accessKeyId: String(readObjectStorageEnvValue("OBJECT_STORAGE_ACCESS_KEY")).trim(),
+    secretAccessKey: String(readObjectStorageEnvValue("OBJECT_STORAGE_SECRET_KEY")).trim(),
+    publicBaseUrl: readObjectStorageEnvValue("OBJECT_STORAGE_PUBLIC_BASE_URL")
+      ? String(readObjectStorageEnvValue("OBJECT_STORAGE_PUBLIC_BASE_URL")).trim()
+      : undefined,
   };
   if (!/^https?:\/\//i.test(env.endpoint)) {
     emitSafetyEvent({ event: "object_storage_env_invalid", errorClass: "business", note: "endpoint_missing_http_prefix_len_limit_64" });
@@ -106,6 +124,48 @@ export function requireObjectStorageEnv(): RequiredObjectStorageEnv {
   }
   _cachedEnv = env;
   return env;
+}
+
+function readObjectStorageEnvValue(key: string): string | undefined {
+  const direct = process.env[key];
+  if (direct && String(direct).trim()) return String(direct).trim();
+  const legacyMap: Record<string, string> = {
+    OBJECT_STORAGE_ENDPOINT: "S3_ENDPOINT",
+    OBJECT_STORAGE_REGION: "S3_REGION",
+    OBJECT_STORAGE_BUCKET: "S3_BUCKET",
+    OBJECT_STORAGE_ACCESS_KEY: "S3_ACCESS_KEY_ID",
+    OBJECT_STORAGE_SECRET_KEY: "S3_SECRET_ACCESS_KEY",
+    OBJECT_STORAGE_PUBLIC_BASE_URL: "S3_PUBLIC_BASE_URL",
+  };
+  const legacy = legacyMap[key];
+  if (!legacy) return undefined;
+  const legacyValue = process.env[legacy];
+  return legacyValue && String(legacyValue).trim() ? String(legacyValue).trim() : undefined;
+}
+
+export function assertObjectStorageConfiguredOnStartup(): void {
+  requireObjectStorageEnv();
+}
+
+export function objectKeyPrefixForAssetKind(kind: PrivateObjectStorageAssetKind): "covers" | "previews" | "originals" {
+  if (kind === "cover") return "covers";
+  if (kind === "preview_source") return "previews";
+  return "originals";
+}
+
+export function generatePrivateObjectKey(kind: PrivateObjectStorageAssetKind, contentId: string, sessionId: string, originalFilename?: string | null): string {
+  const prefix = objectKeyPrefixForAssetKind(kind);
+  let ext = extname(originalFilename || "").slice(1).toLowerCase();
+  if (ext.length > 16) ext = ext.slice(0, 16);
+  const safeName = basename(originalFilename || "file")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 64)
+    .toLowerCase();
+  return `${prefix}/${contentId}/${sessionId}/${safeName}${ext ? `.${ext}` : ""}`;
+}
+
+export function isAllowedPrivateObjectKey(objectKey: string): boolean {
+  return /^(covers|previews|originals)\/[0-9a-z-]+\/[0-9a-z-]+\/[a-z0-9._-]+$/i.test(objectKey);
 }
 
 export function objectStorageBackend(): MediaAssetStorageBackend {
@@ -214,6 +274,40 @@ export async function createPresignedPutUpload(
   return { env, key, url, expiresAt, headers };
 }
 
+export async function createPrivatePresignedUpload(
+  input: PrivateObjectStorageInitInput,
+): Promise<PrivateObjectStorageInitResult> {
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  if (!isAllowedPrivateObjectKey(input.objectKey)) {
+    throw new Error("OBJECT_STORAGE_KEY_INVALID");
+  }
+  const contentLength = Number.isFinite(input.contentLength) ? Math.max(0, Math.floor(input.contentLength)) : 0;
+  const expiresSeconds = 15 * 60;
+  const headers: Record<string, string> = {
+    "Content-Type": input.mimeType || "application/octet-stream",
+    "Content-Length": String(contentLength),
+    "X-Amz-Checksum-Sha256": String(input.expectedSha256).trim(),
+  };
+  const cmd = new PutObjectCommand({
+    Bucket: env.bucket,
+    Key: input.objectKey,
+    ContentType: headers["Content-Type"],
+    ContentLength: contentLength > 0 ? contentLength : undefined,
+    ChecksumSHA256: String(input.expectedSha256).trim(),
+    Metadata: {
+      uploadsessionid: input.sessionId,
+      sha256: String(input.expectedSha256).trim(),
+    },
+  });
+  const uploadUrl = await getSignedUrl(s3, cmd as any, { expiresIn: expiresSeconds });
+  return {
+    uploadUrl,
+    uploadExpiresAt: new Date(Date.now() + expiresSeconds * 1000),
+    expectedHttpHeaders: headers,
+  };
+}
+
 function shortFp(s: string | number | bigint | null | undefined): string {
   const v = s == null ? "" : String(s);
   if (!v) return "";
@@ -244,6 +338,26 @@ export async function headObject(
       userError: http === 404 ? "upload_file_not_found_retry_upload" : "object_storage_service_unavailable",
     };
   }
+}
+
+export function normalizeHeadMetadata(head?: HeadObjectCommandOutput): {
+  contentLength: bigint | null;
+  contentType: string | null;
+  checksumSha256: string | null;
+  metadataSha256: string | null;
+  uploadSessionId: string | null;
+  etag: string | null;
+} {
+  const metadata = head?.Metadata || {};
+  const etagRaw = typeof head?.ETag === "string" ? head.ETag : null;
+  return {
+    contentLength: typeof head?.ContentLength === "number" ? BigInt(head.ContentLength) : null,
+    contentType: typeof head?.ContentType === "string" ? head.ContentType : null,
+    checksumSha256: typeof (head as any)?.ChecksumSHA256 === "string" ? String((head as any).ChecksumSHA256) : null,
+    metadataSha256: typeof metadata?.sha256 === "string" ? String(metadata.sha256) : null,
+    uploadSessionId: typeof metadata?.uploadsessionid === "string" ? String(metadata.uploadsessionid) : null,
+    etag: etagRaw ? etagRaw.replace(/^"|"$/g, "") : null,
+  };
 }
 
 export async function deleteObjectSafe(bucket: string, key: string, adminId?: string | null): Promise<void> {

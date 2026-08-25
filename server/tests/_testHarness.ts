@@ -159,6 +159,10 @@ export function assertTestDatabaseName(dbName: string): void {
 
 const ALL_TABLES_ORDERED = [
   "telegram_channel_messages",
+  "watch_events",
+  "transcode_jobs_v2",
+  "video_assets",
+  "upload_sessions",
   "usdt_monitor_cursors",
   "usdt_monitor_runtime_states",
   "analytics_events",

@@ -30,6 +30,7 @@ import {
   collectRequiredSecretProblems,
 } from "./utils/crypto.js";
 import { emitSafetyEvent, emitStructuredLog } from "./utils/structuredError.js";
+import { assertObjectStorageConfiguredOnStartup } from "./services/objectStorage.js";
 
 /**
  * 【P0-B 红线】Prisma 自带的默认 log 模式会把原始 SQL/Pxxxx clientVersion 写到 stderr/stdout。
@@ -127,6 +128,25 @@ async function main() {
       }
     } else {
       console.log("[crypto:assertRequiredSecrets] ✅ all required secrets validated (HMAC/AES/JWT/DB + Bot rules).");
+    }
+  }
+
+  {
+    const shouldCheckObjectStorage =
+      (process.env.VIDEO_DELIVERY_MODE && process.env.VIDEO_DELIVERY_MODE !== "disabled") ||
+      process.env.OBJECT_STORAGE_ENDPOINT ||
+      process.env.S3_ENDPOINT;
+    if (shouldCheckObjectStorage) {
+      try {
+        assertObjectStorageConfiguredOnStartup();
+        console.log("[object-storage] ✅ object storage configuration validated.");
+      } catch (error) {
+        if (process.env.NODE_ENV === "test") {
+          console.warn("[object-storage] (NODE_ENV=test) object storage configuration missing or invalid.");
+        } else {
+          throw error;
+        }
+      }
     }
   }
 

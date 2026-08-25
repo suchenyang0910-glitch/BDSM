@@ -22,12 +22,16 @@ import {
 } from "../services/freeChannels.js";
 import {
   createPresignedPutUpload,
+  createPrivatePresignedUpload,
   headObject,
+  normalizeHeadMetadata,
   deleteObjectSafe,
   makePublicUrl,
   objectStorageBackend,
   requireObjectStorageEnv,
   generateStorageKey,
+  generatePrivateObjectKey,
+  isAllowedPrivateObjectKey,
 } from "../services/objectStorage.js";
 import {
   initTelegramPublisher,
@@ -48,6 +52,26 @@ const BannerStatusZ = z.enum(["draft", "active", "inactive", "scheduled", "archi
 const BannerTargetTypeZ = z.enum(["content", "category", "package", "membership", "external"]);
 // Telegram 本地 Bot API 对单文件上传的实际能力上限为 2GB；后台与 API 必须一致。
 const MAX_FULL_VIDEO_BYTES = 2n * 1024n * 1024n * 1024n;
+const VOD_UPLOAD_SESSION_TTL_MS = 15 * 60 * 1000;
+const VOD_ASSET_KIND_Z = z.enum(["cover", "preview_source", "full_source"]);
+const VOD_ERROR_CLASS = {
+  unauthorized: "unauthorized",
+  forbidden: "forbidden",
+  invalid_input: "invalid_input",
+  content_not_found: "content_not_found",
+  upload_session_expired: "upload_session_expired",
+  upload_session_invalid: "upload_session_invalid",
+  object_not_found: "object_not_found",
+  object_metadata_mismatch: "object_metadata_mismatch",
+  object_storage_unavailable: "object_storage_unavailable",
+  deleted: "deleted",
+} as const;
+
+const VOD_MIME_RULES: Record<z.infer<typeof VOD_ASSET_KIND_Z>, { prefixes: string[]; maxBytes: bigint }> = {
+  cover: { prefixes: ["image/"], maxBytes: 20n * 1024n * 1024n },
+  preview_source: { prefixes: ["video/"], maxBytes: 1024n * 1024n * 1024n },
+  full_source: { prefixes: ["video/"], maxBytes: 8n * 1024n * 1024n * 1024n },
+};
 
 function adminMeta(req: FastifyRequest) {
   const sess = (req as any).admin as AdminSession;
@@ -57,6 +81,51 @@ function adminMeta(req: FastifyRequest) {
     adminEmail: sess.email,
     ip: (req.ip as string) || null,
     ua: (req.headers["user-agent"] as string) || null,
+  };
+}
+
+function isMimeAllowedForVodAsset(kind: z.infer<typeof VOD_ASSET_KIND_Z>, mimeType: string): boolean {
+  const normalized = String(mimeType || "").trim().toLowerCase();
+  return VOD_MIME_RULES[kind].prefixes.some((prefix) => normalized.startsWith(prefix));
+}
+
+function isSizeAllowedForVodAsset(kind: z.infer<typeof VOD_ASSET_KIND_Z>, bytes: bigint): boolean {
+  return bytes > 0n && bytes <= VOD_MIME_RULES[kind].maxBytes;
+}
+
+function summarizeFilename(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const trimmed = String(name).trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= 40) return trimmed;
+  return `${trimmed.slice(0, 24)}...${trimmed.slice(-12)}`;
+}
+
+function sanitizeErrorClass(input: string | null | undefined): string | null {
+  if (!input) return null;
+  return String(input).trim().toLowerCase().replace(/[^a-z0-9_:-]/g, "").slice(0, 64) || null;
+}
+
+function summarizeVodAsset(row: any) {
+  const transcodeJob = row?.transcodeJobs?.[0] || null;
+  return {
+    id: row.id,
+    kind: row.kind,
+    filename: summarizeFilename(row.originalFilename),
+    byteSize: row.byteSize != null ? String(row.byteSize) : null,
+    mimeType: row.mimeType || null,
+    status: row.status,
+    errorClass: sanitizeErrorClass(row.errorClass),
+    verifiedAt: row.verifiedAt ? new Date(row.verifiedAt).toISOString() : null,
+    createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    transcode: transcodeJob
+      ? {
+          status: transcodeJob.status,
+          attemptCount: transcodeJob.attemptCount,
+          errorClass: sanitizeErrorClass(transcodeJob.errorClass),
+          queuedAt: transcodeJob.queuedAt ? new Date(transcodeJob.queuedAt).toISOString() : null,
+        }
+      : null,
   };
 }
 
@@ -886,6 +955,318 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         ...row,
         categories: row.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
       }, platform)));
+    },
+  );
+
+  const ZVOD_UPLOAD_SESSION = z.object({
+    assetKind: VOD_ASSET_KIND_Z,
+    filename: z.string().trim().min(1).max(512),
+    mimeType: z.string().trim().min(1).max(128),
+    byteSize: z.union([z.number().int().min(1), z.string().trim().min(1)]).transform((value) => BigInt(String(value))),
+    sha256: z.string().trim().min(32).max(128),
+  });
+  const ZVOD_COMPLETE = z.object({
+    uploadSessionId: z.string().uuid(),
+    proof: z.object({
+      etag: z.string().trim().max(128).optional().nullable(),
+      reportedPartCount: z.number().int().min(1).max(10_000).optional().nullable(),
+    }).optional().nullable(),
+  });
+  const vodPrisma = prisma as any;
+
+  fastify.post(
+    "/admin/contents/:contentId/assets/upload-session",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const contentId = ZID.parse(req.params.contentId);
+      const body = ZVOD_UPLOAD_SESSION.parse(req.body);
+      const meta = adminMeta(req);
+      const content = await prisma.content.findUnique({
+        where: { id: contentId },
+        select: { id: true, status: true },
+      });
+      if (!content) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.content_not_found, message: "内容不存在" });
+      }
+      if (!isMimeAllowedForVodAsset(body.assetKind, body.mimeType)) {
+        return reply.status(400).send({ error: VOD_ERROR_CLASS.invalid_input, errorClass: "mime_not_allowed", message: "文件 MIME 不在允许范围内" });
+      }
+      if (!isSizeAllowedForVodAsset(body.assetKind, body.byteSize)) {
+        return reply.status(400).send({ error: VOD_ERROR_CLASS.invalid_input, errorClass: "file_too_large", message: "文件大小超出当前媒体类型限制" });
+      }
+      const uploadSessionId = cryptoRandomUuid();
+      const objectKey = generatePrivateObjectKey(body.assetKind, contentId, uploadSessionId, body.filename);
+      if (!isAllowedPrivateObjectKey(objectKey)) {
+        emitSafetyEvent({ event: "vod_upload_session_key_invalid", errorClass: "business", adminId: meta.adminId, note: `content=${contentId}` });
+        return reply.status(500).send({ error: VOD_ERROR_CLASS.invalid_input, errorClass: "object_key_invalid", message: "对象存储路径生成失败" });
+      }
+      let uploadTarget;
+      try {
+        uploadTarget = await createPrivatePresignedUpload({
+          sessionId: uploadSessionId,
+          objectKey,
+          mimeType: body.mimeType,
+          contentLength: Number(body.byteSize),
+          expectedSha256: body.sha256,
+        });
+      } catch (error) {
+        emitSafetyEvent({ event: "vod_upload_session_create_failed", errorClass: "exhausted", adminId: meta.adminId, note: `kind=${body.assetKind}` }, error);
+        return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "对象存储暂不可用，无法创建上传会话" });
+      }
+      await prisma.$transaction(async (tx: any) => {
+        await tx.uploadSession.create({
+          data: {
+            id: uploadSessionId,
+            contentId,
+            assetKind: body.assetKind,
+            objectKey,
+            originalFilename: body.filename,
+            expectedSize: body.byteSize,
+            expectedMime: body.mimeType,
+            expectedSha256: body.sha256,
+            storageUploadId: null,
+            expiresAt: new Date(Date.now() + VOD_UPLOAD_SESSION_TTL_MS),
+            createdBy: meta.adminId,
+          },
+        });
+        await writeAudit(
+          tx,
+          meta,
+          "vod.upload_session.create",
+          "upload_session",
+          uploadSessionId,
+          null,
+          serialize({ contentId, assetKind: body.assetKind, byteSize: body.byteSize.toString() }),
+          `content=${contentId}`,
+        );
+      });
+      return reply.send({
+        uploadSessionId,
+        uploadUrl: uploadTarget.uploadUrl,
+        uploadExpiresAt: uploadTarget.uploadExpiresAt.toISOString(),
+        expectedHttpHeaders: uploadTarget.expectedHttpHeaders,
+      });
+    },
+  );
+
+  fastify.post(
+    "/admin/contents/:contentId/assets/complete",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const contentId = ZID.parse(req.params.contentId);
+      const body = ZVOD_COMPLETE.parse(req.body);
+      const meta = adminMeta(req);
+      const [content, session] = await Promise.all([
+        prisma.content.findUnique({ where: { id: contentId }, select: { id: true } }),
+        vodPrisma.uploadSession.findUnique({ where: { id: body.uploadSessionId } }),
+      ]);
+      if (!content) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.content_not_found, message: "内容不存在" });
+      }
+      if (!session || session.contentId !== contentId) {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "上传会话不存在或不属于当前内容" });
+      }
+      if (session.expiresAt.getTime() < Date.now()) {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_expired, message: "上传会话已过期，请重新发起上传" });
+      }
+      const existingAsset = await vodPrisma.videoAsset.findFirst({
+        where: { uploadSessionId: session.id },
+        include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+      });
+      if (session.completedAt && existingAsset) {
+        return reply.send({ ok: true, asset: summarizeVodAsset(existingAsset) });
+      }
+
+      let storageEnv;
+      try {
+        storageEnv = requireObjectStorageEnv();
+      } catch (error) {
+        emitSafetyEvent({ event: "vod_complete_storage_unavailable", errorClass: "exhausted", adminId: meta.adminId, note: `content=${contentId}` }, error);
+        return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "对象存储暂不可用，无法校验上传结果" });
+      }
+      const verify = await headObject(storageEnv.bucket, session.objectKey);
+      if (!verify.ok || !verify.head) {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.object_not_found, errorClass: sanitizeErrorClass(verify.userError), message: "对象存储中未找到上传文件，请重新上传" });
+      }
+      const headMeta = normalizeHeadMetadata(verify.head);
+      const expectedSize = BigInt(String(session.expectedSize));
+      const expectedMime = String(session.expectedMime || "").trim().toLowerCase();
+      const expectedSha256 = String(session.expectedSha256 || "").trim();
+      const mismatches: string[] = [];
+      if (headMeta.contentLength == null || headMeta.contentLength !== expectedSize) mismatches.push("byte_size");
+      if ((headMeta.contentType || "").trim().toLowerCase() !== expectedMime) mismatches.push("mime_type");
+      if (headMeta.uploadSessionId && headMeta.uploadSessionId !== session.id) mismatches.push("upload_session_id");
+      const observedSha256 = headMeta.checksumSha256 || headMeta.metadataSha256;
+      if (!observedSha256 || observedSha256 !== expectedSha256) mismatches.push("sha256");
+      if (mismatches.length > 0) {
+        emitSafetyEvent({
+          event: "vod_complete_object_mismatch",
+          errorClass: "conflict",
+          adminId: meta.adminId,
+          note: `content=${contentId} mismatches=${mismatches.join(",")}`,
+        });
+        return reply.status(409).send({
+          error: VOD_ERROR_CLASS.object_metadata_mismatch,
+          errorClass: "upload_verify_failed",
+          message: "上传对象校验失败，请确认文件与会话信息一致后重新上传",
+        });
+      }
+
+      const result = await prisma.$transaction(async (tx: any) => {
+        const completedSession = session.completedAt
+          ? session
+          : await tx.uploadSession.update({
+              where: { id: session.id },
+              data: { completedAt: new Date() },
+            });
+        const asset = existingAsset
+          ? await tx.videoAsset.update({
+              where: { id: existingAsset.id },
+              data: {
+                objectKey: session.objectKey,
+                originalFilename: session.originalFilename,
+                mimeType: session.expectedMime,
+                byteSize: expectedSize,
+                sha256: expectedSha256,
+                status: "verified",
+                errorClass: null,
+                verifiedAt: new Date(),
+              },
+            })
+          : await tx.videoAsset.create({
+              data: {
+                contentId,
+                uploadSessionId: completedSession.id,
+                kind: session.assetKind,
+                objectKey: session.objectKey,
+                originalFilename: session.originalFilename,
+                mimeType: session.expectedMime,
+                byteSize: expectedSize,
+                sha256: expectedSha256,
+                status: "verified",
+                verifiedAt: new Date(),
+              },
+            });
+        if (session.assetKind !== "cover") {
+          const existingJob = await tx.transcodeJob.findUnique({ where: { assetId: asset.id } });
+          if (!existingJob) {
+            await tx.transcodeJob.create({
+              data: {
+                contentId,
+                assetId: asset.id,
+                status: "queued",
+              },
+            });
+          }
+        }
+        await writeAudit(
+          tx,
+          meta,
+          "vod.asset.complete",
+          "video_asset",
+          asset.id,
+          null,
+          serialize({ contentId, kind: asset.kind, status: asset.status, byteSize: asset.byteSize.toString() }),
+          body.proof?.etag || null,
+        );
+        return tx.videoAsset.findUnique({
+          where: { id: asset.id },
+          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+        });
+      });
+
+      return reply.send({ ok: true, asset: summarizeVodAsset(result) });
+    },
+  );
+
+  fastify.get(
+    "/admin/contents/:contentId/media",
+    { preHandler: [requireAdmin("content:view")] },
+    async (req: any, reply) => {
+      const contentId = ZID.parse(req.params.contentId);
+      const content = await prisma.content.findUnique({
+        where: { id: contentId },
+        select: { id: true, status: true },
+      });
+      if (!content) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.content_not_found, message: "内容不存在" });
+      }
+      const [assets, pendingSessions] = await Promise.all([
+        vodPrisma.videoAsset.findMany({
+          where: { contentId, status: { not: "deleted" } },
+          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+          orderBy: [{ createdAt: "asc" }],
+        }),
+        vodPrisma.uploadSession.findMany({
+          where: { contentId, completedAt: null, expiresAt: { gte: new Date() } },
+          orderBy: [{ createdAt: "asc" }],
+        }),
+      ]);
+      const assetSessionIds = new Set(assets.map((item: any) => item.uploadSessionId).filter(Boolean));
+      const pendingItems = pendingSessions
+        .filter((session: any) => !assetSessionIds.has(session.id))
+        .map((session: any) => ({
+          id: session.id,
+          kind: session.assetKind,
+          filename: summarizeFilename(session.originalFilename),
+          byteSize: session.expectedSize != null ? String(session.expectedSize) : null,
+          mimeType: session.expectedMime || null,
+          status: "uploading",
+          errorClass: null,
+          verifiedAt: null,
+          createdAt: session.createdAt ? new Date(session.createdAt).toISOString() : null,
+          transcode: null,
+        }));
+      return reply.send({
+        contentStatus: content.status,
+        items: [...assets.map((row: any) => summarizeVodAsset(row)), ...pendingItems],
+      });
+    },
+  );
+
+  fastify.delete(
+    "/admin/contents/:contentId/assets/:assetId",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const contentId = ZID.parse(req.params.contentId);
+      const assetId = ZID.parse(req.params.assetId);
+      const meta = adminMeta(req);
+      const [content, asset] = await Promise.all([
+        prisma.content.findUnique({ where: { id: contentId }, select: { id: true, status: true } }),
+        vodPrisma.videoAsset.findFirst({
+          where: { id: assetId, contentId },
+          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+        }),
+      ]);
+      if (!content) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.content_not_found, message: "内容不存在" });
+      }
+      if (!asset) {
+        return reply.status(404).send({ error: "asset_not_found", message: "媒体记录不存在" });
+      }
+      if (content.status === "published" && meta.adminRole !== "super_admin") {
+        return reply.status(403).send({ error: VOD_ERROR_CLASS.forbidden, message: "已发布内容的媒体仅允许超管删除" });
+      }
+      const deleted = await prisma.$transaction(async (tx: any) => {
+        const updated = await tx.videoAsset.update({
+          where: { id: asset.id },
+          data: {
+            status: "deleted",
+            deletedAt: new Date(),
+            errorClass: VOD_ERROR_CLASS.deleted,
+          },
+        });
+        await tx.transcodeJob.updateMany({
+          where: { assetId: asset.id, status: { in: ["queued", "processing"] } },
+          data: { status: "cancelled", errorClass: VOD_ERROR_CLASS.deleted, finishedAt: new Date() },
+        });
+        await writeAudit(tx, meta, "vod.asset.delete", "video_asset", asset.id, serialize({ status: asset.status }), serialize({ status: "deleted" }), `content=${contentId}`);
+        return tx.videoAsset.findUnique({
+          where: { id: asset.id },
+          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+        });
+      });
+      return reply.send({ ok: true, asset: summarizeVodAsset(deleted) });
     },
   );
 

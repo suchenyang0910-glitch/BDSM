@@ -211,6 +211,7 @@ model User {
   deviceSessions  H5DeviceSession[]
   analyticsEvents AnalyticsEvent[]
   contentPreferences UserContentPreference[]
+  watchEvents     WatchEvent[]
   mergedFromUsers User[]    @relation("UserMergeTarget")
   mergedTargetUser User?    @relation("UserMergeTarget", fields: [mergedIntoUserId], references: [id], onDelete: SetNull)
 
@@ -380,6 +381,10 @@ model Content {
   fullVideoSegments  ContentFullVideoSegment[]
   publishJobs        TelegramPublishJob[]
   linkedChannelMessages TelegramChannelMessage[]
+  videoAssets        VideoAsset[]
+  uploadSessions     UploadSession[]
+  transcodeJobs      TranscodeJob[]
+  watchEvents        WatchEvent[]
 
   @@index([status, accessType])
   @@index([isFeatured, featuredSort])
@@ -706,6 +711,7 @@ model AdminUser {
   publishJobsAsCancelAdmin TelegramPublishJob[] @relation("PublishJobCancelAdmin")
   channelDiscoveryRequests AdminChannelDiscoveryRequest[] @relation("ChannelDiscoverySubmitAdmin")
   linkedChannelMessages TelegramChannelMessage[] @relation("ChannelMessageLinkAdmin")
+  createdUploadSessions UploadSession[] @relation("UploadSessionCreator")
 
   @@map("admin_users")
 }
@@ -968,6 +974,28 @@ enum MediaAssetKind {
   full_video
 }
 
+enum VideoAssetKind {
+  cover
+  preview_source
+  full_source
+}
+
+enum VideoAssetStatus {
+  pending_upload
+  uploaded
+  verified
+  failed
+  deleted
+}
+
+enum TranscodeJobStatus {
+  queued
+  processing
+  ready
+  failed
+  cancelled
+}
+
 enum MediaAssetStatus {
   initialized
   uploading
@@ -1023,6 +1051,95 @@ model MediaAsset {
   @@index([ownerAdminId, createdAt])
   @@index([storageBucket, storageKey])
   @@map("media_assets")
+}
+
+model VideoAsset {
+  id                String           @id @default(uuid())
+  contentId         String           @map("content_id")
+  uploadSessionId   String?          @unique @map("upload_session_id")
+  kind              VideoAssetKind   @map("kind")
+  objectKey         String           @unique @map("object_key") @db.VarChar(1024)
+  originalFilename  String?          @map("original_filename") @db.VarChar(512)
+  mimeType          String           @map("mime_type") @db.VarChar(128)
+  byteSize          BigInt           @map("byte_size")
+  sha256            String           @map("sha256") @db.VarChar(128)
+  status            VideoAssetStatus @default(pending_upload) @map("status")
+  errorClass        String?          @map("error_class") @db.VarChar(64)
+  verifiedAt        DateTime?        @map("verified_at")
+  deletedAt         DateTime?        @map("deleted_at")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  content           Content          @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  uploadSession     UploadSession?   @relation(fields: [uploadSessionId], references: [id], onDelete: SetNull)
+  transcodeJobs     TranscodeJob[]
+
+  @@index([contentId, kind, createdAt])
+  @@index([contentId, status])
+  @@index([status, createdAt])
+  @@map("video_assets")
+}
+
+model UploadSession {
+  id                String         @id @default(uuid())
+  contentId         String         @map("content_id")
+  assetKind         VideoAssetKind @map("asset_kind")
+  objectKey         String         @unique @map("object_key") @db.VarChar(1024)
+  originalFilename  String?        @map("original_filename") @db.VarChar(512)
+  expectedSize      BigInt         @map("expected_size")
+  expectedMime      String         @map("expected_mime") @db.VarChar(128)
+  expectedSha256    String         @map("expected_sha256") @db.VarChar(128)
+  storageUploadId   String?        @map("storage_upload_id") @db.VarChar(256)
+  expiresAt         DateTime       @map("expires_at")
+  completedAt       DateTime?      @map("completed_at")
+  createdBy         String?        @map("created_by")
+  createdAt         DateTime       @default(now()) @map("created_at")
+
+  content           Content        @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  creator           AdminUser?     @relation("UploadSessionCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  videoAsset        VideoAsset?
+
+  @@index([contentId, assetKind, createdAt])
+  @@index([expiresAt])
+  @@index([createdBy, createdAt])
+  @@map("upload_sessions")
+}
+
+model TranscodeJob {
+  id                String            @id @default(uuid())
+  contentId         String            @map("content_id")
+  assetId           String            @unique @map("asset_id")
+  status            TranscodeJobStatus @default(queued) @map("status")
+  attemptCount      Int               @default(0) @map("attempt_count")
+  errorClass        String?           @map("error_class") @db.VarChar(64)
+  queuedAt          DateTime          @default(now()) @map("queued_at")
+  startedAt         DateTime?         @map("started_at")
+  finishedAt        DateTime?         @map("finished_at")
+
+  content           Content           @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  asset             VideoAsset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([contentId, status, queuedAt])
+  @@index([status, queuedAt])
+  @@map("transcode_jobs_v2")
+}
+
+model WatchEvent {
+  id                String           @id @default(uuid())
+  userId            String?          @map("user_id")
+  contentId         String           @map("content_id")
+  eventName         String           @map("event_name") @db.VarChar(64)
+  occurredAt        DateTime         @default(now()) @map("occurred_at")
+  positionSec       Int?             @map("position_sec")
+  quality           String?          @db.VarChar(32)
+
+  user              User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  content           Content          @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@index([contentId, eventName, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([occurredAt])
+  @@map("watch_events")
 }
 
 enum TelegramPublishChannelKind {

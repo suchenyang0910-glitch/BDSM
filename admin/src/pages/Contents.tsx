@@ -69,26 +69,24 @@ const { Title, Text } = Typography;
 const { TextArea } = Input;
 const { Option } = Select;
 
-// ================== 新增类型：素材 & 发布任务 ==================
+// ================== Phase A：VOD 私有媒体类型 ==================
 export type MediaAssetKind = "cover_image" | "preview_video" | "full_video";
-export type MediaAssetStatus = "pending_upload" | "uploading" | "ready" | "failed" | "deleted";
+type ApiMediaKind = "cover" | "preview_source" | "full_source";
+type ApiMediaStatus = "uploading" | "verified" | "failed" | "deleted";
+export type MediaAssetStatus = "uploading" | "ready" | "failed" | "deleted";
 
 export type MediaAssetItem = {
   id: string;
   kind: MediaAssetKind;
   originalFilename: string;
-  mimeType: string;
+  mimeType: string | null;
   contentLength: number;
   status: MediaAssetStatus;
-  storagePublicUrl?: string | null;
-  durationSeconds?: number | null;
-  widthPixels?: number | null;
-  heightPixels?: number | null;
-  hasWatermark?: boolean | null;
   lastErrorClass?: string | null;
-  lastErrorNote?: string | null;
   lastVerifiedAt?: string | null;
   createdAt?: string;
+  transcodeStatus?: string | null;
+  transcodeErrorClass?: string | null;
 };
 
 export type TelegramPublishJobStatus =
@@ -133,77 +131,85 @@ export type ChannelMessageItem = {
   messageIdMasked?: string | null;
 };
 
-// ================== 新增素材 & 发布 API 封装 ==================
+// ================== Phase A 媒体 API 封装 ==================
 type InitMediaUploadReq = {
-  kind: MediaAssetKind;
-  originalFilename: string;
+  assetKind: ApiMediaKind;
+  filename: string;
   mimeType: string;
-  contentLength: number;
-  durationSeconds?: number | null;
-  expectedChecksumSha256?: string | null;
+  byteSize: number;
+  sha256: string;
 };
 type InitMediaUploadResp = {
-  mediaAssetId: string;
+  uploadSessionId: string;
   uploadUrl: string;
+  uploadExpiresAt: string;
   expectedHttpHeaders: Record<string, string>;
 };
-type CompleteMediaUploadReq = { ok: boolean; reportedContentLength?: number | null; etag?: string | null; error?: string | null; reason?: string | null };
-type CompleteMediaUploadResp = { ok: boolean; id: string; status: MediaAssetStatus; publicUrl?: string | null; contentLength?: string | null };
+type CompleteMediaUploadReq = { uploadSessionId: string; proof?: { etag?: string | null } };
+type CompleteMediaUploadResp = { ok: boolean; asset: any };
+type ContentMediaResp = { contentStatus: string; items: any[] };
 type StartTelegramPublishReq = { channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">; telegramTags?: string[]; reason?: string };
 type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }>; normalizedTelegramTags?: string[] };
 
-export async function initMediaUpload(req: InitMediaUploadReq): Promise<InitMediaUploadResp> {
-  const res = await http.post("/admin/media/init-upload", req, { timeout: 20_000 });
-  return res.data;
+function mapApiMediaKind(kind: ApiMediaKind): MediaAssetKind {
+  if (kind === "cover") return "cover_image";
+  if (kind === "preview_source") return "preview_video";
+  return "full_video";
 }
 
-/**
- * 在浏览器端读取本地视频 metadata；失败不阻断上传，后台仍可手动填写。
- * 只读取 duration，不上传、缓存或记录本地文件内容。
- */
-async function readLocalVideoDurationSeconds(file: File): Promise<number | null> {
-  if (!String(file.type || "").startsWith("video/")) return null;
-  const objectUrl = URL.createObjectURL(file);
-  return new Promise((resolve) => {
-    const video = document.createElement("video");
-    let settled = false;
-    const finish = (value: number | null) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      video.removeAttribute("src");
-      video.load();
-      URL.revokeObjectURL(objectUrl);
-      resolve(value);
-    };
-    const timeout = window.setTimeout(() => finish(null), 10_000);
-    video.preload = "metadata";
-    video.onloadedmetadata = () => {
-      const seconds = Math.round(Number(video.duration));
-      finish(Number.isFinite(seconds) && seconds > 0 && seconds <= 86_400 ? seconds : null);
-    };
-    video.onerror = () => finish(null);
-    video.src = objectUrl;
-  });
+function mapUiMediaKind(kind: MediaAssetKind): ApiMediaKind {
+  if (kind === "cover_image") return "cover";
+  if (kind === "preview_video") return "preview_source";
+  return "full_source";
+}
+
+function mapApiMediaStatus(status: ApiMediaStatus): MediaAssetStatus {
+  if (status === "verified") return "ready";
+  if (status === "failed") return "failed";
+  if (status === "deleted") return "deleted";
+  return "uploading";
+}
+
+export async function initMediaUpload(contentId: string, req: InitMediaUploadReq): Promise<InitMediaUploadResp> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/assets/upload-session`, req, { timeout: 20_000 });
+  return res.data;
 }
 
 function normalizeMediaAsset(raw: any): MediaAssetItem {
   return {
-    ...raw,
-    contentLength: Number(raw?.contentLength || 0),
-    storagePublicUrl: raw?.storagePublicUrl ?? null,
-  } as MediaAssetItem;
+    id: String(raw?.id || ""),
+    kind: mapApiMediaKind(raw?.kind as ApiMediaKind),
+    originalFilename: String(raw?.filename || "未命名文件"),
+    mimeType: raw?.mimeType || null,
+    contentLength: Number(raw?.byteSize || 0),
+    status: mapApiMediaStatus((raw?.status || "uploading") as ApiMediaStatus),
+    lastErrorClass: raw?.errorClass || raw?.transcode?.errorClass || null,
+    lastVerifiedAt: raw?.verifiedAt || null,
+    createdAt: raw?.createdAt || null,
+    transcodeStatus: raw?.transcode?.status || null,
+    transcodeErrorClass: raw?.transcode?.errorClass || null,
+  };
 }
-export async function completeMediaUpload(id: string, req: CompleteMediaUploadReq): Promise<CompleteMediaUploadResp> {
-  const res = await http.post(`/admin/media/${encodeURIComponent(id)}/complete`, req, { timeout: 30_000 });
+export async function completeMediaUpload(contentId: string, req: CompleteMediaUploadReq): Promise<CompleteMediaUploadResp> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/assets/complete`, req, { timeout: 30_000 });
   return res.data;
 }
-export async function getMediaAsset(id: string): Promise<MediaAssetItem> {
-  const res = await http.get(`/admin/media/${encodeURIComponent(id)}`);
-  return normalizeMediaAsset(res.data);
+export async function listContentMedia(contentId: string): Promise<ContentMediaResp> {
+  const res = await http.get(`/admin/contents/${encodeURIComponent(contentId)}/media`);
+  return res.data;
+}
+export async function deleteContentMedia(contentId: string, assetId: string): Promise<{ ok: true; asset: any }> {
+  const res = await http.delete(`/admin/contents/${encodeURIComponent(contentId)}/assets/${encodeURIComponent(assetId)}`);
+  return res.data;
 }
 export async function startTelegramPublish(contentId: string, req: StartTelegramPublishReq): Promise<StartTelegramPublishResp> {
   return startAdminTelegramPublish(contentId, req as any);
+}
+
+async function computeFileSha256Hex(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 export async function listTelegramPublishJobs(contentId: string): Promise<{ ok: true; items: TelegramPublishJobItem[] }> {
   const res = await http.get(`/admin/contents/${encodeURIComponent(contentId)}/publish-jobs`);
@@ -260,6 +266,7 @@ type AccessTypeForSelect = "public" | "membership" | "package" | "single";
 type OpsTagFilter = "recommended" | "featured" | "new" | undefined;
 
 const ContentsPage: React.FC = () => {
+  const [viewportWidth, setViewportWidth] = React.useState<number>(() => (typeof window !== "undefined" ? window.innerWidth : 1440));
   const [rows, setRows] = React.useState<ContentItem[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [total, setTotal] = React.useState(0);
@@ -298,6 +305,7 @@ const ContentsPage: React.FC = () => {
   const [fullVideoSegments, setFullVideoSegments] = React.useState<MediaAssetItem[]>([]);
   const [fullVideoProgress, setFullVideoProgress] = React.useState<number>(0);
   const [fullVideoUploading, setFullVideoUploading] = React.useState(false);
+  const [coverPreviewUrl, setCoverPreviewUrl] = React.useState<string | null>(null);
 
   // ================== 发布任务 state ==================
   const [channelKinds, setChannelKinds] = React.useState<Array<TelegramPublishJobItem["channelKind"]>>([]);
@@ -347,6 +355,16 @@ const ContentsPage: React.FC = () => {
     listFreeChannels().then((r) => setFreeChannels(Array.isArray(r.items) ? r.items : [])).catch(() => {});
     adminMe().then(setMe).catch(() => {});
   }, []);
+
+  React.useEffect(() => {
+    const syncViewportWidth = () => setViewportWidth(window.innerWidth);
+    syncViewportWidth();
+    window.addEventListener("resize", syncViewportWidth);
+    return () => window.removeEventListener("resize", syncViewportWidth);
+  }, []);
+
+  const drawerWidth = viewportWidth <= 768 ? "100vw" : 760;
+  const drawerBodyPadding = viewportWidth <= 768 ? 16 : 24;
 
   const accessTypeValue = Form.useWatch("accessType", form);
   const packageIdValue = Form.useWatch("packageId", form);
@@ -471,6 +489,31 @@ const ContentsPage: React.FC = () => {
     }
   }, []);
 
+  const refreshContentMedia = React.useCallback(async (contentId: string) => {
+    try {
+      const resp = await listContentMedia(contentId);
+      const items = Array.isArray(resp.items) ? resp.items.map(normalizeMediaAsset) : [];
+      const cover = items.find((item) => item.kind === "cover_image" && item.status !== "deleted") || null;
+      const preview = items.find((item) => item.kind === "preview_video" && item.status !== "deleted") || null;
+      const fulls = items.filter((item) => item.kind === "full_video" && item.status !== "deleted");
+      setCoverAsset(cover);
+      setCoverAssetId(cover?.id || null);
+      setPreviewAsset(preview);
+      setPreviewAssetId(preview?.id || null);
+      setFullVideoSegments(fulls);
+      setFullVideoAsset(fulls[0] || null);
+      setFullVideoAssetId(fulls[0]?.id || null);
+    } catch {
+      setCoverAsset(null);
+      setCoverAssetId(null);
+      setPreviewAsset(null);
+      setPreviewAssetId(null);
+      setFullVideoSegments([]);
+      setFullVideoAsset(null);
+      setFullVideoAssetId(null);
+    }
+  }, []);
+
   // Drawer 打开后启动定时刷新 publish-jobs（后台异步发送任务 8s 轮询一次 UI）
   React.useEffect(() => {
     if (drawerOpen && editing?.id) {
@@ -501,6 +544,7 @@ const ContentsPage: React.FC = () => {
     setCoverAssetId(null); setCoverAsset(null); setCoverProgress(0); setCoverUploading(false);
     setPreviewAssetId(null); setPreviewAsset(null); setPreviewProgress(0); setPreviewUploading(false);
     setFullVideoAssetId(null); setFullVideoAsset(null); setFullVideoSegments([]); setFullVideoProgress(0); setFullVideoUploading(false);
+    setCoverPreviewUrl(null);
   }, []);
 
   const openCreate = () => {
@@ -576,20 +620,8 @@ const ContentsPage: React.FC = () => {
       packageId: row.packageId,
       telegramTags: [],
     });
-    // 拉取素材 FK 关联（若服务端返回了 coverAsset/previewAsset/fullVideoAsset，后续 getAdminContent 可能补充；这里先简单只拿已存在 FK，若已建 assetId，则刷新状态）
-    const caId = rawAny.coverAssetId || rawAny.cover_asset_id || null;
-    const paId = rawAny.previewAssetId || rawAny.preview_asset_id || null;
-    const faId = rawAny.fullVideoAssetId || rawAny.full_video_asset_id || null;
-    if (caId) { setCoverAssetId(caId); getMediaAsset(caId).then(setCoverAsset).catch(() => {}); }
-    if (paId) { setPreviewAssetId(paId); getMediaAsset(paId).then(setPreviewAsset).catch(() => {}); }
-    const savedSegments = Array.isArray(rawAny.fullVideoSegments)
-      ? rawAny.fullVideoSegments.map((segment: any) => normalizeMediaAsset(segment.mediaAsset || segment)).filter((asset: MediaAssetItem) => Boolean(asset.id))
-      : [];
-    if (savedSegments.length > 0) {
-      setFullVideoSegments(savedSegments);
-      setFullVideoAssetId(savedSegments[0].id);
-      setFullVideoAsset(savedSegments[0]);
-    } else if (faId) { setFullVideoAssetId(faId); getMediaAsset(faId).then((asset) => { setFullVideoAsset(asset); setFullVideoSegments([asset]); }).catch(() => {}); }
+    void rawAny;
+    void refreshContentMedia(row.id);
     setDrawerOpen(true);
   };
 
@@ -609,6 +641,10 @@ const ContentsPage: React.FC = () => {
       message.error("当前角色无 content:edit 权限，不能上传素材");
       return Upload.LIST_IGNORE;
     }
+    if (!editing?.id) {
+      message.error("请先保存基础信息，再上传媒体文件");
+      return Upload.LIST_IGNORE;
+    }
     if (file.size > hardMaxBytes) {
       const mb = hardMaxBytes >= 1024 * 1024 * 1024 ? `${(hardMaxBytes / 1024 / 1024 / 1024).toFixed(1)}GB` : `${Math.round(hardMaxBytes / 1024 / 1024)}MB`;
       message.error(`文件超过最大限制（${mb}）`);
@@ -616,20 +652,18 @@ const ContentsPage: React.FC = () => {
     }
     setters.setProgress(0);
     setters.setUploading(true);
-    let createdAssetId: string | null = null;
     try {
-      // 在预签名上传前先读取浏览器本地视频时长；不支持 metadata 的文件仍可正常上传并手动填写。
-      const detectedDurationSeconds = await readLocalVideoDurationSeconds(file);
-      // Step 1: init-upload 拿预签名 PUT URL + 事务内写 mediaAsset
-      const init = await initMediaUpload({
-        kind,
-        originalFilename: file.name,
+      const sha256 = await computeFileSha256Hex(file);
+      if (kind === "cover_image") {
+        setCoverPreviewUrl(URL.createObjectURL(file));
+      }
+      const init = await initMediaUpload(editing.id, {
+        assetKind: mapUiMediaKind(kind),
+        filename: file.name,
         mimeType: file.type || "application/octet-stream",
-        contentLength: file.size,
-        durationSeconds: detectedDurationSeconds,
+        byteSize: file.size,
+        sha256,
       });
-      createdAssetId = init.mediaAssetId;
-      setters.setAssetId(createdAssetId);
       // Step 2: XHR PUT 到对象存储（支持 onprogress）
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -652,36 +686,20 @@ const ContentsPage: React.FC = () => {
       });
       setters.setProgress(100);
       // Step 3: 调 complete 让服务端 HeadObject 校验
-      const comp = await completeMediaUpload(createdAssetId, { ok: true, reportedContentLength: file.size, etag: "" });
-      const verified = await getMediaAsset(createdAssetId);
+      const comp = await completeMediaUpload(editing.id, { uploadSessionId: init.uploadSessionId, proof: { etag: "" } });
+      const verified = normalizeMediaAsset(comp.asset);
+      setters.setAssetId(verified.id);
       setters.setAsset(verified);
-      if ((kind === "preview_video" || kind === "full_video") && Number(verified.durationSeconds || 0) > 0) {
-        const currentDuration = Number(form.getFieldValue("durationSeconds") || 0);
-        if (!currentDuration) {
-          form.setFieldValue("durationSeconds", verified.durationSeconds);
-          message.info(`已读取视频时长 ${Math.floor(Number(verified.durationSeconds) / 60)}分${Number(verified.durationSeconds) % 60}秒；请点击保存使前台同步。`);
-        }
-      }
-      if (comp.status !== "ready") {
-        message.error(`对象存储校验失败：${verified.lastErrorClass || comp.status}${verified.lastErrorNote ? `（${verified.lastErrorNote}）` : ""}`);
-      } else {
-        message.success(`${kind === "cover_image" ? "封面" : kind === "preview_video" ? "试看视频" : "完整视频"}上传完成`);
-      }
+      await refreshContentMedia(editing.id);
+      message.success(`${kind === "cover_image" ? "封面" : kind === "preview_video" ? "试看源视频" : "完整源视频"}上传并校验完成`);
     } catch (e) {
       setters.setProgress(0);
-      const id = createdAssetId || coverAssetId || previewAssetId || fullVideoAssetId;
-      if (id) {
-        try {
-          await completeMediaUpload(id, { ok: false, error: e instanceof Error ? e.message.slice(0, 180) : "upload_aborted" });
-          setters.setAsset(await getMediaAsset(id));
-        } catch {}
-      }
-      message.error(errMsg(e, kind === "cover_image" ? "封面上传失败" : kind === "preview_video" ? "试看上传失败" : "完整视频上传失败"));
+      message.error(errMsg(e, kind === "cover_image" ? "封面上传失败" : kind === "preview_video" ? "试看源视频上传失败" : "完整源视频上传失败"));
     } finally {
       setters.setUploading(false);
     }
     return Upload.LIST_IGNORE;
-  }, [canEdit, coverAssetId, previewAssetId, fullVideoAssetId]);
+  }, [canEdit, editing?.id, refreshContentMedia]);
 
   const onDrawerSubmit = async () => {
     try {
@@ -701,10 +719,6 @@ const ContentsPage: React.FC = () => {
         recommendStartsAt: values.recommendStartsAt ? values.recommendStartsAt.toISOString() : null,
         recommendEndsAt: values.recommendEndsAt ? values.recommendEndsAt.toISOString() : null,
         scheduledAt: values.scheduledAt ? values.scheduledAt.toISOString() : null,
-        coverAssetId: coverAssetId ?? undefined,
-        previewAssetId: previewAssetId ?? undefined,
-        fullVideoAssetId: fullVideoSegments[0]?.id ?? fullVideoAssetId ?? undefined,
-        fullVideoAssetIds: fullVideoSegments.map((asset) => asset.id),
         reason: editing ? `编辑内容：${editing.title}` : `新建内容：${values.title}`,
       };
       if (editing) {
@@ -713,10 +727,12 @@ const ContentsPage: React.FC = () => {
         const refreshed = await getAdminContent(editing.id);
         setEditing(refreshed);
         refreshPublishJobs(editing.id);
+        refreshContentMedia(editing.id);
       } else {
         const created = await createAdminContent(payload);
         const refreshed = await getAdminContent(created.id);
         setEditing(refreshed);
+        refreshContentMedia(created.id);
         // 创建完成后保留当前上传状态，直接进入下一步，避免运营回列表再找一次内容。
         setEditorTab("media");
         message.success("视频已创建，请继续上传素材");
@@ -726,6 +742,17 @@ const ContentsPage: React.FC = () => {
       message.error(errMsg(e, editing ? "更新失败" : "创建失败"));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const onDeleteMediaAsset = async (asset: MediaAssetItem | null) => {
+    if (!editing?.id || !asset?.id) return;
+    try {
+      await deleteContentMedia(editing.id, asset.id);
+      await refreshContentMedia(editing.id);
+      message.success("媒体记录已软删除");
+    } catch (e) {
+      message.error(errMsg(e, "删除媒体失败"));
     }
   };
 
@@ -986,25 +1013,13 @@ const ContentsPage: React.FC = () => {
       },
     },
     {
-      title: "私密视频",
+      title: "媒体托管",
       key: "privateVideo",
       width: 128,
       render: (_: any, r) => {
         const isPrivateContent = r.accessType === "membership" || r.accessType === "package";
-        const isLinked = Boolean(r.telegramMessageId && r.telegramChatFingerprint);
         if (!isPrivateContent) return <Text type="secondary">—</Text>;
-        if (!isLinked) return <Tag>未关联</Tag>;
-        return (
-          <Button
-            type="link"
-            size="small"
-            href={`/api/admin/contents/${encodeURIComponent(r.id)}/private-video`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            前往视频
-          </Button>
-        );
+        return <Tag color="default">私有托管</Tag>;
       },
     },
     { title: "排序", dataIndex: "sortOrder", key: "sortOrder", width: 70 },
@@ -1171,8 +1186,9 @@ const ContentsPage: React.FC = () => {
         title={editing ? `编辑视频：${editing.title}` : "发布视频"}
         open={drawerOpen}
         onClose={() => !submitting && setDrawerOpen(false)}
-        width={760}
+        width={drawerWidth}
         destroyOnClose
+        styles={{ body: { padding: drawerBodyPadding } }}
         extra={
           <Space>
             <Button onClick={() => setDrawerOpen(false)} disabled={submitting}>取消</Button>
@@ -1469,7 +1485,7 @@ const ContentsPage: React.FC = () => {
                 </Form>
               ),
             },
-            // ==================== Tab 2：素材上传（三 Upload + 尺寸限制 + 水印 + public 禁完整视频） ====================
+            // ==================== Tab 2：Phase A 私有媒体基础设施 ====================
             {
               key: "media",
               label: <Space><span>② 上传素材</span>{coverAssetId && previewAssetId ? <Badge count={2} /> : null}</Space>,
@@ -1479,15 +1495,14 @@ const ContentsPage: React.FC = () => {
                     type="info"
                     showIcon
                     icon={<InfoCircleOutlined />}
-                    message="按顺序上传：封面 → 30–60 秒试看（可选）→ 完整视频。"
-                    description="完整视频仅会发送到会员或内容包私密频道；不会出现在免费频道。上传完成后，回到第①步保存，再进入第③步发布。"
+                    message="Phase A 只完成私有媒体入库：直传对象存储、服务端校验、转码排队占位。"
+                    description="当前阶段不会提供完整视频播放，也不会返回对象 Key、Bucket、签名下载地址或完整私有媒体 URL。"
                   />
-                  {/* 封面 */}
                   <Card
                     size="small"
                     title={
                       <Space>
-                        <span>① 封面图片（必填，建议 16:9，Mini App 卡片首图）</span>
+                        <span>① 封面图片（16:9 裁切预览）</span>
                         {coverAsset?.status === "ready" ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : coverAsset?.status === "failed" ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
                       </Space>
                     }
@@ -1510,35 +1525,37 @@ const ContentsPage: React.FC = () => {
                         </Button>
                       </Upload>
                       <Progress percent={coverProgress} status={coverAsset?.status === "failed" ? "exception" : coverProgress === 100 ? "success" : coverUploading ? "active" : undefined} />
+                      <div style={{ width: "100%", maxWidth: 420, aspectRatio: "16 / 9", overflow: "hidden", borderRadius: 16, border: "1px solid #303030", background: "#111318" }}>
+                        {coverPreviewUrl ? (
+                          <img src={coverPreviewUrl} alt="封面预览" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center", display: "block" }} />
+                        ) : (
+                          <div style={{ width: "100%", height: "100%", display: "grid", placeItems: "center", color: "#8c8c8c", fontSize: 12 }}>
+                            16:9 封面预览
+                          </div>
+                        )}
+                      </div>
                       {coverAsset && (
                         <Space direction="vertical" size={4} style={{ fontSize: 12 }}>
                           <span>文件名：{coverAsset.originalFilename}</span>
                           <span>大小：{(coverAsset.contentLength / 1024 / 1024).toFixed(2)} MB</span>
-                          {coverAsset.widthPixels && coverAsset.heightPixels && <span>尺寸：{coverAsset.widthPixels}×{coverAsset.heightPixels}</span>}
-                          {coverAsset.status && <span>状态：<Tag color={coverAsset.status === "ready" ? "green" : coverAsset.status === "failed" ? "red" : "default"}>{coverAsset.status}</Tag></span>}
-                          {coverAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>失败原因：{coverAsset.lastErrorClass}{coverAsset.lastErrorNote ? `（${coverAsset.lastErrorNote}）` : ""}</span>}
-                          {coverAsset.storagePublicUrl && <span>公开 URL：<a href={coverAsset.storagePublicUrl} target="_blank" rel="noreferrer">{coverAsset.storagePublicUrl.slice(0, 60)}…</a></span>}
+                          <span>状态：<Tag color={coverAsset.status === "ready" ? "green" : coverAsset.status === "failed" ? "red" : "default"}>{coverAsset.status === "ready" ? "已校验" : coverAsset.status === "failed" ? "失败" : "上传中"}</Tag></span>
+                          {coverAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>错误类别：{coverAsset.lastErrorClass}</span>}
+                          <Button size="small" danger onClick={() => onDeleteMediaAsset(coverAsset)}>删除</Button>
                         </Space>
                       )}
                     </Space>
                   </Card>
-                  {/* 试看视频 */}
                   <Card
                     size="small"
                     title={
                       <Space>
-                        <span>② 试看视频（必填，30–60 秒 · 必须有水印，发送到免费频道）</span>
+                        <span>② 试看源视频</span>
                         {previewAsset?.status === "ready" ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : previewAsset?.status === "failed" ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
                       </Space>
                     }
-                    extra={<Tag color="geekblue">≤ 800MB</Tag>}
+                    extra={<Tag color="geekblue">≤ 1GB</Tag>}
                   >
                     <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                      <Alert
-                        type="error"
-                        showIcon
-                        message="运营流程硬约束：试看视频必须加水印（30–60 秒）；系统当前无法自动检测水印，仅能在审核时人工确认。若发布到免费频道后被投诉无水印，由运营侧负责。"
-                      />
                       <Upload
                         multiple={false}
                         maxCount={1}
@@ -1559,44 +1576,35 @@ const ContentsPage: React.FC = () => {
                         <Space direction="vertical" size={4} style={{ fontSize: 12 }}>
                           <span>文件名：{previewAsset.originalFilename}</span>
                           <span>大小：{(previewAsset.contentLength / 1024 / 1024).toFixed(2)} MB</span>
-                          {previewAsset.durationSeconds && <span>时长：{Math.floor(previewAsset.durationSeconds / 60)}分{previewAsset.durationSeconds % 60}秒</span>}
-                          {previewAsset.widthPixels && previewAsset.heightPixels && <span>尺寸：{previewAsset.widthPixels}×{previewAsset.heightPixels}</span>}
-                          {previewAsset.hasWatermark ? (
-                            <span>水印：<Tag color="green">声明已加水印</Tag></span>
-                          ) : (
-                            <span>水印：<Tag color="orange">未声明（审核需人工核验）</Tag></span>
-                          )}
-                          <span>状态：<Tag color={previewAsset.status === "ready" ? "green" : previewAsset.status === "failed" ? "red" : "default"}>{previewAsset.status}</Tag></span>
-                          {previewAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>失败原因：{previewAsset.lastErrorClass}{previewAsset.lastErrorNote ? `（${previewAsset.lastErrorNote}）` : ""}</span>}
+                          <span>状态：<Tag color={previewAsset.status === "ready" ? "green" : previewAsset.status === "failed" ? "red" : "default"}>{previewAsset.status === "ready" ? "已校验" : previewAsset.status === "failed" ? "失败" : "上传中"}</Tag></span>
+                          <span>转码：<Tag color={previewAsset.transcodeStatus === "queued" ? "gold" : previewAsset.transcodeStatus === "failed" ? "red" : "default"}>{previewAsset.transcodeStatus === "queued" ? "等待转码" : previewAsset.transcodeStatus === "failed" ? "转码失败" : "未入队"}</Tag></span>
+                          {previewAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>错误类别：{previewAsset.lastErrorClass}</span>}
+                          <Button size="small" danger onClick={() => onDeleteMediaAsset(previewAsset)}>删除</Button>
                         </Space>
                       )}
                     </Space>
                   </Card>
-                  {/* 完整视频：可由多个 Telegram 单文件上限内的分段组成 */}
                   <Card
                     size="small"
                     title={
                       <Space>
-                        <span>③ 完整视频（{accessTypeValue === "public" ? "public 类型禁止上传，请改用 membership/package" : `会员/内容包必填 · 发送到${accessTypeValue === "package" ? "内容包独立" : "会员主"}私密频道`}）</span>
+                        <span>③ 完整源视频</span>
                         {fullVideoSegments.length > 0 && fullVideoSegments.every((asset) => asset.status === "ready") ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
                       </Space>
                     }
-                    extra={<Tag color={accessTypeValue === "public" ? "default" : "purple"}>每段 ≤ 2GB</Tag>}
+                    extra={<Tag color="purple">每个文件 ≤ 8GB</Tag>}
                   >
                     <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                      {accessTypeValue === "public" ? (
-                        <Alert type="info" showIcon message="public 内容仅用于免费频道引流，完整视频交付需升级为 membership 或 package。" />
-                      ) : null}
                       <Alert
                         type="info"
                         showIcon
-                        message="超过 2GB 的完整内容请先在本地切成多个文件，再按顺序逐段添加；系统会按“第 1 部分 → 第 N 部分”发送到私密频道。"
+                        message="本阶段仅完成私有源文件入库和转码排队，不提供完整视频播放，也不下发前端可播放地址。"
                       />
                       <Upload
                         multiple={false}
                         maxCount={1}
                         accept="video/*"
-                        disabled={!canEdit || fullVideoUploading || accessTypeValue === "public"}
+                        disabled={!canEdit || fullVideoUploading}
                         showUploadList={false}
                         beforeUpload={(f) => doDirectUpload(f as File, "full_video", {
                           setAssetId: setFullVideoAssetId,
@@ -1607,32 +1615,25 @@ const ContentsPage: React.FC = () => {
                             }
                           },
                           setProgress: setFullVideoProgress, setUploading: setFullVideoUploading,
-                        }, 2 * 1024 * 1024 * 1024)}
+                        }, 8 * 1024 * 1024 * 1024)}
                       >
-                        <Button icon={<UploadOutlined />} loading={fullVideoUploading} disabled={!canEdit || accessTypeValue === "public"}>
-                          {fullVideoSegments.length > 0 ? "添加下一段完整视频" : "上传第 1 段完整视频"}
+                        <Button icon={<UploadOutlined />} loading={fullVideoUploading} disabled={!canEdit}>
+                          {fullVideoSegments.length > 0 ? "继续上传完整源视频" : "上传完整源视频"}
                         </Button>
                       </Upload>
                       <Progress percent={fullVideoProgress} status={fullVideoAsset?.status === "failed" ? "exception" : fullVideoProgress === 100 ? "success" : fullVideoUploading ? "active" : undefined} />
                       {fullVideoSegments.map((asset, index) => (
                         <Card key={asset.id} size="small" style={{ background: "#fafafa" }}>
                           <Space wrap size={8}>
-                            <Tag color="purple">第 {index + 1} 部分</Tag>
+                            <Tag color="purple">源文件 {index + 1}</Tag>
                             <span>{asset.originalFilename || "未命名视频"}</span>
                             <span>{(asset.contentLength / 1024 / 1024 / 1024).toFixed(3)} GB</span>
-                            {asset.durationSeconds ? <span>{Math.floor(asset.durationSeconds / 60)}分{asset.durationSeconds % 60}秒</span> : null}
-                            <Tag color={asset.status === "ready" ? "green" : asset.status === "failed" ? "red" : "default"}>{asset.status}</Tag>
-                            <Button size="small" disabled={index === 0 || fullVideoUploading} onClick={() => setFullVideoSegments((items) => { const next = [...items]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; return next; })}>上移</Button>
-                            <Button size="small" disabled={index === fullVideoSegments.length - 1 || fullVideoUploading} onClick={() => setFullVideoSegments((items) => { const next = [...items]; [next[index], next[index + 1]] = [next[index + 1], next[index]]; return next; })}>下移</Button>
-                            <Button size="small" danger disabled={fullVideoUploading} onClick={() => setFullVideoSegments((items) => items.filter((item) => item.id !== asset.id))}>移除</Button>
+                            <Tag color={asset.status === "ready" ? "green" : asset.status === "failed" ? "red" : "default"}>{asset.status === "ready" ? "已校验" : asset.status === "failed" ? "失败" : "上传中"}</Tag>
+                            <Tag color={asset.transcodeStatus === "queued" ? "gold" : asset.transcodeStatus === "failed" ? "red" : "default"}>{asset.transcodeStatus === "queued" ? "等待转码" : asset.transcodeStatus === "failed" ? "转码失败" : "未入队"}</Tag>
+                            <Button size="small" danger disabled={fullVideoUploading} onClick={() => onDeleteMediaAsset(asset)}>删除</Button>
                           </Space>
                         </Card>
                       ))}
-                      <Alert
-                        type="warning"
-                        showIcon
-                        message="完整视频仅发会员主频道 / 内容包独立私密频道，绝不能发送到免费频道。此约束由服务端在 start-telegram-publish 时二次强校验，尝试绕过会返回 400。"
-                      />
                     </Space>
                   </Card>
                 </Space>
@@ -1943,7 +1944,6 @@ const ContentsPage: React.FC = () => {
                                   {r.mediaAsset && (
                                     <span style={{ color: "#666", fontSize: 11 }}>
                                       {(r.mediaAsset.contentLength / 1024 / 1024).toFixed(2)} MB
-                                      {r.mediaAsset.durationSeconds ? ` · ${Math.floor(r.mediaAsset.durationSeconds / 60)}分${r.mediaAsset.durationSeconds % 60}秒` : ""}
                                     </span>
                                   )}
                                 </Space>
