@@ -379,6 +379,34 @@ function normalizeFullVideoAssetIds(input?: string[] | null, legacy?: string | n
   return Array.from(new Set(source.filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
 }
 
+async function syncContentFullVideoBindings(tx: any, contentId: string) {
+  const assets = await tx.videoAsset.findMany({
+    where: {
+      contentId,
+      kind: "full_source",
+      status: "verified",
+      deletedAt: null,
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+  const firstId = assets[0]?.id ?? null;
+  await tx.content.update({
+    where: { id: contentId },
+    data: { fullVideoAssetId: firstId },
+  });
+  await tx.contentFullVideoSegment.deleteMany({ where: { contentId } });
+  if (assets.length > 0) {
+    await tx.contentFullVideoSegment.createMany({
+      data: assets.map((asset: any, index: number) => ({
+        contentId,
+        videoAssetId: asset.id,
+        segmentOrder: index + 1,
+      })),
+    });
+  }
+  return assets;
+}
+
 async function validateContentAccessTypeConstraints(ctx: ContentAccessValidationContext): Promise<
   | { ok: true }
   | { ok: false; status: number; error: string; message?: string; details?: any }
@@ -397,10 +425,9 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   }
 
   // —— FK 基础校验：如传入 assetId，必须是存在且 status=ready（避免引用不存在/未完成上传的素材）
-  const fkChecks: Array<{ key: "coverAssetId" | "previewAssetId" | "fullVideoAssetId"; id: string | null | undefined; expectedKind?: "cover_image" | "preview_video" | "full_video" }> = [
+  const fkChecks: Array<{ key: "coverAssetId" | "previewAssetId"; id: string | null | undefined; expectedKind?: "cover_image" | "preview_video" }> = [
     { key: "coverAssetId", id: coverAssetId, expectedKind: "cover_image" },
     { key: "previewAssetId", id: previewAssetId, expectedKind: "preview_video" },
-    ...fullVideoAssetIds.map((id) => ({ key: "fullVideoAssetId" as const, id, expectedKind: "full_video" as const })),
   ];
   for (const fk of fkChecks) {
     if (!fk.id) continue;
@@ -414,8 +441,23 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
     if (fk.expectedKind && a.kind !== fk.expectedKind) {
       return { ok: false, status: 409, error: `${fk.key}_kind_mismatch`, message: `素材类型不匹配：${fk.key} 必须是 ${fk.expectedKind}，实际为 ${a.kind}。` };
     }
-    if (fk.key === "fullVideoAssetId" && a.contentLength != null && BigInt(String(a.contentLength)) > MAX_FULL_VIDEO_BYTES) {
-      return { ok: false, status: 400, error: "full_video_too_large", message: "完整视频文件超过 2GB，服务端拒绝保存或发布该素材。" };
+  }
+  for (const assetId of fullVideoAssetIds) {
+    const asset = await prisma.videoAsset.findUnique({
+      where: { id: assetId },
+      select: { id: true, status: true, kind: true, deletedAt: true },
+    });
+    if (!asset) {
+      return { ok: false, status: 404, error: "fullVideoAssetId_not_found", message: `指定的完整视频不存在（fullVideoAssetId=${assetId}），请先完成完整视频上传。` };
+    }
+    if (asset.deletedAt || asset.status === "deleted") {
+      return { ok: false, status: 409, error: "fullVideoAssetId_not_ready", message: "指定的完整视频已删除，请重新上传。" };
+    }
+    if (asset.status !== "verified") {
+      return { ok: false, status: 409, error: "fullVideoAssetId_not_ready", message: `完整视频尚未校验完成（当前 status=${asset.status}）。` };
+    }
+    if (asset.kind !== "full_source") {
+      return { ok: false, status: 409, error: "fullVideoAssetId_kind_mismatch", message: `完整视频绑定必须引用 full_source，实际为 ${asset.kind}。` };
     }
   }
 
@@ -472,10 +514,10 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   }
 
   if (accessType === "membership" && fullVideoAssetIds.length === 0 && !ctx.allowDraftWithoutDeliveryMedia) {
-    return { ok: false, status: 400, error: "membership_requires_full_video", message: "会员交付内容必须上传并绑定完整视频（fullVideoAssetId）。" };
+    return { ok: false, status: 400, error: "membership_requires_full_video", message: "会员交付内容必须上传并绑定完整视频（VideoAsset）。" };
   }
   if (accessType === "package" && fullVideoAssetIds.length === 0 && !ctx.allowDraftWithoutDeliveryMedia) {
-    return { ok: false, status: 400, error: "package_requires_full_video", message: "内容包交付内容必须上传并绑定完整视频（fullVideoAssetId）。" };
+    return { ok: false, status: 400, error: "package_requires_full_video", message: "内容包交付内容必须上传并绑定完整视频（VideoAsset）。" };
   }
 
   if (accessType === "membership") {
@@ -527,7 +569,7 @@ async function validatePublishReady(
       coverAssetId: true,
       previewAssetId: true,
       fullVideoAssetId: true,
-      fullVideoSegments: { orderBy: { segmentOrder: "asc" }, select: { mediaAssetId: true } },
+      fullVideoSegments: { orderBy: { segmentOrder: "asc" }, select: { videoAssetId: true } },
     },
   });
   if (!row) return { ok: false, status: 404, error: "not_found", message: "内容不存在" };
@@ -540,7 +582,7 @@ async function validatePublishReady(
     coverAssetId: row.coverAssetId,
     previewAssetId: row.previewAssetId,
     fullVideoAssetId: row.fullVideoAssetId,
-    fullVideoAssetIds: row.fullVideoSegments.map((segment) => segment.mediaAssetId),
+    fullVideoAssetIds: row.fullVideoSegments.map((segment) => segment.videoAssetId),
   });
 }
 
@@ -570,7 +612,7 @@ async function queueTelegramPublishForContent(input: {
       coverAsset: true,
       previewAsset: true,
       fullVideoAsset: true,
-      fullVideoSegments: { orderBy: { segmentOrder: "asc" }, include: { mediaAsset: true } },
+      fullVideoSegments: { orderBy: { segmentOrder: "asc" }, include: { videoAsset: true } },
       package: { select: { id: true, status: true, channelId: true, channelIdCiphertext: true, title: true } },
     },
   });
@@ -585,7 +627,7 @@ async function queueTelegramPublishForContent(input: {
     coverAssetId: content.coverAssetId,
     previewAssetId: content.previewAssetId,
     fullVideoAssetId: content.fullVideoAssetId,
-    fullVideoAssetIds: content.fullVideoSegments.map((segment) => segment.mediaAssetId),
+    fullVideoAssetIds: content.fullVideoSegments.map((segment) => segment.videoAssetId),
   });
   if (!baseOk.ok) {
     return {
@@ -609,7 +651,8 @@ async function queueTelegramPublishForContent(input: {
     kinds.unshift("public_free_preview");
   }
   const plans: Array<{
-    mediaAssetId: string;
+    mediaAssetId?: string | null;
+    videoAssetId?: string | null;
     contentSegmentId?: string | null;
     segmentOrder?: number | null;
     segmentCount?: number | null;
@@ -622,7 +665,7 @@ async function queueTelegramPublishForContent(input: {
   const fullSegments = content.fullVideoSegments.length > 0
     ? content.fullVideoSegments
     : content.fullVideoAsset
-      ? [{ id: null, segmentOrder: 1, mediaAssetId: content.fullVideoAsset.id, mediaAsset: content.fullVideoAsset }]
+      ? [{ id: null, segmentOrder: 1, videoAssetId: content.fullVideoAsset.id, videoAsset: content.fullVideoAsset }]
       : [];
   for (const kind of kinds) {
     if (kind === "public_free_preview") {
@@ -642,11 +685,11 @@ async function queueTelegramPublishForContent(input: {
       if (content.accessType !== "membership") {
         return { ok: false, status: 409, error: "publish_kind_mismatch", message: "只有会员内容可发送到会员私密频道。" };
       }
-      if (fullSegments.length === 0 || fullSegments.some((segment) => segment.mediaAsset.status !== "ready" || segment.mediaAsset.kind !== "full_video")) {
+      if (fullSegments.length === 0 || fullSegments.some((segment) => segment.videoAsset.status !== "verified" || segment.videoAsset.kind !== "full_source")) {
         return { ok: false, status: 409, error: "full_video_asset_required", message: "会员内容必须先上传并校验完整视频。" };
       }
       for (const segment of fullSegments) {
-        plans.push({ mediaAssetId: segment.mediaAssetId, contentSegmentId: segment.id, segmentOrder: segment.segmentOrder, segmentCount: fullSegments.length, channelKindDb: kind });
+        plans.push({ videoAssetId: segment.videoAssetId, contentSegmentId: segment.id, segmentOrder: segment.segmentOrder, segmentCount: fullSegments.length, channelKindDb: kind });
       }
       continue;
     }
@@ -657,11 +700,11 @@ async function queueTelegramPublishForContent(input: {
       if (!content.package || resolvePackageChannelId({ channelId: content.package.channelId, channelIdCiphertext: content.package.channelIdCiphertext }) == null) {
         return { ok: false, status: 409, error: "package_channel_not_configured", message: "内容包尚未配置受控交付频道。" };
       }
-      if (fullSegments.length === 0 || fullSegments.some((segment) => segment.mediaAsset.status !== "ready" || segment.mediaAsset.kind !== "full_video")) {
+      if (fullSegments.length === 0 || fullSegments.some((segment) => segment.videoAsset.status !== "verified" || segment.videoAsset.kind !== "full_source")) {
         return { ok: false, status: 409, error: "full_video_asset_required", message: "内容包内容必须先上传并校验完整视频。" };
       }
       for (const segment of fullSegments) {
-        plans.push({ mediaAssetId: segment.mediaAssetId, contentSegmentId: segment.id, segmentOrder: segment.segmentOrder, segmentCount: fullSegments.length, channelKindDb: kind, packageId: content.package.id });
+        plans.push({ videoAssetId: segment.videoAssetId, contentSegmentId: segment.id, segmentOrder: segment.segmentOrder, segmentCount: fullSegments.length, channelKindDb: kind, packageId: content.package.id });
       }
     }
   }
@@ -693,9 +736,11 @@ async function queueTelegramPublishForContent(input: {
       // 发布按钮可被重复点击、网络层也可能重放请求。用 PostgreSQL 事务咨询锁把
       // “内容 + 素材 + 目标频道”收敛为一个交付任务，避免同一视频在同一频道重复发送。
       // 后续若需要重新发片，必须走显式的 re-publish 动作，而不是复用这个默认入口。
+      const deliveryAssetId = plan.videoAssetId || plan.mediaAssetId;
+      if (!deliveryAssetId) continue;
       const deliveryIdentity = [
         content.id,
-        plan.mediaAssetId,
+        deliveryAssetId,
         plan.channelKindDb,
         plan.targetFreeChannelCode || "private-channel",
       ].join(":");
@@ -703,7 +748,8 @@ async function queueTelegramPublishForContent(input: {
       const existing = await tx.telegramPublishJob.findFirst({
         where: {
           contentId: content.id,
-          mediaAssetId: plan.mediaAssetId,
+          mediaAssetId: plan.mediaAssetId ?? null,
+          videoAssetId: plan.videoAssetId ?? null,
           channelKind: plan.channelKindDb,
           targetFreeChannelCode: plan.targetFreeChannelCode ?? null,
         },
@@ -713,7 +759,7 @@ async function queueTelegramPublishForContent(input: {
         jobs.push(existing);
         continue;
       }
-      const jobSeed = `${plan.channelKindDb}|${content.id}|${plan.mediaAssetId}|${meta.adminId}|${now}|${cryptoRandomUuid()}`;
+      const jobSeed = `${plan.channelKindDb}|${content.id}|${deliveryAssetId}|${meta.adminId}|${now}|${cryptoRandomUuid()}`;
       const jobToken = `tgj_${createHash("sha256").update(jobSeed).digest("hex").slice(0, 48)}`;
       let captionBundle: { captionText?: string | null; parseMode?: string | null } = {};
       if (plan.channelKindDb === "public_free_preview") {
@@ -730,7 +776,8 @@ async function queueTelegramPublishForContent(input: {
           contentId: content.id,
           packageId: plan.packageId ?? null,
           adminId: meta.adminId,
-          mediaAssetId: plan.mediaAssetId,
+          mediaAssetId: plan.mediaAssetId ?? null,
+          videoAssetId: plan.videoAssetId ?? null,
           contentSegmentId: plan.contentSegmentId ?? null,
           segmentOrder: plan.segmentOrder ?? null,
           channelKind: plan.channelKindDb,
@@ -994,19 +1041,16 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             fullVideoAsset: {
               select: {
                 id: true, kind: true, status: true, originalFilename: true, mimeType: true,
-                contentLength: true, durationSeconds: true,
-                widthPixels: true, heightPixels: true,
-                lastVerifiedAt: true, createdAt: true,
+                byteSize: true, verifiedAt: true, createdAt: true,
               },
             },
             fullVideoSegments: {
               orderBy: { segmentOrder: "asc" },
               include: {
-                mediaAsset: {
+                videoAsset: {
                   select: {
                     id: true, kind: true, status: true, originalFilename: true, mimeType: true,
-                    contentLength: true, durationSeconds: true, widthPixels: true, heightPixels: true,
-                    lastVerifiedAt: true, createdAt: true,
+                    byteSize: true, verifiedAt: true, createdAt: true,
                   },
                 },
               },
@@ -1700,6 +1744,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
         });
         if (lockedSession?.completedAt && existingAsset) {
+          await syncContentFullVideoBindings(tx, session.contentId);
           return { done: true as const, asset: existingAsset };
         }
         await tx.uploadSession.update({
@@ -1771,6 +1816,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
         });
         if (lockedSession?.completedAt && existingAsset) {
+          await syncContentFullVideoBindings(tx, session.contentId);
           return existingAsset;
         }
         const asset = existingAsset
@@ -1832,6 +1878,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             "multipart complete",
           );
         }
+        await syncContentFullVideoBindings(tx, session.contentId);
         return tx.videoAsset.findUnique({
           where: { id: asset.id },
           include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
@@ -1924,6 +1971,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           where: { assetId: asset.id, status: { in: ["queued", "processing"] } },
           data: { status: "cancelled", errorClass: VOD_ERROR_CLASS.deleted, finishedAt: new Date() },
         });
+        await syncContentFullVideoBindings(tx, contentId);
         await writeAudit(tx, meta, "vod.asset.delete", "video_asset", asset.id, serialize({ status: asset.status }), serialize({ status: "deleted" }), `content=${contentId}`);
         return tx.videoAsset.findUnique({
           where: { id: asset.id },
@@ -2004,24 +2052,20 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const parseDates = (d: any) => (d ? new Date(d) : null);
       const normalizedSeo = normalizeSeoPayload(payload);
 
-      // 根据 3 FK 查对应 MediaAsset.storagePublicUrl / durationSeconds，回填冗余列（方便不 JOIN 时直接用）
-      const assetFk: Array<string | null> = [payload.coverAssetId ?? null, payload.previewAssetId ?? null, ...fullVideoAssetIds];
-      const assets = assetFk.some((x) => x != null)
+      // 轻媒体继续从 MediaAsset 回填封面/试看冗余列；完整视频以 VideoAsset 为真源，不再从 MediaAsset 读。
+      const lightAssetFk: Array<string | null> = [payload.coverAssetId ?? null, payload.previewAssetId ?? null];
+      const assets = lightAssetFk.some((x) => x != null)
         ? await prisma.mediaAsset.findMany({
-            where: { id: { in: assetFk.filter((x): x is string => x != null) } },
+            where: { id: { in: lightAssetFk.filter((x): x is string => x != null) } },
             select: { id: true, kind: true, storagePublicUrl: true, durationSeconds: true },
           })
         : [];
       const am = new Map(assets.map((a) => [a.id, a]));
       const coverAsset = payload.coverAssetId ? am.get(payload.coverAssetId) : undefined;
       const previewAsset = payload.previewAssetId ? am.get(payload.previewAssetId) : undefined;
-      const fullAsset = fullVideoAssetIds[0] ? am.get(fullVideoAssetIds[0]) : undefined;
       const redundantCoverUrl = coverAsset?.storagePublicUrl || null;
       const redundantPreviewUrl = previewAsset?.storagePublicUrl || null;
-      const fullDuration = fullVideoAssetIds.length > 0
-        ? fullVideoAssetIds.reduce((sum, id) => sum + Number(am.get(id)?.durationSeconds || 0), 0) || null
-        : null;
-      const redundantDuration = fullDuration ?? fullAsset?.durationSeconds ?? previewAsset?.durationSeconds ?? null;
+      const redundantDuration = payload.durationSeconds ?? previewAsset?.durationSeconds ?? null;
 
       const data: any = {
         title: payload.title,
@@ -2064,7 +2108,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         });
         if (fullVideoAssetIds.length > 0) {
           await tx.contentFullVideoSegment.createMany({
-            data: fullVideoAssetIds.map((mediaAssetId, index) => ({ contentId: created.id, mediaAssetId, segmentOrder: index + 1 })),
+            data: fullVideoAssetIds.map((videoAssetId, index) => ({ contentId: created.id, videoAssetId, segmentOrder: index + 1 })),
           });
         }
         await writeAudit(
@@ -2109,7 +2153,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const mergedFullVideoAssetIds = segmentInputProvided
         ? normalizeFullVideoAssetIds(payload.fullVideoAssetIds, payload.fullVideoAssetId)
         : before.fullVideoSegments.length > 0
-          ? before.fullVideoSegments.map((segment) => segment.mediaAssetId)
+          ? before.fullVideoSegments.map((segment) => segment.videoAssetId)
           : normalizeFullVideoAssetIds(undefined, before.fullVideoAssetId);
       const mergedFullVideoAssetId = mergedFullVideoAssetIds[0] ?? null;
       const preCheck = await validateContentAccessTypeConstraints({
@@ -2131,7 +2175,6 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const touchedAssetFks = [
         payload.coverAssetId !== undefined ? (payload.coverAssetId ?? null) : null,
         payload.previewAssetId !== undefined ? (payload.previewAssetId ?? null) : null,
-        segmentInputProvided ? (mergedFullVideoAssetIds[0] ?? null) : null,
       ];
       const touchedAnyAsset = payload.coverAssetId !== undefined || payload.previewAssetId !== undefined || segmentInputProvided;
       let assetRedundancies: { coverUrl?: string | null; previewUrl?: string | null; durationSeconds?: number | null } | null = null;
@@ -2149,15 +2192,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           assetRedundancies.previewUrl = payload.previewAssetId ? rm.get(payload.previewAssetId)?.storagePublicUrl || null : null;
         }
         if (segmentInputProvided || payload.previewAssetId !== undefined) {
-          const full = segmentInputProvided
-            ? (mergedFullVideoAssetIds.length > 0
-              ? mergedFullVideoAssetIds.reduce((sum, assetId) => sum + Number(rm.get(assetId)?.durationSeconds || 0), 0) || null
-              : null)
-            : undefined;
           const prev = payload.previewAssetId !== undefined
             ? (payload.previewAssetId ? rm.get(payload.previewAssetId)?.durationSeconds ?? null : null)
             : undefined;
-          assetRedundancies.durationSeconds = full !== undefined ? full : prev !== undefined ? prev : before.durationSeconds;
+          assetRedundancies.durationSeconds = prev !== undefined ? prev : before.durationSeconds;
         }
       }
 
@@ -2206,7 +2244,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           await tx.contentFullVideoSegment.deleteMany({ where: { contentId: id } });
           if (mergedFullVideoAssetIds.length > 0) {
             await tx.contentFullVideoSegment.createMany({
-              data: mergedFullVideoAssetIds.map((mediaAssetId, index) => ({ contentId: id, mediaAssetId, segmentOrder: index + 1 })),
+              data: mergedFullVideoAssetIds.map((videoAssetId, index) => ({ contentId: id, videoAssetId, segmentOrder: index + 1 })),
             });
           }
         }
@@ -3169,6 +3207,12 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     { preHandler: [requireAdmin("content:edit")] },
     async (req: any, reply) => {
       const body = ZMEDIA_INIT.parse(req.body);
+      if (body.kind === "full_video") {
+        return reply.status(409).send({
+          error: "multipart_required",
+          message: "完整视频必须使用 Multipart Upload 分片上传，请改走 /admin/contents/:contentId/assets/multipart/initiate。",
+        });
+      }
       const meta = adminMeta(req);
       let storage: ReturnType<typeof requireObjectStorageEnv> | null = null;
       try {
@@ -3403,6 +3447,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           status: j.status,
           jobToken: j.jobToken,
           mediaAssetId: j.mediaAssetId,
+          videoAssetId: j.videoAssetId,
           targetFreeChannelCode: j.targetFreeChannelCode,
           createdAt: j.createdAt,
         })),
@@ -3423,6 +3468,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         take: qp.limit,
         include: {
           mediaAsset: { select: { id: true, kind: true, originalFilename: true, status: true, storagePublicUrl: true, contentLength: true, durationSeconds: true } },
+          videoAsset: { select: { id: true, kind: true, originalFilename: true, status: true, byteSize: true } },
           admin: { select: { id: true, email: true, displayName: true } },
           cancelledByAdmin: { select: { id: true, email: true, displayName: true } },
         },
@@ -3439,6 +3485,12 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
                 contentLength: r.mediaAsset.contentLength != null ? String(r.mediaAsset.contentLength) : null,
               }
             : null,
+          videoAsset: r.videoAsset
+            ? {
+                ...r.videoAsset,
+                byteSize: r.videoAsset.byteSize != null ? String(r.videoAsset.byteSize) : null,
+              }
+            : null,
           admin: r.admin,
           cancelledByAdmin: r.cancelledByAdmin,
           channelKind: r.channelKind,
@@ -3446,6 +3498,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           targetChatMasked: r.targetChatMasked,
           status: r.status,
           queueName: r.queueName,
+          mediaAssetId: r.mediaAssetId,
+          videoAssetId: r.videoAssetId,
           attempt: r.attempt,
           maxAttempts: r.maxAttempts,
           lastErrorClass: r.lastErrorClass,

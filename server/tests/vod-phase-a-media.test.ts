@@ -112,6 +112,83 @@ test("Phase A: upload-session unauthorized and forbidden requests are rejected",
   }
 });
 
+test("Phase A: legacy single-upload endpoint only allows cover and preview, never full video", async () => {
+  const app = await createApp(prisma);
+  try {
+    const noAuth = await app.inject({
+      method: "POST",
+      url: "/api/admin/media/init-upload",
+      headers: { "Content-Type": "application/json" },
+      payload: {
+        kind: "cover_image",
+        originalFilename: "cover.jpg",
+        mimeType: "image/jpeg",
+        contentLength: 1024,
+      },
+    });
+    assert.equal(noAuth.statusCode, 401, noAuth.body);
+
+    const csCookie = await loginAdmin(app, "customerService");
+    const forbidden = await app.inject({
+      method: "POST",
+      url: "/api/admin/media/init-upload",
+      headers: { cookie: csCookie, "Content-Type": "application/json" },
+      payload: {
+        kind: "cover_image",
+        originalFilename: "cover.jpg",
+        mimeType: "image/jpeg",
+        contentLength: 1024,
+      },
+    });
+    assert.equal(forbidden.statusCode, 403, forbidden.body);
+
+    const editorCookie = await loginAdmin(app, "editor");
+    const fullVideo = await app.inject({
+      method: "POST",
+      url: "/api/admin/media/init-upload",
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        kind: "full_video",
+        originalFilename: "full.mp4",
+        mimeType: "video/mp4",
+        contentLength: 1024,
+        durationSeconds: 60,
+      },
+    });
+    assert.equal(fullVideo.statusCode, 409, fullVideo.body);
+    assert.equal((fullVideo.json() as any).error, "multipart_required");
+
+    const coverResp = await app.inject({
+      method: "POST",
+      url: "/api/admin/media/init-upload",
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        kind: "cover_image",
+        originalFilename: "cover.jpg",
+        mimeType: "image/jpeg",
+        contentLength: 1024,
+      },
+    });
+    assert.equal(coverResp.statusCode, 200, coverResp.body);
+
+    const previewResp = await app.inject({
+      method: "POST",
+      url: "/api/admin/media/init-upload",
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        kind: "preview_video",
+        originalFilename: "preview.mp4",
+        mimeType: "video/mp4",
+        contentLength: 1024 * 1024,
+        durationSeconds: 60,
+      },
+    });
+    assert.equal(previewResp.statusCode, 200, previewResp.body);
+  } finally {
+    await app.close();
+  }
+});
+
 test("Phase A: upload-session rejects invalid MIME, oversize, and missing content", async () => {
   const app = await createApp(prisma);
   try {
@@ -755,6 +832,178 @@ test("Phase A: repeated multipart complete stays idempotent after first success"
     assert.equal(assets.length, 1);
     assert.equal(jobs.length, 1);
     assert.equal(completeCalls, 1);
+  } finally {
+    restore();
+    await app.close();
+  }
+});
+
+test("Phase A: multipart full video auto-binds content and publish jobs reference video assets", async () => {
+  const app = await createApp(prisma);
+  let membershipSessionId = "";
+  let packageSessionId = "";
+  const restore = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "CreateMultipartUploadCommand") {
+      const key = String(command?.input?.Key || "");
+      if (key.includes("membership")) return { UploadId: "upload-membership" };
+      if (key.includes("package")) return { UploadId: "upload-package" };
+      return { UploadId: "upload-generic" };
+    }
+    if (name === "ListPartsCommand") {
+      const uploadId = String(command?.input?.UploadId || "");
+      return {
+        IsTruncated: false,
+        Parts: [{ PartNumber: 1, ETag: uploadId === "upload-membership" ? "\"etag-membership\"" : "\"etag-package\"", Size: 1024 }],
+      };
+    }
+    if (name === "CompleteMultipartUploadCommand") {
+      return { ETag: "\"final\"" };
+    }
+    if (name === "HeadObjectCommand") {
+      const key = String(command?.input?.Key || "");
+      if (key.includes("membership")) {
+        return {
+          ContentLength: 1024,
+          ContentType: "video/mp4",
+          Metadata: { uploadsessionid: membershipSessionId, sha256: "f".repeat(64) },
+          ETag: "\"etag-membership\"",
+        };
+      }
+      return {
+        ContentLength: 1024,
+        ContentType: "video/mp4",
+        Metadata: { uploadsessionid: packageSessionId, sha256: "e".repeat(64) },
+        ETag: "\"etag-package\"",
+      };
+    }
+    return undefined;
+  });
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    await prisma.contentPackage.update({
+      where: { id: TEST_KNOWN_IDS.contentPackageKey },
+      data: { channelId: BigInt(-1002003004005) },
+    });
+
+    const membershipCreate = await app.inject({
+      method: "POST",
+      url: "/api/admin/contents",
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        title: "multipart membership draft",
+        accessType: "membership",
+        reason: "create membership draft for multipart binding",
+      },
+    });
+    assert.equal(membershipCreate.statusCode, 201, membershipCreate.body);
+    const membershipContentId = (membershipCreate.json() as any).id as string;
+
+    const packageCreate = await app.inject({
+      method: "POST",
+      url: "/api/admin/contents",
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        title: "multipart package draft",
+        accessType: "package",
+        packageId: TEST_KNOWN_IDS.contentPackageKey,
+        reason: "create package draft for multipart binding",
+      },
+    });
+    assert.equal(packageCreate.statusCode, 201, packageCreate.body);
+    const packageContentId = (packageCreate.json() as any).id as string;
+
+    const membershipInit = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${membershipContentId}/assets/multipart/initiate`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { assetKind: "full_source", filename: "membership-full.mp4", mimeType: "video/mp4", byteSize: 1024, sha256: "f".repeat(64) },
+    });
+    assert.equal(membershipInit.statusCode, 200, membershipInit.body);
+    membershipSessionId = (membershipInit.json() as any).uploadSessionId as string;
+
+    const packageInit = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${packageContentId}/assets/multipart/initiate`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { assetKind: "full_source", filename: "package-full.mp4", mimeType: "video/mp4", byteSize: 1024, sha256: "e".repeat(64) },
+    });
+    assert.equal(packageInit.statusCode, 200, packageInit.body);
+    packageSessionId = (packageInit.json() as any).uploadSessionId as string;
+
+    const membershipComplete = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${membershipSessionId}/complete`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {},
+    });
+    assert.equal(membershipComplete.statusCode, 200, membershipComplete.body);
+    const membershipAssetId = (membershipComplete.json() as any).asset.id as string;
+
+    const packageComplete = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${packageSessionId}/complete`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {},
+    });
+    assert.equal(packageComplete.statusCode, 200, packageComplete.body);
+    const packageAssetId = (packageComplete.json() as any).asset.id as string;
+
+    const membershipDetail = await app.inject({
+      method: "GET",
+      url: `/api/admin/contents/${membershipContentId}`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(membershipDetail.statusCode, 200, membershipDetail.body);
+    const membershipBody = membershipDetail.json() as any;
+    assert.equal(membershipBody.fullVideoAssetId, membershipAssetId);
+    assert.deepEqual((membershipBody.fullVideoSegments || []).map((segment: any) => segment.videoAssetId), [membershipAssetId]);
+
+    const packageDetail = await app.inject({
+      method: "GET",
+      url: `/api/admin/contents/${packageContentId}`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(packageDetail.statusCode, 200, packageDetail.body);
+    const packageBody = packageDetail.json() as any;
+    assert.equal(packageBody.fullVideoAssetId, packageAssetId);
+    assert.deepEqual((packageBody.fullVideoSegments || []).map((segment: any) => segment.videoAssetId), [packageAssetId]);
+
+    const membershipPublish = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${membershipContentId}/start-telegram-publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { channelKinds: ["membership_full"], reason: "membership publish should reference video asset" },
+    });
+    assert.equal(membershipPublish.statusCode, 201, membershipPublish.body);
+    assert.equal((membershipPublish.json() as any).jobs[0].videoAssetId, membershipAssetId);
+
+    const packagePublish = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${packageContentId}/start-telegram-publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { channelKinds: ["package_full"], reason: "package publish should reference video asset" },
+    });
+    assert.equal(packagePublish.statusCode, 201, packagePublish.body);
+    assert.equal((packagePublish.json() as any).jobs[0].videoAssetId, packageAssetId);
+
+    const storedJobs = await prisma.telegramPublishJob.findMany({
+      where: { contentId: { in: [membershipContentId, packageContentId] } },
+      orderBy: [{ contentId: "asc" }],
+      select: { contentId: true, mediaAssetId: true, videoAssetId: true, channelKind: true },
+    });
+    assert.deepEqual(
+      storedJobs.map((job) => ({
+        contentId: job.contentId,
+        mediaAssetId: job.mediaAssetId,
+        videoAssetId: job.videoAssetId,
+        channelKind: job.channelKind,
+      })),
+      [
+        { contentId: membershipContentId, mediaAssetId: null, videoAssetId: membershipAssetId, channelKind: "membership_full" },
+        { contentId: packageContentId, mediaAssetId: null, videoAssetId: packageAssetId, channelKind: "package_full" },
+      ],
+    );
   } finally {
     restore();
     await app.close();

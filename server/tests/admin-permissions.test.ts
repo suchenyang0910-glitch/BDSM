@@ -75,6 +75,9 @@ async function seedReadyMediaAsset(
   prismaClient: any,
   input: { id: string; kind: "cover_image" | "preview_video" | "full_video"; ownerAdminId?: string | null; filename?: string }
 ) {
+  if (input.kind === "full_video") {
+    throw new Error("seedReadyMediaAsset no longer supports full_video; use seedReadyVideoAsset");
+  }
   return prismaClient.mediaAsset.create({
     data: {
       id: input.id,
@@ -89,6 +92,26 @@ async function seedReadyMediaAsset(
       storageKey: `${input.id}.bin`,
       storagePublicUrl: `https://example.com/${input.id}.bin`,
       durationSeconds: input.kind === "cover_image" ? null : 60,
+    },
+  });
+}
+
+async function seedReadyVideoAsset(
+  prismaClient: any,
+  input: { id: string; contentId: string; filename?: string }
+) {
+  return prismaClient.videoAsset.create({
+    data: {
+      id: input.id,
+      contentId: input.contentId,
+      kind: "full_source",
+      objectKey: `tests/${input.id}.mp4`,
+      originalFilename: input.filename || "full-source.mp4",
+      mimeType: "video/mp4",
+      byteSize: BigInt(1024),
+      sha256: `legacy-test-${input.id}`,
+      status: "verified",
+      verifiedAt: new Date(),
     },
   });
 }
@@ -166,16 +189,7 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
   const app = await createApp(prisma);
   try {
     const editorCookie = await loginAdmin(app, "editor");
-    const editor = await prisma.adminUser.findUnique({ where: { email: TEST_CREDENTIALS.editor.email } });
-    assert.ok(editor, "editor seed should exist");
     const contentId = crypto.randomUUID();
-
-    const mediaAsset = await seedReadyMediaAsset(prisma, {
-      id: crypto.randomUUID(),
-      kind: "full_video",
-      ownerAdminId: editor!.id,
-      filename: "membership-full.mp4",
-    });
 
     await prisma.content.create({
       data: {
@@ -186,7 +200,18 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
         status: "draft",
         tags: ["睡眠"],
         seoKeywords: ["内容关键词", "默认词"],
+      },
+    });
+    const mediaAsset = await seedReadyVideoAsset(prisma, {
+      id: crypto.randomUUID(),
+      contentId,
+      filename: "membership-full.mp4",
+    });
+    await prisma.content.update({
+      where: { id: contentId },
+      data: {
         fullVideoAssetId: mediaAsset.id,
+        fullVideoSegments: { create: [{ videoAssetId: mediaAsset.id, segmentOrder: 1 }] },
       },
     });
 
@@ -229,10 +254,21 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
         title: "平台关键词回退测试",
         accessType: "membership",
         status: "draft",
-        fullVideoAssetId: mediaAsset.id,
         seoKeywords: [],
         geoKeywords: [],
         tags: [],
+      },
+    });
+    const fallbackAsset = await seedReadyVideoAsset(prisma, {
+      id: crypto.randomUUID(),
+      contentId: fallbackContentId,
+      filename: "fallback-membership-full.mp4",
+    });
+    await prisma.content.update({
+      where: { id: fallbackContentId },
+      data: {
+        fullVideoAssetId: fallbackAsset.id,
+        fullVideoSegments: { create: [{ videoAssetId: fallbackAsset.id, segmentOrder: 1 }] },
       },
     });
     const fallbackResp = await app.inject({
@@ -292,9 +328,6 @@ test("免费试看自动扇出到全部已启用免费流量频道，不要求�
       new Set(["free_preview_main", "free_tutorial_basics"]),
     );
 
-    const fullAsset = await seedReadyMediaAsset(prisma, {
-      id: crypto.randomUUID(), kind: "full_video", ownerAdminId: editor.id, filename: "membership-full.mp4",
-    });
     const membershipContentId = crypto.randomUUID();
     await prisma.content.create({
       data: {
@@ -303,7 +336,18 @@ test("免费试看自动扇出到全部已启用免费流量频道，不要求�
         accessType: "membership",
         status: "draft",
         previewAssetId: previewAsset.id,
+      },
+    });
+    const fullAsset = await seedReadyVideoAsset(prisma, {
+      id: crypto.randomUUID(),
+      contentId: membershipContentId,
+      filename: "membership-full.mp4",
+    });
+    await prisma.content.update({
+      where: { id: membershipContentId },
+      data: {
         fullVideoAssetId: fullAsset.id,
+        fullVideoSegments: { create: [{ videoAssetId: fullAsset.id, segmentOrder: 1 }] },
       },
     });
     const membershipResponse = await app.inject({
@@ -647,10 +691,9 @@ test("public 内容绑定完整视频必须返回 full_video_not_allowed_for_pub
   const app = await createApp(prisma);
   try {
     const superCookie = await loginAdmin(app, "superAdmin");
-    const mediaAsset = await seedReadyMediaAsset(prisma, {
+    const mediaAsset = await seedReadyVideoAsset(prisma, {
       id: `full-video-public-forbidden-${crypto.randomUUID()}`,
-      kind: "full_video",
-      ownerAdminId: null,
+      contentId: TEST_KNOWN_IDS.contentMembership,
       filename: "public-full.mp4",
     });
     const resp = await app.inject({

@@ -558,19 +558,6 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
   const app = await buildTestApp(prisma);
   try {
     const editorCookie = await loginAdmin(app, "editor");
-    const fullVideoAsset = await prisma.mediaAsset.create({
-      data: {
-        kind: "full_video",
-        status: "ready",
-        originalFilename: "s1-g-membership-full.mp4",
-        mimeType: "video/mp4",
-        contentLength: BigInt(1024),
-        durationSeconds: 30,
-        storageBucket: "test-bucket",
-        storageKey: "tests/s1-g-membership-full.mp4",
-      },
-    });
-
     const actions: Array<{ label: string; method: string; url: string; payload: any; expectedStatus: number }> = [
       {
         label: "CREATE",
@@ -579,7 +566,6 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
         payload: {
           title: "[S1-G] membership 审计脱敏链路",
           accessType: "membership",
-          fullVideoAssetId: fullVideoAsset.id,
           description: "测试 4 动作审计脱敏",
           tags: ["test-s1-g"],
           reason: "S1-G 创建",
@@ -598,11 +584,31 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
     assert.ok(typeof newId === "string" && newId.length > 0, "new content id expected");
     assertNoSensitiveLeaks(createResp.body, "membership create 201");
 
+    const fullVideoAsset = await prisma.videoAsset.create({
+      data: {
+        contentId: newId,
+        kind: "full_source",
+        objectKey: `tests/${newId}/s1-g-membership-full.mp4`,
+        originalFilename: "s1-g-membership-full.mp4",
+        mimeType: "video/mp4",
+        byteSize: BigInt(1024),
+        sha256: `legacy-s1-g-${newId}`,
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
+
     const patchResp = await app.inject({
       method: "PATCH",
       url: `/api/admin/contents/${newId}`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { title: "[S1-G] membership 审计脱敏链路（已编辑）", isRecommended: true, reason: "S1-G 编辑标题" },
+      payload: {
+        title: "[S1-G] membership 审计脱敏链路（已编辑）",
+        isRecommended: true,
+        fullVideoAssetId: fullVideoAsset.id,
+        fullVideoAssetIds: [fullVideoAsset.id],
+        reason: "S1-G 编辑标题",
+      },
     });
     assert.equal(patchResp.statusCode, 200, `membership patch expected 200, got ${patchResp.statusCode}: ${patchResp.body}`);
     assertNoSensitiveLeaks(patchResp.body, "membership patch 200");

@@ -116,6 +116,9 @@ export type TelegramPublishJobItem = {
   cancelledAt?: string | null;
   createdAt: string;
   mediaAsset?: MediaAssetItem | null;
+  videoAsset?: MediaAssetItem | null;
+  mediaAssetId?: string | null;
+  videoAssetId?: string | null;
   admin?: { id: string; displayName?: string | null; email?: string } | null;
   cancelledByAdmin?: { id: string; displayName?: string | null; email?: string } | null;
 };
@@ -185,7 +188,7 @@ type CompleteMediaUploadReq = { uploadSessionId: string; proof?: { etag?: string
 type CompleteMediaUploadResp = { ok: boolean; asset: any };
 type ContentMediaResp = { contentStatus: string; items: any[]; uploadSessions?: UploadSessionSummary[] };
 type StartTelegramPublishReq = { channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">; telegramTags?: string[]; reason?: string };
-type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }>; normalizedTelegramTags?: string[] };
+type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; videoAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }>; normalizedTelegramTags?: string[] };
 
 type MultipartSessionResp = {
   ok?: boolean;
@@ -1440,6 +1443,10 @@ const ContentsPage: React.FC = () => {
         tags: values.tags || [],
         seoKeywords: values.seoKeywords || [],
         geoKeywords: values.geoKeywords || [],
+        coverAssetId,
+        previewAssetId,
+        fullVideoAssetId: fullVideoAssetId ?? null,
+        fullVideoAssetIds: fullVideoSegments.map((asset) => asset.id),
         categoryIds: values.categoryIds || [],
         recommendStartsAt: values.recommendStartsAt ? values.recommendStartsAt.toISOString() : null,
         recommendEndsAt: values.recommendEndsAt ? values.recommendEndsAt.toISOString() : null,

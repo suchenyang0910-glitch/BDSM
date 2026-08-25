@@ -243,6 +243,8 @@ export type ContentItem = {
   channelId: string | null;
   packageId: string | null;
   productId: string | null;
+  fullVideoAssetId?: string | null;
+  fullVideoAssetIds?: string[];
   publishedAt: string | null;
   telegramMessageId: string | null;
   telegramSentAt: string | null;
@@ -297,6 +299,8 @@ export type CreateContentInput = {
   freeChannelCode?: string | null;
   packageId?: string | null;
   productId?: string | null;
+  fullVideoAssetId?: string | null;
+  fullVideoAssetIds?: string[];
   categoryIds?: string[];
   reason?: string;
 };
@@ -359,6 +363,7 @@ export type StartTelegramPublishResp = {
     status: string;
     jobToken: string;
     mediaAssetId: string | null;
+    videoAssetId: string | null;
     targetFreeChannelCode: string | null;
     createdAt: string;
   }>;

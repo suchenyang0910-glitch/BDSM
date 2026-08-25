@@ -22,7 +22,7 @@
 // ============================================================================
 
 import crypto from "crypto";
-import type { PrismaClient, TelegramPublishJob, MediaAsset, Content, ContentPackage, TelegramPublishChannelKind } from "@prisma/client";
+import type { PrismaClient, TelegramPublishJob, MediaAsset, VideoAsset, Content, ContentPackage, TelegramPublishChannelKind } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 
 import { emitSafetyEvent, emitStructuredLog, extractPrismaCodeOnly } from "../utils/structuredError.js";
@@ -255,7 +255,7 @@ async function resolveJobTargetChannelRef(
 
 // ====================== 素材 → TG API 方法 / payload 构造 ======================
 function resolveTgMethodForAsset(
-  asset: Pick<MediaAsset, "kind" | "mimeType" | "originalFilename">
+  asset: Pick<MediaAsset | VideoAsset, "kind" | "mimeType" | "originalFilename">
 ): { tgMethod: "sendPhoto" | "sendVideo"; mediaFilename: string; mediaContentType: string; supportsStreaming?: boolean } {
   const kind = asset.kind as any;
   const filename = asset.originalFilename || `${kind}_${safeHexDigest(String(asset.kind || "a"), 12)}`;
@@ -274,6 +274,7 @@ function resolveTgMethodForAsset(
 // ====================== 核心作业处理函数（同步/队列/DB 轮询 都走这一个函数）======================
 type PublishJobIncludes = TelegramPublishJob & {
   mediaAsset: MediaAsset | null;
+  videoAsset: VideoAsset | null;
   content: ({
     id: string;
     title: string;
@@ -298,6 +299,7 @@ export async function processPublishJob(
       where: { jobToken: jobData.jobToken },
       include: {
         mediaAsset: true,
+        videoAsset: true,
         content: {
           select: {
             id: true, title: true, description: true, accessType: true, packageId: true, productId: true,
@@ -341,6 +343,7 @@ export async function processPublishJob(
       where: { id: initialJobId },
       include: {
         mediaAsset: true,
+        videoAsset: true,
         content: {
           select: {
             id: true, title: true, description: true, accessType: true, packageId: true, productId: true,
@@ -356,8 +359,34 @@ export async function processPublishJob(
     return { ok: false, reason: "db_lock_failed" };
   }
 
-  const asset: MediaAsset | null = job.mediaAsset;
-  if (!asset || asset.status !== "ready" || !asset.storageBucket || !asset.storageKey) {
+  const storageEnv = requireObjectStorageEnv();
+  const asset = job.videoAsset
+    ? {
+        source: "video" as const,
+        id: job.videoAsset.id,
+        kind: job.videoAsset.kind,
+        mimeType: job.videoAsset.mimeType,
+        originalFilename: job.videoAsset.originalFilename,
+        status: job.videoAsset.status,
+        storageBucket: storageEnv.bucket,
+        storageKey: job.videoAsset.objectKey,
+        contentLength: job.videoAsset.byteSize,
+      }
+    : job.mediaAsset
+      ? {
+          source: "media" as const,
+          id: job.mediaAsset.id,
+          kind: job.mediaAsset.kind,
+          mimeType: job.mediaAsset.mimeType,
+          originalFilename: job.mediaAsset.originalFilename,
+          status: job.mediaAsset.status,
+          storageBucket: job.mediaAsset.storageBucket,
+          storageKey: job.mediaAsset.storageKey,
+          contentLength: job.mediaAsset.contentLength,
+        }
+      : null;
+  const expectedReadyStatus = asset?.source === "video" ? "verified" : "ready";
+  if (!asset || asset.status !== expectedReadyStatus || !asset.storageBucket || !asset.storageKey) {
     await markJobFailed(prisma, job.id, {
       lastErrorClass: "asset_not_ready",
       lastErrorNote: `status=${asset?.status || "null"} key_len=${String(asset?.storageKey || "").length}`,
@@ -383,7 +412,6 @@ export async function processPublishJob(
   // Step 1: requireObjectStorageEnv + HeadObject 二次校验（上传后可能被删/覆盖）
   let resolved: ResolvedTarget;
   try {
-    requireObjectStorageEnv();
     await headObject(asset.storageBucket, asset.storageKey);
   } catch (err) {
     await markJobFailed(prisma, job.id, {
@@ -419,7 +447,7 @@ export async function processPublishJob(
   let captionBundle: { caption?: string; parseMode?: "HTML" } = {};
   const isFullVideoKind =
     (job.channelKind === "membership_full" || job.channelKind === "package_full") &&
-    asset.kind === "full_video";
+    asset.kind === "full_source";
   if (isFullVideoKind && job.content) {
     const fullBundle = buildFullVideoCaption(job.content, {
       order: (job as any).segmentOrder,
@@ -613,7 +641,7 @@ export async function processPublishJob(
       if (job!.packageId) {
         // 注意：content_package 目前无独立 telegram_message_id 列（需要时再补 migration），先不写。
       }
-      if (job!.mediaAssetId && (asset.kind === "full_video" || asset.kind === "preview_video") && Object.keys(assetUpdateData).length > 0) {
+      if (job!.mediaAssetId && asset.source === "media" && asset.kind === "preview_video" && Object.keys(assetUpdateData).length > 0) {
         await tx.mediaAsset.update({
           where: { id: job!.mediaAssetId },
           data: assetUpdateData,
