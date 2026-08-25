@@ -34,6 +34,9 @@ import {
   InfoCircleOutlined,
   UploadOutlined,
   ReloadOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined,
+  DeleteOutlined,
   CloseCircleOutlined,
   CheckCircleTwoTone,
   ExclamationCircleTwoTone,
@@ -145,11 +148,229 @@ type InitMediaUploadResp = {
   uploadExpiresAt: string;
   expectedHttpHeaders: Record<string, string>;
 };
+type MultipartUploadInitResp = {
+  uploadSessionId: string;
+  storageUploadId: string;
+  partSize: number;
+  totalParts: number;
+  expiresAt: string;
+  maxConcurrency: number;
+};
+type UploadSessionPartSummary = {
+  partNumber: number;
+  etag: string;
+  bytes: string;
+  checksum?: string | null;
+  status: "uploaded" | string;
+  uploadedAt?: string | null;
+};
+type UploadSessionSummary = {
+  id: string;
+  contentId: string;
+  assetKind: ApiMediaKind;
+  status: "initiated" | "uploading" | "paused" | "completing" | "completed" | "cancelled" | "expired" | "failed";
+  filename?: string | null;
+  mimeType?: string | null;
+  expectedSize: string | null;
+  uploadedBytes: string | null;
+  totalParts: number | null;
+  partSize: number | null;
+  storageUploadIdPresent: boolean;
+  expiresAt?: string | null;
+  lastActivityAt?: string | null;
+  completedAt?: string | null;
+  parts: UploadSessionPartSummary[];
+};
 type CompleteMediaUploadReq = { uploadSessionId: string; proof?: { etag?: string | null } };
 type CompleteMediaUploadResp = { ok: boolean; asset: any };
-type ContentMediaResp = { contentStatus: string; items: any[] };
+type ContentMediaResp = { contentStatus: string; items: any[]; uploadSessions?: UploadSessionSummary[] };
 type StartTelegramPublishReq = { channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">; telegramTags?: string[]; reason?: string };
 type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }>; normalizedTelegramTags?: string[] };
+
+type MultipartSessionResp = {
+  ok?: boolean;
+  session: UploadSessionSummary;
+  progressPercent?: number;
+};
+
+type LocalMultipartResumeRecord = {
+  version: 1;
+  contentId: string;
+  sessionId: string;
+  fileName: string;
+  fileSize: number;
+  fileLastModified: number;
+  fileType: string;
+  sha256: string;
+  headSha256: string;
+  tailSha256: string;
+  partSize: number;
+  totalParts: number;
+  expiresAt: string;
+  updatedAt: string;
+};
+
+const MULTIPART_FINGERPRINT_SAMPLE_BYTES = 1024 * 1024;
+const MULTIPART_HASH_CHUNK_BYTES = 4 * 1024 * 1024;
+const MULTIPART_MAX_RETRIES = 5;
+const MULTIPART_DEFAULT_CONCURRENCY = 3;
+const MULTIPART_RESUME_STORAGE_PREFIX = "vod_multipart_resume";
+
+function multipartResumeStorageKey(contentId: string): string {
+  return `${MULTIPART_RESUME_STORAGE_PREFIX}:${contentId}:full_source`;
+}
+
+function readPersistedMultipartResume(contentId: string): LocalMultipartResumeRecord | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(multipartResumeStorageKey(contentId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LocalMultipartResumeRecord;
+    if (parsed?.contentId !== contentId || !parsed?.sessionId) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function persistMultipartResume(record: LocalMultipartResumeRecord): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(multipartResumeStorageKey(record.contentId), JSON.stringify(record));
+}
+
+function clearPersistedMultipartResume(contentId: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(multipartResumeStorageKey(contentId));
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value >= 100 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+}
+
+function formatSpeed(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "-";
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+function formatEta(seconds: number | null): string {
+  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return "-";
+  const totalSeconds = Math.max(1, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function normalizePartEtag(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return String(value).replace(/^W\//, "").replace(/^"|"$/g, "").trim() || null;
+}
+
+function parseIntString(value: string | number | null | undefined): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (!value) return 0;
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getPartBounds(fileSize: number, partSize: number, partNumber: number) {
+  const start = (partNumber - 1) * partSize;
+  const end = Math.min(fileSize, start + partSize);
+  return {
+    start,
+    end,
+    bytes: Math.max(0, end - start),
+  };
+}
+
+function humanizeUploadSessionStatus(status: UploadSessionSummary["status"] | null | undefined): string {
+  if (status === "paused") return "已暂停";
+  if (status === "uploading") return "上传中";
+  if (status === "initiated") return "待上传";
+  if (status === "completing") return "正在合并";
+  if (status === "completed") return "已完成";
+  if (status === "cancelled") return "已取消";
+  if (status === "expired") return "已过期";
+  if (status === "failed") return "失败";
+  return "待处理";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function digestBlobSha256Hex(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function digestBlobSha256Base64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  let binary = "";
+  const bytes = new Uint8Array(digest);
+  for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
+  return btoa(binary);
+}
+
+async function computeFileEdgeFingerprint(file: File): Promise<{ headSha256: string; tailSha256: string }> {
+  const sampleBytes = Math.max(1, Math.min(MULTIPART_FINGERPRINT_SAMPLE_BYTES, file.size || MULTIPART_FINGERPRINT_SAMPLE_BYTES));
+  const [headSha256, tailSha256] = await Promise.all([
+    digestBlobSha256Hex(file.slice(0, sampleBytes)),
+    digestBlobSha256Hex(file.slice(Math.max(0, file.size - sampleBytes), file.size)),
+  ]);
+  return { headSha256, tailSha256 };
+}
+
+async function computeFileFingerprint(
+  file: File,
+  onProgress?: (processedBytes: number, totalBytes: number) => void,
+): Promise<{ sha256: string; headSha256: string; tailSha256: string }> {
+  const worker = new Worker(new URL("../workers/uploadHashWorker.ts", import.meta.url), { type: "module" });
+  return await new Promise((resolve, reject) => {
+    worker.onmessage = (event: MessageEvent<any>) => {
+      const payload = event.data || {};
+      if (payload.type === "progress") {
+        onProgress?.(Number(payload.processedBytes || 0), Number(payload.totalBytes || file.size || 0));
+        return;
+      }
+      if (payload.type === "done") {
+        worker.terminate();
+        resolve({
+          sha256: String(payload.sha256 || ""),
+          headSha256: String(payload.headSha256 || ""),
+          tailSha256: String(payload.tailSha256 || ""),
+        });
+        return;
+      }
+      if (payload.type === "error") {
+        worker.terminate();
+        reject(new Error(String(payload.message || "文件指纹计算失败")));
+      }
+    };
+    worker.onerror = () => {
+      worker.terminate();
+      reject(new Error("文件指纹计算失败"));
+    };
+    worker.postMessage({
+      type: "fingerprint",
+      file,
+      chunkSize: MULTIPART_HASH_CHUNK_BYTES,
+      sampleSize: MULTIPART_FINGERPRINT_SAMPLE_BYTES,
+    });
+  });
+}
 
 function mapApiMediaKind(kind: ApiMediaKind): MediaAssetKind {
   if (kind === "cover") return "cover_image";
@@ -172,6 +393,45 @@ function mapApiMediaStatus(status: ApiMediaStatus): MediaAssetStatus {
 
 export async function initMediaUpload(contentId: string, req: InitMediaUploadReq): Promise<InitMediaUploadResp> {
   const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/assets/upload-session`, req, { timeout: 20_000 });
+  return res.data;
+}
+
+export async function initiateMultipartMediaUpload(contentId: string, req: InitMediaUploadReq): Promise<MultipartUploadInitResp> {
+  const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/assets/multipart/initiate`, req, { timeout: 30_000 });
+  return res.data;
+}
+
+export async function signMultipartUploadPart(
+  sessionId: string,
+  partNumber: number,
+  checksumSha256?: string | null,
+): Promise<{ uploadSessionId: string; partNumber: number; uploadUrl: string; uploadExpiresAt: string; expectedHttpHeaders: Record<string, string> }> {
+  const res = await http.post(`/admin/upload-sessions/${encodeURIComponent(sessionId)}/parts/${partNumber}/sign`, { checksumSha256: checksumSha256 || null }, { timeout: 20_000 });
+  return res.data;
+}
+
+export async function getMultipartUploadSession(sessionId: string): Promise<MultipartSessionResp> {
+  const res = await http.get(`/admin/upload-sessions/${encodeURIComponent(sessionId)}`, { timeout: 20_000 });
+  return res.data;
+}
+
+export async function pauseMultipartUpload(sessionId: string): Promise<MultipartSessionResp> {
+  const res = await http.post(`/admin/upload-sessions/${encodeURIComponent(sessionId)}/pause`, {}, { timeout: 20_000 });
+  return res.data;
+}
+
+export async function resumeMultipartUpload(sessionId: string): Promise<MultipartSessionResp> {
+  const res = await http.post(`/admin/upload-sessions/${encodeURIComponent(sessionId)}/resume`, {}, { timeout: 20_000 });
+  return res.data;
+}
+
+export async function abortMultipartUpload(sessionId: string): Promise<MultipartSessionResp> {
+  const res = await http.post(`/admin/upload-sessions/${encodeURIComponent(sessionId)}/abort`, {}, { timeout: 20_000 });
+  return res.data;
+}
+
+export async function completeMultipartUpload(sessionId: string): Promise<CompleteMediaUploadResp> {
+  const res = await http.post(`/admin/upload-sessions/${encodeURIComponent(sessionId)}/complete`, {}, { timeout: 60_000 });
   return res.data;
 }
 
@@ -207,9 +467,8 @@ export async function startTelegramPublish(contentId: string, req: StartTelegram
 }
 
 async function computeFileSha256Hex(file: File): Promise<string> {
-  const buffer = await file.arrayBuffer();
-  const digest = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const { sha256 } = await computeFileFingerprint(file);
+  return sha256;
 }
 export async function listTelegramPublishJobs(contentId: string): Promise<{ ok: true; items: TelegramPublishJobItem[] }> {
   const res = await http.get(`/admin/contents/${encodeURIComponent(contentId)}/publish-jobs`);
@@ -305,7 +564,23 @@ const ContentsPage: React.FC = () => {
   const [fullVideoSegments, setFullVideoSegments] = React.useState<MediaAssetItem[]>([]);
   const [fullVideoProgress, setFullVideoProgress] = React.useState<number>(0);
   const [fullVideoUploading, setFullVideoUploading] = React.useState(false);
+  const [fullVideoFingerprinting, setFullVideoFingerprinting] = React.useState(false);
+  const [fullVideoSession, setFullVideoSession] = React.useState<UploadSessionSummary | null>(null);
+  const [fullVideoResumeRecord, setFullVideoResumeRecord] = React.useState<LocalMultipartResumeRecord | null>(null);
+  const [fullVideoUploadedBytes, setFullVideoUploadedBytes] = React.useState(0);
+  const [fullVideoTotalBytes, setFullVideoTotalBytes] = React.useState(0);
+  const [fullVideoSpeedBps, setFullVideoSpeedBps] = React.useState(0);
+  const [fullVideoEtaSeconds, setFullVideoEtaSeconds] = React.useState<number | null>(null);
+  const [fullVideoStatusHint, setFullVideoStatusHint] = React.useState<string>("");
+  const [fullVideoUploadError, setFullVideoUploadError] = React.useState<string | null>(null);
   const [coverPreviewUrl, setCoverPreviewUrl] = React.useState<string | null>(null);
+  const fullVideoActiveRequestsRef = React.useRef<Map<number, XMLHttpRequest>>(new Map());
+  const fullVideoActiveLoadedBytesRef = React.useRef<Map<number, number>>(new Map());
+  const fullVideoCompletedBytesRef = React.useRef(0);
+  const fullVideoProgressSampleRef = React.useRef({ ts: 0, bytes: 0 });
+  const fullVideoRunIdRef = React.useRef(0);
+  const fullVideoControlRef = React.useRef<{ action: "none" | "pause" | "cancel" }>({ action: "none" });
+  const lastFullVideoFileRef = React.useRef<File | null>(null);
 
   // ================== 发布任务 state ==================
   const [channelKinds, setChannelKinds] = React.useState<Array<TelegramPublishJobItem["channelKind"]>>([]);
@@ -493,9 +768,13 @@ const ContentsPage: React.FC = () => {
     try {
       const resp = await listContentMedia(contentId);
       const items = Array.isArray(resp.items) ? resp.items.map(normalizeMediaAsset) : [];
+      const uploadSessions = Array.isArray(resp.uploadSessions) ? resp.uploadSessions : [];
       const cover = items.find((item) => item.kind === "cover_image" && item.status !== "deleted") || null;
       const preview = items.find((item) => item.kind === "preview_video" && item.status !== "deleted") || null;
       const fulls = items.filter((item) => item.kind === "full_video" && item.status !== "deleted");
+      const pendingFullSession = uploadSessions
+        .filter((item) => item.assetKind === "full_source" && !["completed", "cancelled", "expired"].includes(item.status))
+        .sort((a, b) => String(b.lastActivityAt || "").localeCompare(String(a.lastActivityAt || "")))[0] || null;
       setCoverAsset(cover);
       setCoverAssetId(cover?.id || null);
       setPreviewAsset(preview);
@@ -503,6 +782,25 @@ const ContentsPage: React.FC = () => {
       setFullVideoSegments(fulls);
       setFullVideoAsset(fulls[0] || null);
       setFullVideoAssetId(fulls[0]?.id || null);
+      setFullVideoSession(pendingFullSession);
+      if (pendingFullSession) {
+        const totalBytes = parseIntString(pendingFullSession.expectedSize);
+        const uploadedBytes = parseIntString(pendingFullSession.uploadedBytes);
+        setFullVideoTotalBytes(totalBytes);
+        setFullVideoUploadedBytes(uploadedBytes);
+        setFullVideoProgress(totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)) : 0);
+        if (!fullVideoUploading) {
+          setFullVideoStatusHint(`发现未完成上传：${humanizeUploadSessionStatus(pendingFullSession.status)}`);
+        }
+      } else if (!fullVideoUploading) {
+        setFullVideoStatusHint(fulls[0]?.status === "ready" ? "完整源视频已校验完成" : "");
+      }
+      const persisted = readPersistedMultipartResume(contentId);
+      setFullVideoResumeRecord(persisted);
+      if (!pendingFullSession && persisted) {
+        clearPersistedMultipartResume(contentId);
+        setFullVideoResumeRecord(null);
+      }
     } catch {
       setCoverAsset(null);
       setCoverAssetId(null);
@@ -511,8 +809,10 @@ const ContentsPage: React.FC = () => {
       setFullVideoSegments([]);
       setFullVideoAsset(null);
       setFullVideoAssetId(null);
+      setFullVideoSession(null);
+      setFullVideoResumeRecord(readPersistedMultipartResume(contentId));
     }
-  }, []);
+  }, [fullVideoUploading]);
 
   // Drawer 打开后启动定时刷新 publish-jobs（后台异步发送任务 8s 轮询一次 UI）
   React.useEffect(() => {
@@ -544,7 +844,26 @@ const ContentsPage: React.FC = () => {
     setCoverAssetId(null); setCoverAsset(null); setCoverProgress(0); setCoverUploading(false);
     setPreviewAssetId(null); setPreviewAsset(null); setPreviewProgress(0); setPreviewUploading(false);
     setFullVideoAssetId(null); setFullVideoAsset(null); setFullVideoSegments([]); setFullVideoProgress(0); setFullVideoUploading(false);
+    setFullVideoFingerprinting(false);
+    setFullVideoSession(null);
+    setFullVideoResumeRecord(null);
+    setFullVideoUploadedBytes(0);
+    setFullVideoTotalBytes(0);
+    setFullVideoSpeedBps(0);
+    setFullVideoEtaSeconds(null);
+    setFullVideoStatusHint("");
+    setFullVideoUploadError(null);
     setCoverPreviewUrl(null);
+    fullVideoActiveRequestsRef.current.forEach((xhr) => {
+      try { xhr.abort(); } catch {}
+    });
+    fullVideoActiveRequestsRef.current.clear();
+    fullVideoActiveLoadedBytesRef.current.clear();
+    fullVideoCompletedBytesRef.current = 0;
+    fullVideoProgressSampleRef.current = { ts: 0, bytes: 0 };
+    fullVideoRunIdRef.current += 1;
+    fullVideoControlRef.current = { action: "none" };
+    lastFullVideoFileRef.current = null;
   }, []);
 
   const openCreate = () => {
@@ -624,6 +943,412 @@ const ContentsPage: React.FC = () => {
     void refreshContentMedia(row.id);
     setDrawerOpen(true);
   };
+
+  const updateFullVideoMetrics = React.useCallback((uploadedBytes: number, totalBytes: number) => {
+    const safeUploaded = Math.max(0, uploadedBytes);
+    const safeTotal = Math.max(0, totalBytes);
+    const now = Date.now();
+    const prev = fullVideoProgressSampleRef.current;
+    const elapsedMs = prev.ts > 0 ? now - prev.ts : 0;
+    const deltaBytes = prev.ts > 0 ? safeUploaded - prev.bytes : 0;
+    const speedBps = elapsedMs >= 400 && deltaBytes >= 0 ? (deltaBytes * 1000) / elapsedMs : fullVideoSpeedBps;
+    const remainingBytes = Math.max(0, safeTotal - safeUploaded);
+    setFullVideoUploadedBytes(safeUploaded);
+    setFullVideoTotalBytes(safeTotal);
+    setFullVideoProgress(safeTotal > 0 ? Math.min(100, Math.round((safeUploaded / safeTotal) * 100)) : 0);
+    setFullVideoSpeedBps(Number.isFinite(speedBps) ? speedBps : 0);
+    setFullVideoEtaSeconds(speedBps > 0 ? remainingBytes / speedBps : null);
+    fullVideoProgressSampleRef.current = { ts: now, bytes: safeUploaded };
+  }, [fullVideoSpeedBps]);
+
+  const syncFullVideoSessionState = React.useCallback((session: UploadSessionSummary | null, fallbackFilename?: string | null) => {
+    setFullVideoSession(session);
+    if (!session) return;
+    const totalBytes = parseIntString(session.expectedSize);
+    const uploadedFromParts = Array.isArray(session.parts)
+      ? session.parts.reduce((sum, item) => sum + parseIntString(item.bytes), 0)
+      : 0;
+    const uploadedBytes = Math.max(parseIntString(session.uploadedBytes), uploadedFromParts);
+    fullVideoCompletedBytesRef.current = uploadedBytes;
+    fullVideoActiveLoadedBytesRef.current.clear();
+    updateFullVideoMetrics(uploadedBytes, totalBytes);
+    setFullVideoStatusHint(
+      session.status === "completed"
+        ? "完整源视频已完成分片合并"
+        : session.status === "paused"
+          ? "上传已暂停，可继续"
+          : session.status === "completing"
+            ? "分片已齐，正在完成合并"
+            : `${fallbackFilename || session.filename || "完整源视频"}：${humanizeUploadSessionStatus(session.status)}`,
+    );
+  }, [updateFullVideoMetrics]);
+
+  const uploadPartWithSignedUrl = React.useCallback(async (
+    uploadUrl: string,
+    headers: Record<string, string>,
+    blob: Blob,
+    partNumber: number,
+    runId: number,
+  ): Promise<string | null> => {
+    return await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      fullVideoActiveRequestsRef.current.set(partNumber, xhr);
+      fullVideoActiveLoadedBytesRef.current.set(partNumber, 0);
+      xhr.open("PUT", uploadUrl, true);
+      Object.entries(headers || {}).forEach(([key, value]) => {
+        try { xhr.setRequestHeader(key, value); } catch {}
+      });
+      xhr.upload.onprogress = (event) => {
+        if (runId !== fullVideoRunIdRef.current) return;
+        const loaded = event.lengthComputable ? Math.max(0, Number(event.loaded || 0)) : 0;
+        fullVideoActiveLoadedBytesRef.current.set(partNumber, loaded);
+        const activeLoaded = Array.from(fullVideoActiveLoadedBytesRef.current.values()).reduce((sum, value) => sum + value, 0);
+        updateFullVideoMetrics(fullVideoCompletedBytesRef.current + activeLoaded, fullVideoTotalBytes || blob.size);
+      };
+      xhr.onload = () => {
+        fullVideoActiveRequestsRef.current.delete(partNumber);
+        fullVideoActiveLoadedBytesRef.current.delete(partNumber);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(normalizePartEtag(xhr.getResponseHeader("ETag")));
+          return;
+        }
+        reject(new Error(`分片 ${partNumber} 上传失败（HTTP ${xhr.status}）`));
+      };
+      xhr.onerror = () => {
+        fullVideoActiveRequestsRef.current.delete(partNumber);
+        fullVideoActiveLoadedBytesRef.current.delete(partNumber);
+        reject(new Error(`分片 ${partNumber} 上传时网络中断`));
+      };
+      xhr.onabort = () => {
+        fullVideoActiveRequestsRef.current.delete(partNumber);
+        fullVideoActiveLoadedBytesRef.current.delete(partNumber);
+        reject(new Error("__multipart_aborted__"));
+      };
+      xhr.send(blob);
+    });
+  }, [fullVideoTotalBytes, updateFullVideoMetrics]);
+
+  const runMultipartUpload = React.useCallback(async (
+    file: File,
+    sessionSeed: UploadSessionSummary,
+    resumeRecord: LocalMultipartResumeRecord,
+  ) => {
+    const runId = fullVideoRunIdRef.current + 1;
+    fullVideoRunIdRef.current = runId;
+    fullVideoControlRef.current = { action: "none" };
+    fullVideoActiveRequestsRef.current.clear();
+    fullVideoActiveLoadedBytesRef.current.clear();
+    fullVideoProgressSampleRef.current = { ts: 0, bytes: fullVideoCompletedBytesRef.current };
+    lastFullVideoFileRef.current = file;
+    setFullVideoUploading(true);
+    setFullVideoFingerprinting(false);
+    setFullVideoUploadError(null);
+    try {
+      const latest = await getMultipartUploadSession(sessionSeed.id);
+      if (runId !== fullVideoRunIdRef.current) return;
+      let session = latest.session;
+      syncFullVideoSessionState(session, file.name);
+      const totalParts = session.totalParts || resumeRecord.totalParts;
+      const partSize = session.partSize || resumeRecord.partSize;
+      const totalBytes = file.size;
+      const uploadedPartNumbers = new Set((session.parts || []).map((part) => part.partNumber));
+      const pendingPartNumbers: number[] = [];
+      for (let partNumber = 1; partNumber <= totalParts; partNumber += 1) {
+        if (!uploadedPartNumbers.has(partNumber)) pendingPartNumbers.push(partNumber);
+      }
+      const concurrency = Math.min(MULTIPART_DEFAULT_CONCURRENCY, totalParts || MULTIPART_DEFAULT_CONCURRENCY);
+      const uploadNextPart = async () => {
+        while (pendingPartNumbers.length > 0) {
+          if (runId !== fullVideoRunIdRef.current) return;
+          if (fullVideoControlRef.current.action !== "none") return;
+          const partNumber = pendingPartNumbers.shift();
+          if (!partNumber) return;
+          const { start, end, bytes } = getPartBounds(totalBytes, partSize, partNumber);
+          const blob = file.slice(start, end);
+          let uploaded = false;
+          for (let attempt = 0; attempt < MULTIPART_MAX_RETRIES && !uploaded; attempt += 1) {
+            if (fullVideoControlRef.current.action !== "none") return;
+            try {
+              setFullVideoStatusHint(`正在上传分片 ${partNumber}/${totalParts}${attempt > 0 ? `（重试 ${attempt + 1}/${MULTIPART_MAX_RETRIES}）` : ""}`);
+              const checksumSha256 = await digestBlobSha256Base64(blob);
+              const signed = await signMultipartUploadPart(session.id, partNumber, checksumSha256);
+              await uploadPartWithSignedUrl(signed.uploadUrl, signed.expectedHttpHeaders || {}, blob, partNumber, runId);
+              fullVideoCompletedBytesRef.current += bytes;
+              updateFullVideoMetrics(fullVideoCompletedBytesRef.current, totalBytes);
+              const synced = await getMultipartUploadSession(session.id);
+              if (runId !== fullVideoRunIdRef.current) return;
+              session = synced.session;
+              syncFullVideoSessionState(session, file.name);
+              uploaded = true;
+            } catch (error: any) {
+              if (String(error?.message || "") === "__multipart_aborted__") {
+                if (fullVideoControlRef.current.action !== "none") return;
+                throw error;
+              }
+              if (attempt >= MULTIPART_MAX_RETRIES - 1) {
+                throw error;
+              }
+              const delayMs = Math.min(8000, 500 * (2 ** attempt));
+              setFullVideoStatusHint(`分片 ${partNumber} 上传失败，${Math.round(delayMs / 1000)} 秒后自动重试`);
+              await sleep(delayMs);
+            }
+          }
+        }
+      };
+
+      await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => uploadNextPart()));
+      if (runId !== fullVideoRunIdRef.current) return;
+      if (fullVideoControlRef.current.action === "pause" || fullVideoControlRef.current.action === "cancel") return;
+      setFullVideoStatusHint("所有分片已上传，正在完成合并");
+      const completion = await completeMultipartUpload(session.id);
+      if (runId !== fullVideoRunIdRef.current) return;
+      const verified = normalizeMediaAsset(completion.asset);
+      setFullVideoAssetId(verified.id);
+      setFullVideoAsset(verified);
+      setFullVideoSegments((current) => current.some((item) => item.id === verified.id) ? current : [...current, verified]);
+      setFullVideoProgress(100);
+      setFullVideoSpeedBps(0);
+      setFullVideoEtaSeconds(0);
+      setFullVideoStatusHint("完整源视频上传并校验完成，已进入转码排队");
+      setFullVideoSession(null);
+      clearPersistedMultipartResume(resumeRecord.contentId);
+      setFullVideoResumeRecord(null);
+      await refreshContentMedia(resumeRecord.contentId);
+      message.success("完整源视频已完成分片上传与校验");
+    } catch (error: any) {
+      if (fullVideoControlRef.current.action === "pause" || fullVideoControlRef.current.action === "cancel") return;
+      setFullVideoUploadError(errMsg(error, "完整源视频上传失败"));
+      setFullVideoStatusHint("上传中断，可重试或继续上传");
+      message.error(errMsg(error, "完整源视频上传失败"));
+    } finally {
+      if (runId === fullVideoRunIdRef.current) {
+        setFullVideoUploading(false);
+        setFullVideoFingerprinting(false);
+        fullVideoActiveRequestsRef.current.clear();
+        fullVideoActiveLoadedBytesRef.current.clear();
+        setFullVideoSpeedBps(0);
+      }
+    }
+  }, [refreshContentMedia, syncFullVideoSessionState, updateFullVideoMetrics, uploadPartWithSignedUrl]);
+
+  const startOrResumeFullVideoUpload = React.useCallback(async (file: File) => {
+    if (!canEdit) {
+      message.error("当前角色无 content:edit 权限，不能上传素材");
+      return Upload.LIST_IGNORE;
+    }
+    if (!editing?.id) {
+      message.error("请先保存基础信息，再上传媒体文件");
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size > 8 * 1024 * 1024 * 1024) {
+      message.error("完整源视频当前限制为 8GB 以内，请先压缩或拆分素材后重试");
+      return Upload.LIST_IGNORE;
+    }
+
+    const persisted = readPersistedMultipartResume(editing.id);
+    const activeSessionId = fullVideoSession?.id || persisted?.sessionId || null;
+    const resumable = Boolean(
+      persisted &&
+      activeSessionId &&
+      persisted.sessionId === activeSessionId &&
+      fullVideoSession &&
+      !["completed", "cancelled", "expired"].includes(fullVideoSession.status),
+    );
+
+    setFullVideoUploadError(null);
+    setFullVideoStatusHint("");
+    setFullVideoProgress(0);
+    lastFullVideoFileRef.current = file;
+
+    if (resumable && persisted && fullVideoSession) {
+      if (file.name !== persisted.fileName || file.size !== persisted.fileSize || file.lastModified !== persisted.fileLastModified) {
+        message.error("所选文件与上次未完成上传的文件不一致，请选择同一文件继续，或先点击“放弃上传”");
+        return Upload.LIST_IGNORE;
+      }
+      setFullVideoFingerprinting(true);
+      setFullVideoStatusHint("正在校验续传文件指纹");
+      try {
+        const sample = await computeFileEdgeFingerprint(file);
+        if (sample.headSha256 !== persisted.headSha256 || sample.tailSha256 !== persisted.tailSha256) {
+          message.error("文件抽样校验未通过，无法续传到不同文件。请放弃旧会话后重新上传。");
+          setFullVideoFingerprinting(false);
+          setFullVideoStatusHint("文件校验失败，请重新选择同一文件");
+          return Upload.LIST_IGNORE;
+        }
+        const resumed = fullVideoSession.status === "paused"
+          ? await resumeMultipartUpload(fullVideoSession.id)
+          : await getMultipartUploadSession(fullVideoSession.id);
+        const refreshedRecord: LocalMultipartResumeRecord = {
+          ...persisted,
+          partSize: resumed.session.partSize || persisted.partSize,
+          totalParts: resumed.session.totalParts || persisted.totalParts,
+          expiresAt: resumed.session.expiresAt || persisted.expiresAt,
+          updatedAt: new Date().toISOString(),
+        };
+        persistMultipartResume(refreshedRecord);
+        setFullVideoResumeRecord(refreshedRecord);
+        await runMultipartUpload(file, resumed.session, refreshedRecord);
+      } catch (error) {
+        setFullVideoFingerprinting(false);
+        setFullVideoUploadError(errMsg(error, "恢复上传失败"));
+        message.error(errMsg(error, "恢复上传失败"));
+      }
+      return Upload.LIST_IGNORE;
+    }
+
+    if (fullVideoSession && !["completed", "cancelled", "expired"].includes(fullVideoSession.status)) {
+      message.warning("已发现未完成上传，请先继续上传或点击“放弃上传”终止旧会话后再上传新文件。");
+      return Upload.LIST_IGNORE;
+    }
+
+    setFullVideoFingerprinting(true);
+    setFullVideoStatusHint("正在分片计算文件指纹");
+    try {
+      const fingerprint = await computeFileFingerprint(file, (processedBytes, totalBytes) => {
+        const percent = totalBytes > 0 ? Math.min(99, Math.round((processedBytes / totalBytes) * 100)) : 0;
+        setFullVideoStatusHint(`正在分片计算文件指纹 ${percent}%`);
+      });
+      const initiated = await initiateMultipartMediaUpload(editing.id, {
+        assetKind: "full_source",
+        filename: file.name,
+        mimeType: file.type || "application/octet-stream",
+        byteSize: file.size,
+        sha256: fingerprint.sha256,
+      });
+      const record: LocalMultipartResumeRecord = {
+        version: 1,
+        contentId: editing.id,
+        sessionId: initiated.uploadSessionId,
+        fileName: file.name,
+        fileSize: file.size,
+        fileLastModified: file.lastModified,
+        fileType: file.type || "application/octet-stream",
+        sha256: fingerprint.sha256,
+        headSha256: fingerprint.headSha256,
+        tailSha256: fingerprint.tailSha256,
+        partSize: initiated.partSize,
+        totalParts: initiated.totalParts,
+        expiresAt: initiated.expiresAt,
+        updatedAt: new Date().toISOString(),
+      };
+      persistMultipartResume(record);
+      setFullVideoResumeRecord(record);
+      const session: UploadSessionSummary = {
+        id: initiated.uploadSessionId,
+        contentId: editing.id,
+        assetKind: "full_source",
+        status: "initiated",
+        filename: file.name,
+        mimeType: file.type || "application/octet-stream",
+        expectedSize: String(file.size),
+        uploadedBytes: "0",
+        totalParts: initiated.totalParts,
+        partSize: initiated.partSize,
+        storageUploadIdPresent: true,
+        expiresAt: initiated.expiresAt,
+        lastActivityAt: new Date().toISOString(),
+        completedAt: null,
+        parts: [],
+      };
+      await runMultipartUpload(file, session, record);
+    } catch (error) {
+      setFullVideoFingerprinting(false);
+      setFullVideoUploading(false);
+      setFullVideoUploadError(errMsg(error, "完整源视频初始化失败"));
+      setFullVideoStatusHint("无法创建分片上传会话");
+      message.error(errMsg(error, "完整源视频初始化失败"));
+    }
+    return Upload.LIST_IGNORE;
+  }, [canEdit, editing?.id, fullVideoSession, runMultipartUpload]);
+
+  const pauseFullVideoUpload = React.useCallback(async () => {
+    if (!fullVideoSession?.id) return;
+    fullVideoControlRef.current = { action: "pause" };
+    setFullVideoStatusHint("正在暂停上传");
+    fullVideoActiveRequestsRef.current.forEach((xhr) => {
+      try { xhr.abort(); } catch {}
+    });
+    setFullVideoUploading(false);
+    try {
+      const paused = await pauseMultipartUpload(fullVideoSession.id);
+      syncFullVideoSessionState(paused.session);
+      setFullVideoStatusHint("上传已暂停，可继续");
+    } catch (error) {
+      setFullVideoUploadError(errMsg(error, "暂停上传失败"));
+      message.error(errMsg(error, "暂停上传失败"));
+    } finally {
+      setFullVideoSpeedBps(0);
+      setFullVideoEtaSeconds(null);
+    }
+  }, [fullVideoSession?.id, syncFullVideoSessionState]);
+
+  const resumeFullVideoUpload = React.useCallback(async () => {
+    if (!fullVideoSession?.id) {
+      message.warning("当前没有可继续的上传会话");
+      return;
+    }
+    const file = lastFullVideoFileRef.current;
+    if (!file) {
+      message.info("请重新选择同一文件继续上传");
+      return;
+    }
+    await startOrResumeFullVideoUpload(file);
+  }, [fullVideoSession?.id, startOrResumeFullVideoUpload]);
+
+  const abortFullVideoUpload = React.useCallback(async () => {
+    if (!editing?.id || !fullVideoSession?.id) return;
+    fullVideoControlRef.current = { action: "cancel" };
+    fullVideoActiveRequestsRef.current.forEach((xhr) => {
+      try { xhr.abort(); } catch {}
+    });
+    setFullVideoUploading(false);
+    setFullVideoStatusHint("正在放弃上传");
+    try {
+      await abortMultipartUpload(fullVideoSession.id);
+      clearPersistedMultipartResume(editing.id);
+      setFullVideoResumeRecord(null);
+      setFullVideoSession(null);
+      setFullVideoProgress(0);
+      setFullVideoUploadedBytes(0);
+      setFullVideoSpeedBps(0);
+      setFullVideoEtaSeconds(null);
+      setFullVideoUploadError(null);
+      lastFullVideoFileRef.current = null;
+      await refreshContentMedia(editing.id);
+      message.success("已取消该次完整视频上传，会话不可恢复");
+    } catch (error) {
+      setFullVideoUploadError(errMsg(error, "取消上传失败"));
+      message.error(errMsg(error, "取消上传失败"));
+    }
+  }, [editing?.id, fullVideoSession?.id, refreshContentMedia]);
+
+  const retryFullVideoUpload = React.useCallback(async () => {
+    if (!lastFullVideoFileRef.current) {
+      message.info("请重新选择同一文件继续上传");
+      return;
+    }
+    await startOrResumeFullVideoUpload(lastFullVideoFileRef.current);
+  }, [startOrResumeFullVideoUpload]);
+
+  React.useEffect(() => {
+    if (!editing?.id) return;
+    const persisted = readPersistedMultipartResume(editing.id);
+    if (persisted) setFullVideoResumeRecord(persisted);
+  }, [editing?.id]);
+
+  React.useEffect(() => {
+    if (!fullVideoUploading || !fullVideoSession?.id || !editing?.id) return;
+    const handlePageHide = () => {
+      try {
+        navigator.sendBeacon?.(
+          `/admin/upload-sessions/${encodeURIComponent(fullVideoSession.id)}/pause`,
+          new Blob(["{}"], { type: "application/json" }),
+        );
+      } catch {}
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, [editing?.id, fullVideoSession?.id, fullVideoUploading]);
 
   // ================== 自定义：浏览器直传对象存储（不经过 Web 服务器） ==================
   const doDirectUpload = React.useCallback(async (
@@ -1589,39 +2314,117 @@ const ContentsPage: React.FC = () => {
                     title={
                       <Space>
                         <span>③ 完整源视频</span>
-                        {fullVideoSegments.length > 0 && fullVideoSegments.every((asset) => asset.status === "ready") ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
+                        {fullVideoSegments.length > 0 && fullVideoSegments.every((asset) => asset.status === "ready")
+                          ? <CheckCircleTwoTone twoToneColor="#52c41a" />
+                          : fullVideoUploadError
+                            ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" />
+                            : <ClockCircleOutlined style={{ color: "#888" }} />}
                       </Space>
                     }
-                    extra={<Tag color="purple">每个文件 ≤ 8GB</Tag>}
+                    extra={<Tag color="purple">Multipart 分片上传 · ≤ 8GB</Tag>}
                   >
                     <Space direction="vertical" size={12} style={{ width: "100%" }}>
                       <Alert
                         type="info"
                         showIcon
-                        message="本阶段仅完成私有源文件入库和转码排队，不提供完整视频播放，也不下发前端可播放地址。"
+                        message="完整源视频必须走 Multipart Upload：默认 32MiB 分片、最多 3 并发、失败自动重试、刷新后可继续。"
+                        description="前端不会拿到永久 Bucket 地址、对象 Key 或完整视频公开 URL；取消上传会调用 abort，旧会话不可恢复。"
                       />
-                      <Upload
-                        multiple={false}
-                        maxCount={1}
-                        accept="video/*"
-                        disabled={!canEdit || fullVideoUploading}
-                        showUploadList={false}
-                        beforeUpload={(f) => doDirectUpload(f as File, "full_video", {
-                          setAssetId: setFullVideoAssetId,
-                          setAsset: (asset) => {
-                            setFullVideoAsset(asset);
-                            if (asset?.status === "ready") {
-                              setFullVideoSegments((current) => current.some((item) => item.id === asset.id) ? current : [...current, asset]);
-                            }
-                          },
-                          setProgress: setFullVideoProgress, setUploading: setFullVideoUploading,
-                        }, 8 * 1024 * 1024 * 1024)}
-                      >
-                        <Button icon={<UploadOutlined />} loading={fullVideoUploading} disabled={!canEdit}>
-                          {fullVideoSegments.length > 0 ? "继续上传完整源视频" : "上传完整源视频"}
+                      {(fullVideoSession || fullVideoResumeRecord) && (
+                        <Alert
+                          type={fullVideoUploadError ? "error" : fullVideoSession?.status === "paused" ? "warning" : "info"}
+                          showIcon
+                          message={`发现未完成上传：${humanizeUploadSessionStatus(fullVideoSession?.status || "initiated")}`}
+                          description={
+                            <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                              <span>
+                                {fullVideoResumeRecord
+                                  ? `文件：${fullVideoResumeRecord.fileName} · ${formatBytes(fullVideoResumeRecord.fileSize)}`
+                                  : `会话：${fullVideoSession?.filename || "完整源视频"}`}
+                              </span>
+                              <Space wrap>
+                                <Upload
+                                  multiple={false}
+                                  maxCount={1}
+                                  accept="video/*"
+                                  disabled={!canEdit || fullVideoUploading || fullVideoFingerprinting}
+                                  showUploadList={false}
+                                  beforeUpload={(f) => startOrResumeFullVideoUpload(f as File)}
+                                >
+                                  <Button icon={<PlayCircleOutlined />} loading={fullVideoUploading || fullVideoFingerprinting} disabled={!canEdit}>
+                                    继续上传（选择同一文件）
+                                  </Button>
+                                </Upload>
+                                <Button icon={<DeleteOutlined />} danger disabled={!canEdit || fullVideoUploading || fullVideoFingerprinting} onClick={() => void abortFullVideoUpload()}>
+                                  放弃上传
+                                </Button>
+                              </Space>
+                            </Space>
+                          }
+                        />
+                      )}
+                      <Space wrap>
+                        <Upload
+                          multiple={false}
+                          maxCount={1}
+                          accept="video/*"
+                          disabled={!canEdit || fullVideoUploading || fullVideoFingerprinting}
+                          showUploadList={false}
+                          beforeUpload={(f) => startOrResumeFullVideoUpload(f as File)}
+                        >
+                          <Button icon={<UploadOutlined />} loading={fullVideoUploading || fullVideoFingerprinting} disabled={!canEdit}>
+                            {fullVideoSession || fullVideoResumeRecord ? "继续上传完整源视频" : "上传完整源视频"}
+                          </Button>
+                        </Upload>
+                        <Button
+                          icon={<PauseCircleOutlined />}
+                          disabled={!fullVideoUploading || !fullVideoSession}
+                          onClick={() => void pauseFullVideoUpload()}
+                        >
+                          暂停
                         </Button>
-                      </Upload>
-                      <Progress percent={fullVideoProgress} status={fullVideoAsset?.status === "failed" ? "exception" : fullVideoProgress === 100 ? "success" : fullVideoUploading ? "active" : undefined} />
+                        <Button
+                          icon={<PlayCircleOutlined />}
+                          disabled={fullVideoUploading || !fullVideoSession || fullVideoSession.status === "cancelled" || fullVideoSession.status === "completed"}
+                          onClick={() => void resumeFullVideoUpload()}
+                        >
+                          继续
+                        </Button>
+                        <Button
+                          icon={<DeleteOutlined />}
+                          danger
+                          disabled={!fullVideoSession || fullVideoSession.status === "completed"}
+                          onClick={() => void abortFullVideoUpload()}
+                        >
+                          取消
+                        </Button>
+                        <Button
+                          icon={<ReloadOutlined />}
+                          disabled={!fullVideoUploadError}
+                          onClick={() => void retryFullVideoUpload()}
+                        >
+                          重试
+                        </Button>
+                      </Space>
+                      <Progress
+                        percent={fullVideoProgress}
+                        status={fullVideoUploadError ? "exception" : fullVideoProgress === 100 && fullVideoAsset?.status === "ready" ? "success" : (fullVideoUploading || fullVideoFingerprinting) ? "active" : "normal"}
+                      />
+                      <Space direction="vertical" size={4} style={{ fontSize: 12, width: "100%" }}>
+                        <span>状态：<Tag color={fullVideoUploadError ? "red" : fullVideoSession?.status === "paused" ? "gold" : fullVideoUploading ? "processing" : fullVideoAsset?.status === "ready" ? "green" : "default"}>{fullVideoFingerprinting ? "计算文件指纹" : humanizeUploadSessionStatus(fullVideoSession?.status || (fullVideoAsset?.status === "ready" ? "completed" : "initiated"))}</Tag></span>
+                        <span>文件名：{fullVideoResumeRecord?.fileName || fullVideoSession?.filename || fullVideoAsset?.originalFilename || "未选择文件"}</span>
+                        <span>总大小：{formatBytes(fullVideoTotalBytes || fullVideoResumeRecord?.fileSize || 0)}</span>
+                        <span>已上传：{formatBytes(fullVideoUploadedBytes)} / {formatBytes(fullVideoTotalBytes || fullVideoResumeRecord?.fileSize || 0)}</span>
+                        <span>实时速度：{formatSpeed(fullVideoSpeedBps)} · 预计剩余：{formatEta(fullVideoEtaSeconds)}</span>
+                        {fullVideoSession && (
+                          <span>
+                            分片：{fullVideoSession.parts.length}/{fullVideoSession.totalParts || fullVideoResumeRecord?.totalParts || 0}
+                            {fullVideoSession.expiresAt ? ` · 过期时间：${dayjs(fullVideoSession.expiresAt).format("YYYY-MM-DD HH:mm:ss")}` : ""}
+                          </span>
+                        )}
+                        {fullVideoStatusHint && <span style={{ color: "#666" }}>{fullVideoStatusHint}</span>}
+                        {fullVideoUploadError && <span style={{ color: "#ff4d4f" }}>{fullVideoUploadError}</span>}
+                      </Space>
                       {fullVideoSegments.map((asset, index) => (
                         <Card key={asset.id} size="small" style={{ background: "#fafafa" }}>
                           <Space wrap size={8}>

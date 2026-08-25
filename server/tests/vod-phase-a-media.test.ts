@@ -5,6 +5,7 @@ import cookie from "@fastify/cookie";
 import session from "@fastify/session";
 import adminRoutes from "../src/routes/admin.js";
 import adminCmsRoutes from "../src/routes/adminCms.js";
+import { runUploadSessionCleanupSweep } from "../src/services/uploadSessionCleanup.js";
 import {
   setupTestHarness,
   teardownTestHarness,
@@ -12,7 +13,7 @@ import {
   TEST_CREDENTIALS,
   TEST_KNOWN_IDS,
 } from "./_testHarness.js";
-import { getS3Client } from "../src/services/objectStorage.js";
+import { getS3Client, generatePrivateObjectKey } from "../src/services/objectStorage.js";
 
 function cookieFromResponse(res: { headers: Record<string, unknown> }): string {
   const setCookie = res.headers["set-cookie"];
@@ -48,12 +49,13 @@ async function loginAdmin(app: any, role: keyof typeof TEST_CREDENTIALS): Promis
   return cookieFromResponse(r);
 }
 
-function installHeadObjectMock(factory: (command: any) => any) {
+function installS3CommandMock(factory: (command: any) => any) {
   const client = getS3Client() as any;
   const originalSend = client.send.bind(client);
   client.send = async (command: any) => {
-    if (command?.constructor?.name === "HeadObjectCommand") {
-      return factory(command);
+    const mocked = await factory(command);
+    if (typeof mocked !== "undefined") {
+      return mocked;
     }
     return originalSend(command);
   };
@@ -62,11 +64,21 @@ function installHeadObjectMock(factory: (command: any) => any) {
   };
 }
 
+function installHeadObjectMock(factory: (command: any) => any) {
+  return installS3CommandMock((command) => {
+    if (command?.constructor?.name === "HeadObjectCommand") {
+      return factory(command);
+    }
+    return undefined;
+  });
+}
+
 process.env.OBJECT_STORAGE_ENDPOINT = process.env.OBJECT_STORAGE_ENDPOINT || "https://example-object-storage.local";
 process.env.OBJECT_STORAGE_REGION = process.env.OBJECT_STORAGE_REGION || "local";
 process.env.OBJECT_STORAGE_BUCKET = process.env.OBJECT_STORAGE_BUCKET || "intune-test-private";
 process.env.OBJECT_STORAGE_ACCESS_KEY = process.env.OBJECT_STORAGE_ACCESS_KEY || "test-access";
 process.env.OBJECT_STORAGE_SECRET_KEY = process.env.OBJECT_STORAGE_SECRET_KEY || "test-secret";
+const VALID_SHA256_BASE64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 const harness = await setupTestHarness();
 const prisma = harness.prisma;
@@ -256,47 +268,493 @@ test("Phase A: watch progress keeps one row per user and content for resume read
   assert.ok(rows[0].completedAt instanceof Date);
 });
 
-test("Phase A: repeated complete is idempotent and creates at most one asset and one transcode job", async () => {
+test("Phase A: multipart session syncs uploaded parts and supports pause, resume, and abort", async () => {
   const app = await createApp(prisma);
   let uploadSessionId = "";
-  const restore = installHeadObjectMock(() => ({
-    ContentLength: 1024,
-    ContentType: "video/mp4",
-    Metadata: { uploadsessionid: uploadSessionId, sha256: "f".repeat(64) },
-    ChecksumSHA256: "f".repeat(64),
-    ETag: "\"etag-ok\"",
-  }));
+  const restore = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "CreateMultipartUploadCommand") {
+      return { UploadId: "upload-xyz" };
+    }
+    if (name === "ListPartsCommand") {
+      return {
+        IsTruncated: false,
+        Parts: [
+          { PartNumber: 1, ETag: "\"etag-part-1\"", Size: 33554432 },
+          { PartNumber: 2, ETag: "\"etag-part-2\"", Size: 1234567 },
+        ],
+      };
+    }
+    if (name === "AbortMultipartUploadCommand") {
+      return {};
+    }
+    return undefined;
+  });
   try {
     const editorCookie = await loginAdmin(app, "editor");
-    const createResp = await app.inject({
+    const initResp = await app.inject({
       method: "POST",
-      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/upload-session`,
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/multipart/initiate`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { assetKind: "full_source", filename: "full.mp4", mimeType: "video/mp4", byteSize: 1024, sha256: "f".repeat(64) },
+      payload: {
+        assetKind: "full_source",
+        filename: "full-big.mp4",
+        mimeType: "video/mp4",
+        byteSize: String(33554432 + 1234567),
+        sha256: "f".repeat(64),
+      },
     });
-    assert.equal(createResp.statusCode, 200, createResp.body);
-    uploadSessionId = (createResp.json() as any).uploadSessionId as string;
+    assert.equal(initResp.statusCode, 200, initResp.body);
+    uploadSessionId = (initResp.json() as any).uploadSessionId as string;
+
+    const signResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/parts/2/sign`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { checksumSha256: VALID_SHA256_BASE64 },
+    });
+    assert.equal(signResp.statusCode, 200, signResp.body);
+
+    const getResp = await app.inject({
+      method: "GET",
+      url: `/api/admin/upload-sessions/${uploadSessionId}`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(getResp.statusCode, 200, getResp.body);
+    const sessionBody = getResp.json() as any;
+    assert.equal(sessionBody.session.parts.length, 2);
+    assert.equal(sessionBody.session.parts[0].etag, "etag-part-1");
+    assert.equal(sessionBody.session.parts[1].etag, "etag-part-2");
+
+    const paused = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/pause`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(paused.statusCode, 200, paused.body);
+    assert.equal((paused.json() as any).session.status, "paused");
+
+    const resumed = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/resume`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(resumed.statusCode, 200, resumed.body);
+    assert.equal((resumed.json() as any).session.status, "uploading");
+
+    const aborted = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/abort`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(aborted.statusCode, 200, aborted.body);
+    assert.equal((aborted.json() as any).session.status, "cancelled");
+
+    const row = await prisma.uploadSession.findUnique({
+      where: { id: uploadSessionId },
+      include: { parts: { orderBy: { partNumber: "asc" } } },
+    });
+    assert.equal(row?.parts.length, 2);
+    assert.equal(row?.status, "cancelled");
+  } finally {
+    restore();
+    await app.close();
+  }
+});
+
+test("Phase A: multipart part sign rejects malformed checksum format", async () => {
+  const app = await createApp(prisma);
+  const restore = installS3CommandMock((command) => {
+    if (command?.constructor?.name === "CreateMultipartUploadCommand") {
+      return { UploadId: "upload-checksum" };
+    }
+    return undefined;
+  });
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const initResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/multipart/initiate`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        assetKind: "full_source",
+        filename: "checksum.mp4",
+        mimeType: "video/mp4",
+        byteSize: 2048,
+        sha256: "f".repeat(64),
+      },
+    });
+    assert.equal(initResp.statusCode, 200, initResp.body);
+    const uploadSessionId = (initResp.json() as any).uploadSessionId as string;
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/parts/1/sign`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { checksumSha256: "not_base64_checksum" },
+    });
+    assert.equal(invalid.statusCode, 400, invalid.body);
+  } finally {
+    restore();
+    await app.close();
+  }
+});
+
+test("Phase A: expired multipart sessions are aborted and marked expired by cleanup sweep", async () => {
+  const restore = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "AbortMultipartUploadCommand") {
+      return {};
+    }
+    return undefined;
+  });
+  try {
+    await prisma.uploadSession.create({
+      data: {
+        id: "11111111-2222-4333-8444-555555555555",
+        contentId: TEST_KNOWN_IDS.contentDraft,
+        assetKind: "full_source",
+        status: "paused",
+        objectKey: generatePrivateObjectKey("full_source", TEST_KNOWN_IDS.contentDraft, "11111111-2222-4333-8444-555555555555", "test-expired.mp4"),
+        originalFilename: "test-expired.mp4",
+        expectedSize: 1024n,
+        expectedMime: "video/mp4",
+        expectedSha256: "c".repeat(64),
+        storageUploadId: "expired-upload-id",
+        partSize: 33554432,
+        totalParts: 1,
+        uploadedBytes: 512n,
+        expiresAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+        lastActivityAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      },
+    });
+
+    const sweep = await runUploadSessionCleanupSweep(prisma as any);
+    assert.ok(sweep.expired >= 1);
+    assert.ok(sweep.aborted >= 1);
+    assert.equal(sweep.failed, 0);
+
+    const expired = await prisma.uploadSession.findUnique({
+      where: { id: "11111111-2222-4333-8444-555555555555" },
+    });
+    assert.equal(expired?.status, "expired");
+  } finally {
+    restore();
+  }
+});
+
+test("Phase A: multipart complete reports missing parts without finalizing session", async () => {
+  const app = await createApp(prisma);
+  const restore = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "CreateMultipartUploadCommand") {
+      return { UploadId: "upload-missing-part" };
+    }
+    if (name === "ListPartsCommand") {
+      return {
+        IsTruncated: false,
+        Parts: [{ PartNumber: 1, ETag: "\"etag-only-one\"", Size: 1024 }],
+      };
+    }
+    return undefined;
+  });
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const initResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/multipart/initiate`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { assetKind: "full_source", filename: "missing-part.mp4", mimeType: "video/mp4", byteSize: String(33 * 1024 * 1024), sha256: "f".repeat(64) },
+    });
+    assert.equal(initResp.statusCode, 200, initResp.body);
+    const uploadSessionId = (initResp.json() as any).uploadSessionId as string;
+
+    await prisma.uploadSession.update({
+      where: { id: uploadSessionId },
+      data: { totalParts: 2 },
+    });
+
+    const completeResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/complete`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {},
+    });
+    assert.equal(completeResp.statusCode, 409, completeResp.body);
+    assert.deepEqual((completeResp.json() as any).missingParts, [2]);
+  } finally {
+    restore();
+    await app.close();
+  }
+});
+
+test("Phase A: multipart complete failure from invalid part etag restores session and stays retryable", async () => {
+  const app = await createApp(prisma);
+  let uploadSessionId = "";
+  let completeAttempts = 0;
+  const restore = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "CreateMultipartUploadCommand") {
+      return { UploadId: "upload-invalid-etag" };
+    }
+    if (name === "ListPartsCommand") {
+      return {
+        IsTruncated: false,
+        Parts: [{ PartNumber: 1, ETag: "\"etag-retry\"", Size: 1024 }],
+      };
+    }
+    if (name === "CompleteMultipartUploadCommand") {
+      completeAttempts += 1;
+      if (completeAttempts === 1) {
+        const err: any = new Error("InvalidPart");
+        err.name = "InvalidPart";
+        throw err;
+      }
+      return { ETag: "\"final-etag\"" };
+    }
+    if (name === "HeadObjectCommand") {
+      if (completeAttempts === 1) {
+        const err: any = new Error("NotFound");
+        err.name = "NotFound";
+        err.$metadata = { httpStatusCode: 404 };
+        throw err;
+      }
+      return {
+        ContentLength: 1024,
+        ContentType: "video/mp4",
+        Metadata: { uploadsessionid: uploadSessionId, sha256: "f".repeat(64) },
+        ETag: "\"etag-retry\"",
+      };
+    }
+    return undefined;
+  });
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const initResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/multipart/initiate`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { assetKind: "full_source", filename: "retry.mp4", mimeType: "video/mp4", byteSize: 1024, sha256: "f".repeat(64) },
+    });
+    assert.equal(initResp.statusCode, 200, initResp.body);
+    uploadSessionId = (initResp.json() as any).uploadSessionId as string;
 
     const first = await app.inject({
       method: "POST",
-      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/complete`,
+      url: `/api/admin/upload-sessions/${uploadSessionId}/complete`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { uploadSessionId, proof: { etag: "etag-ok" } },
+      payload: {},
     });
-    assert.equal(first.statusCode, 200, first.body);
+    assert.equal(first.statusCode, 503, first.body);
+    assert.equal((first.json() as any).error, "object_storage_unavailable");
+
+    const sessionAfterFailure = await prisma.uploadSession.findUnique({ where: { id: uploadSessionId } });
+    assert.equal(sessionAfterFailure?.status, "paused");
 
     const second = await app.inject({
       method: "POST",
-      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/complete`,
+      url: `/api/admin/upload-sessions/${uploadSessionId}/complete`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { uploadSessionId, proof: { etag: "etag-ok" } },
+      payload: {},
     });
+    assert.equal(second.statusCode, 200, second.body);
+    const assets = await prisma.videoAsset.findMany({ where: { uploadSessionId } });
+    assert.equal(assets.length, 1);
+  } finally {
+    restore();
+    await app.close();
+  }
+});
+
+test("Phase A: multipart complete is idempotent when remote object exists after response loss", async () => {
+  const app = await createApp(prisma);
+  let uploadSessionId = "";
+  const restore = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "CreateMultipartUploadCommand") {
+      return { UploadId: "upload-response-loss" };
+    }
+    if (name === "ListPartsCommand") {
+      return {
+        IsTruncated: false,
+        Parts: [{ PartNumber: 1, ETag: "\"etag-loss\"", Size: 1024 }],
+      };
+    }
+    if (name === "CompleteMultipartUploadCommand") {
+      const err: any = new Error("socket hang up");
+      err.name = "NetworkingError";
+      throw err;
+    }
+    if (name === "HeadObjectCommand") {
+      return {
+        ContentLength: 1024,
+        ContentType: "video/mp4",
+        Metadata: { uploadsessionid: uploadSessionId, sha256: "f".repeat(64) },
+        ETag: "\"etag-loss\"",
+      };
+    }
+    return undefined;
+  });
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const initResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/multipart/initiate`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { assetKind: "full_source", filename: "response-loss.mp4", mimeType: "video/mp4", byteSize: 1024, sha256: "f".repeat(64) },
+    });
+    assert.equal(initResp.statusCode, 200, initResp.body);
+    uploadSessionId = (initResp.json() as any).uploadSessionId as string;
+
+    const completeResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/complete`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {},
+    });
+    assert.equal(completeResp.statusCode, 200, completeResp.body);
+    const assets = await prisma.videoAsset.findMany({ where: { uploadSessionId } });
+    const jobs = await prisma.transcodeJob.findMany({ where: { assetId: assets[0].id } });
+    assert.equal(assets.length, 1);
+    assert.equal(jobs.length, 1);
+  } finally {
+    restore();
+    await app.close();
+  }
+});
+
+test("Phase A: multipart complete is concurrency-idempotent and creates one asset, one job, and one audit record", async () => {
+  const app = await createApp(prisma);
+  let uploadSessionId = "";
+  const restore = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "CreateMultipartUploadCommand") {
+      return { UploadId: "upload-concurrent" };
+    }
+    if (name === "ListPartsCommand") {
+      return {
+        IsTruncated: false,
+        Parts: [{ PartNumber: 1, ETag: "\"etag-ok\"", Size: 1024 }],
+      };
+    }
+    if (name === "CompleteMultipartUploadCommand") {
+      return { ETag: "\"final-etag\"" };
+    }
+    if (name === "HeadObjectCommand") {
+      return {
+        ContentLength: 1024,
+        ContentType: "video/mp4",
+        Metadata: { uploadsessionid: uploadSessionId, sha256: "f".repeat(64) },
+        ETag: "\"etag-ok\"",
+      };
+    }
+    return undefined;
+  });
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const initResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/multipart/initiate`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { assetKind: "full_source", filename: "full.mp4", mimeType: "video/mp4", byteSize: 1024, sha256: "f".repeat(64) },
+    });
+    assert.equal(initResp.statusCode, 200, initResp.body);
+    uploadSessionId = (initResp.json() as any).uploadSessionId as string;
+
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/admin/upload-sessions/${uploadSessionId}/complete`,
+        headers: { cookie: editorCookie, "Content-Type": "application/json" },
+        payload: {},
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/admin/upload-sessions/${uploadSessionId}/complete`,
+        headers: { cookie: editorCookie, "Content-Type": "application/json" },
+        payload: {},
+      }),
+    ]);
+    assert.equal(first.statusCode, 200, first.body);
     assert.equal(second.statusCode, 200, second.body);
 
     const assets = await prisma.videoAsset.findMany({ where: { uploadSessionId } });
     assert.equal(assets.length, 1);
     const jobs = await prisma.transcodeJob.findMany({ where: { assetId: assets[0].id } });
     assert.equal(jobs.length, 1);
+    const audits = await prisma.adminAuditLog.findMany({
+      where: {
+        action: "vod.multipart.complete",
+        objectType: "video_asset",
+        objectId: assets[0].id,
+      },
+    });
+    assert.equal(audits.length, 1);
+  } finally {
+    restore();
+    await app.close();
+  }
+});
+
+test("Phase A: repeated multipart complete stays idempotent after first success", async () => {
+  const app = await createApp(prisma);
+  let uploadSessionId = "";
+  let completeCalls = 0;
+  const restore = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "CreateMultipartUploadCommand") {
+      return { UploadId: "upload-repeat-complete" };
+    }
+    if (name === "ListPartsCommand") {
+      return {
+        IsTruncated: false,
+        Parts: [{ PartNumber: 1, ETag: "\"etag-repeat\"", Size: 1024 }],
+      };
+    }
+    if (name === "CompleteMultipartUploadCommand") {
+      completeCalls += 1;
+      return { ETag: "\"etag-repeat\"" };
+    }
+    if (name === "HeadObjectCommand") {
+      return {
+        ContentLength: 1024,
+        ContentType: "video/mp4",
+        Metadata: { uploadsessionid: uploadSessionId, sha256: "f".repeat(64) },
+        ETag: "\"etag-repeat\"",
+      };
+    }
+    return undefined;
+  });
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const initResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/assets/multipart/initiate`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { assetKind: "full_source", filename: "repeat.mp4", mimeType: "video/mp4", byteSize: 1024, sha256: "f".repeat(64) },
+    });
+    assert.equal(initResp.statusCode, 200, initResp.body);
+    uploadSessionId = (initResp.json() as any).uploadSessionId as string;
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/complete`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {},
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/admin/upload-sessions/${uploadSessionId}/complete`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {},
+    });
+    assert.equal(first.statusCode, 200, first.body);
+    assert.equal(second.statusCode, 200, second.body);
+    const assets = await prisma.videoAsset.findMany({ where: { uploadSessionId } });
+    const jobs = await prisma.transcodeJob.findMany({ where: { assetId: assets[0].id } });
+    assert.equal(assets.length, 1);
+    assert.equal(jobs.length, 1);
+    assert.equal(completeCalls, 1);
   } finally {
     restore();
     await app.close();

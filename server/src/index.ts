@@ -22,8 +22,10 @@ import adminDashboardRoutes from "./routes/adminDashboard.js";
 import authH5Routes from "./routes/authH5.js";
 import analyticsAndPreferenceRoutes from "./routes/analyticsPreferences.js";
 import adminFinanceRoutes from "./routes/adminFinance.js";
+import watchProgressRoutes from "./routes/watchProgress.js";
 import { botSelfTest, TELEGRAM_CONFIG } from "./services/telegramBot.js";
 import { startEntitlementsCron } from "./services/entitlementsCron.js";
+import { startUploadSessionCleanupCron } from "./services/uploadSessionCleanup.js";
 import { releaseExpiredUsdtAddresses } from "./services/usdtPool.js";
 import {
   assertRequiredSecretsOrThrow,
@@ -261,6 +263,16 @@ async function main() {
   });
   app.get("/mini-app", async (_req, reply) => reply.redirect("/mini-app/"));
 
+  await app.register(fastifyStatic, {
+    root: path.join(ROOT_DIR, "h5"),
+    prefix: "/h5/",
+    decorateReply: false,
+    index: ["index.html"],
+  });
+  app.get("/h5", async (_req, reply) => reply.redirect("/h5/"));
+  app.get("/login.html", async (_req, reply) => reply.redirect("/mini-app/login.html"));
+  app.get("/h5-pay.html", async (_req, reply) => reply.redirect("/mini-app/h5-pay.html"));
+
   await app.register(telegramRoutes, { prefix: "/api/telegram" });
   // 【Phase 0-3】webhook 入口固定路径 POST /api/telegram/webhook（与 telegram 路由独立，不走 session / cookie）
   await app.register(telegramWebhookRoutes, { prefix: "" });
@@ -278,6 +290,7 @@ async function main() {
   await app.register(authH5Routes, { prefix: "/api" });
   await app.register(analyticsAndPreferenceRoutes, { prefix: "/api" });
   await app.register(adminFinanceRoutes, { prefix: "/api" });
+  await app.register(watchProgressRoutes, { prefix: "/api" });
 
   try {
     await prisma.$connect();
@@ -321,6 +334,7 @@ async function main() {
     // 测试环境禁用自动启动，避免 setInterval 导致 node:test 进程无法退出。
     if (process.env.NODE_ENV !== "test") {
       startEntitlementsCron(prisma);
+      startUploadSessionCleanupCron(prisma);
       // USDT 地址回收：每 90 秒扫一次过期订单释放 assigned 地址。
       const usdtReleaseTimer = setInterval(async () => {
         try {
@@ -348,6 +362,7 @@ async function main() {
       }, 90 * 1000);
       try { (usdtReleaseTimer as any).unref?.(); } catch {}
       console.log(`[usdt-address-reaper] scheduled interval=90s`);
+      console.log("[upload-session-cleanup] scheduled interval=600s");
     }
   } catch (err) {
     emitSafetyEvent(

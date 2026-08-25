@@ -23,6 +23,11 @@ import {
 import {
   createPresignedPutUpload,
   createPrivatePresignedUpload,
+  createPrivateMultipartUpload,
+  createPrivateMultipartPartUploadUrl,
+  listPrivateMultipartParts,
+  completePrivateMultipartUpload,
+  abortPrivateMultipartUpload,
   headObject,
   normalizeHeadMetadata,
   deleteObjectSafe,
@@ -32,6 +37,7 @@ import {
   generateStorageKey,
   generatePrivateObjectKey,
   isAllowedPrivateObjectKey,
+  getPrivateMultipartPartSizeBytes,
 } from "../services/objectStorage.js";
 import {
   initTelegramPublisher,
@@ -52,8 +58,12 @@ const BannerStatusZ = z.enum(["draft", "active", "inactive", "scheduled", "archi
 const BannerTargetTypeZ = z.enum(["content", "category", "package", "membership", "external"]);
 // Telegram 本地 Bot API 对单文件上传的实际能力上限为 2GB；后台与 API 必须一致。
 const MAX_FULL_VIDEO_BYTES = 2n * 1024n * 1024n * 1024n;
-const VOD_UPLOAD_SESSION_TTL_MS = 15 * 60 * 1000;
+const VOD_SINGLE_UPLOAD_SESSION_TTL_MS = 15 * 60 * 1000;
+const VOD_MULTIPART_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const VOD_MULTIPART_MAX_CONCURRENCY = 3;
+const SHA256_BASE64_RE = /^[A-Za-z0-9+/]{43}=$/;
 const VOD_ASSET_KIND_Z = z.enum(["cover", "preview_source", "full_source"]);
+const VOD_UPLOAD_SESSION_STATUS_Z = z.enum(["initiated", "uploading", "paused", "completing", "completed", "cancelled", "expired", "failed"]);
 const VOD_ERROR_CLASS = {
   unauthorized: "unauthorized",
   forbidden: "forbidden",
@@ -127,6 +137,61 @@ function summarizeVodAsset(row: any) {
         }
       : null,
   };
+}
+
+function isMultipartVodAssetKind(kind: z.infer<typeof VOD_ASSET_KIND_Z> | string | null | undefined): boolean {
+  return kind === "full_source";
+}
+
+function uploadSessionTtlMs(kind: z.infer<typeof VOD_ASSET_KIND_Z> | string | null | undefined): number {
+  return isMultipartVodAssetKind(kind) ? VOD_MULTIPART_UPLOAD_SESSION_TTL_MS : VOD_SINGLE_UPLOAD_SESSION_TTL_MS;
+}
+
+function nextUploadSessionExpiry(kind: z.infer<typeof VOD_ASSET_KIND_Z> | string | null | undefined): Date {
+  return new Date(Date.now() + uploadSessionTtlMs(kind));
+}
+
+function summarizeUploadSessionPart(row: any) {
+  return {
+    partNumber: row.partNumber,
+    etag: row.etag,
+    bytes: row.bytes != null ? String(row.bytes) : "0",
+    checksum: row.checksum || null,
+    status: row.status,
+    uploadedAt: row.uploadedAt ? new Date(row.uploadedAt).toISOString() : null,
+  };
+}
+
+function summarizeUploadSession(row: any) {
+  const parts = Array.isArray(row?.parts) ? row.parts : [];
+  return {
+    id: row.id,
+    contentId: row.contentId,
+    assetKind: row.assetKind,
+    status: row.status,
+    filename: summarizeFilename(row.originalFilename),
+    mimeType: row.expectedMime || null,
+    expectedSize: row.expectedSize != null ? String(row.expectedSize) : null,
+    uploadedBytes: row.uploadedBytes != null ? String(row.uploadedBytes) : "0",
+    totalParts: row.totalParts ?? null,
+    partSize: row.partSize ?? null,
+    storageUploadIdPresent: !!row.storageUploadId,
+    expiresAt: row.expiresAt ? new Date(row.expiresAt).toISOString() : null,
+    lastActivityAt: row.lastActivityAt ? new Date(row.lastActivityAt).toISOString() : null,
+    completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : null,
+    parts: parts.map((part: any) => summarizeUploadSessionPart(part)),
+  };
+}
+
+async function touchUploadSession(tx: any, sessionId: string, kind: string, extra: Record<string, any> = {}) {
+  return tx.uploadSession.update({
+    where: { id: sessionId },
+    data: {
+      lastActivityAt: new Date(),
+      expiresAt: nextUploadSessionExpiry(kind),
+      ...extra,
+    },
+  });
 }
 
 function writeAudit(
@@ -965,6 +1030,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     byteSize: z.union([z.number().int().min(1), z.string().trim().min(1)]).transform((value) => BigInt(String(value))),
     sha256: z.string().trim().min(32).max(128),
   });
+  const ZVOD_MULTIPART_SIGN = z.object({
+    checksumSha256: z.string().trim().regex(SHA256_BASE64_RE, "checksumSha256 必须是 SHA-256 Base64").optional().nullable(),
+  });
   const ZVOD_COMPLETE = z.object({
     uploadSessionId: z.string().uuid(),
     proof: z.object({
@@ -973,6 +1041,119 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     }).optional().nullable(),
   });
   const vodPrisma = prisma as any;
+
+  const VOD_UPLOAD_SESSION_WITH_PARTS = {
+    include: {
+      parts: { orderBy: { partNumber: "asc" } },
+    },
+  } as const;
+
+  async function syncMultipartSessionParts(session: any) {
+    if (!session?.storageUploadId || !isMultipartVodAssetKind(session.assetKind)) {
+      return vodPrisma.uploadSession.findUnique({
+        where: { id: session.id },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+    }
+    const remoteParts = await listPrivateMultipartParts(session.objectKey, session.storageUploadId);
+    const uploadedBytes = remoteParts.reduce((sum, part) => sum + BigInt(part.size), 0n);
+    await prisma.$transaction(async (tx: any) => {
+      for (const part of remoteParts) {
+        await tx.uploadSessionPart.upsert({
+          where: {
+            uploadSessionId_partNumber: {
+              uploadSessionId: session.id,
+              partNumber: part.partNumber,
+            },
+          },
+          update: {
+            etag: part.etag,
+            bytes: part.size,
+            status: "uploaded",
+            uploadedAt: new Date(),
+          },
+          create: {
+            uploadSessionId: session.id,
+            partNumber: part.partNumber,
+            etag: part.etag,
+            bytes: part.size,
+            status: "uploaded",
+          },
+        });
+      }
+      await touchUploadSession(tx, session.id, session.assetKind, {
+        uploadedBytes,
+        status:
+          session.status === "paused" || session.status === "completed" || session.status === "cancelled" || session.status === "expired"
+            ? session.status
+            : remoteParts.length > 0
+              ? "uploading"
+              : session.status,
+      });
+    });
+    return vodPrisma.uploadSession.findUnique({
+      where: { id: session.id },
+      include: { parts: { orderBy: { partNumber: "asc" } } },
+    });
+  }
+
+  async function expireMultipartSessionIfNeeded(session: any, meta: ReturnType<typeof adminMeta>) {
+    if (!session || session.expiresAt.getTime() >= Date.now() || ["completed", "cancelled", "expired"].includes(session.status)) {
+      return session;
+    }
+    if (session.storageUploadId && isMultipartVodAssetKind(session.assetKind)) {
+      try {
+        await abortPrivateMultipartUpload(session.objectKey, session.storageUploadId);
+      } catch (error) {
+        emitSafetyEvent({
+          event: "vod_upload_session_expire_abort_failed",
+          errorClass: "unknown",
+          adminId: meta.adminId,
+          note: `session=${session.id}`,
+        }, error);
+      }
+    }
+    await prisma.$transaction(async (tx: any) => {
+      await tx.uploadSession.update({
+        where: { id: session.id },
+        data: {
+          status: "expired",
+          lastActivityAt: new Date(),
+        },
+      });
+      await writeAudit(tx, meta, "vod.upload_session.expire", "upload_session", session.id, serialize({ status: session.status }), serialize({ status: "expired" }), "upload session expired");
+    });
+    return vodPrisma.uploadSession.findUnique({
+      where: { id: session.id },
+      include: { parts: { orderBy: { partNumber: "asc" } } },
+    });
+  }
+
+  async function resetMultipartCompletingSession(session: any) {
+    return prisma.$transaction(async (tx: any) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${session.id}))`;
+      const locked = await tx.uploadSession.findUnique({
+        where: { id: session.id },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      if (!locked || ["completed", "cancelled", "expired"].includes(locked.status)) {
+        return locked;
+      }
+      const resumeStatus = (locked.parts || []).length > 0 ? "paused" : "uploading";
+      await tx.uploadSession.update({
+        where: { id: session.id },
+        data: {
+          status: resumeStatus,
+          lastActivityAt: new Date(),
+          expiresAt: nextUploadSessionExpiry(session.assetKind),
+        },
+      });
+      return tx.uploadSession.findUnique({
+        where: { id: session.id },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+    });
+  }
 
   fastify.post(
     "/admin/contents/:contentId/assets/upload-session",
@@ -993,6 +1174,12 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       }
       if (!isSizeAllowedForVodAsset(body.assetKind, body.byteSize)) {
         return reply.status(400).send({ error: VOD_ERROR_CLASS.invalid_input, errorClass: "file_too_large", message: "文件大小超出当前媒体类型限制" });
+      }
+      if (isMultipartVodAssetKind(body.assetKind)) {
+        return reply.status(409).send({
+          error: "multipart_required",
+          message: "完整源视频必须使用 Multipart Upload 分片上传，请改走 multipart/initiate 接口。",
+        });
       }
       const uploadSessionId = cryptoRandomUuid();
       const objectKey = generatePrivateObjectKey(body.assetKind, contentId, uploadSessionId, body.filename);
@@ -1025,7 +1212,12 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             expectedMime: body.mimeType,
             expectedSha256: body.sha256,
             storageUploadId: null,
-            expiresAt: new Date(Date.now() + VOD_UPLOAD_SESSION_TTL_MS),
+            status: "uploading",
+            partSize: null,
+            totalParts: null,
+            uploadedBytes: 0n,
+            expiresAt: nextUploadSessionExpiry(body.assetKind),
+            lastActivityAt: new Date(),
             createdBy: meta.adminId,
           },
         });
@@ -1050,6 +1242,179 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post(
+    "/admin/contents/:contentId/assets/multipart/initiate",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const contentId = ZID.parse(req.params.contentId);
+      const body = ZVOD_UPLOAD_SESSION.parse(req.body);
+      const meta = adminMeta(req);
+      if (!isMultipartVodAssetKind(body.assetKind)) {
+        return reply.status(400).send({ error: VOD_ERROR_CLASS.invalid_input, errorClass: "multipart_only_full_source", message: "只有完整源视频支持 Multipart Upload" });
+      }
+      const content = await prisma.content.findUnique({
+        where: { id: contentId },
+        select: { id: true },
+      });
+      if (!content) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.content_not_found, message: "内容不存在" });
+      }
+      if (!isMimeAllowedForVodAsset(body.assetKind, body.mimeType)) {
+        return reply.status(400).send({ error: VOD_ERROR_CLASS.invalid_input, errorClass: "mime_not_allowed", message: "文件 MIME 不在允许范围内" });
+      }
+      if (!isSizeAllowedForVodAsset(body.assetKind, body.byteSize)) {
+        return reply.status(400).send({ error: VOD_ERROR_CLASS.invalid_input, errorClass: "file_too_large", message: "文件大小超出当前媒体类型限制" });
+      }
+      const uploadSessionId = cryptoRandomUuid();
+      const objectKey = generatePrivateObjectKey(body.assetKind, contentId, uploadSessionId, body.filename);
+      const partSize = getPrivateMultipartPartSizeBytes();
+      const totalParts = Math.max(1, Math.ceil(Number(body.byteSize) / partSize));
+      let initResult;
+      try {
+        initResult = await createPrivateMultipartUpload({
+          sessionId: uploadSessionId,
+          objectKey,
+          mimeType: body.mimeType,
+          expectedSha256: body.sha256,
+        });
+      } catch (error) {
+        emitSafetyEvent({ event: "vod_multipart_initiate_failed", errorClass: "exhausted", adminId: meta.adminId, note: `content=${contentId}` }, error);
+        return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "对象存储暂不可用，无法创建分片上传会话" });
+      }
+      await prisma.$transaction(async (tx: any) => {
+        await tx.uploadSession.create({
+          data: {
+            id: uploadSessionId,
+            contentId,
+            assetKind: body.assetKind,
+            status: "initiated",
+            objectKey,
+            originalFilename: body.filename,
+            expectedSize: body.byteSize,
+            expectedMime: body.mimeType,
+            expectedSha256: body.sha256,
+            storageUploadId: initResult.storageUploadId,
+            partSize,
+            totalParts,
+            uploadedBytes: 0n,
+            expiresAt: nextUploadSessionExpiry(body.assetKind),
+            lastActivityAt: new Date(),
+            createdBy: meta.adminId,
+          },
+        });
+        await writeAudit(
+          tx,
+          meta,
+          "vod.multipart.initiate",
+          "upload_session",
+          uploadSessionId,
+          null,
+          serialize({ contentId, assetKind: body.assetKind, partSize, totalParts, byteSize: body.byteSize.toString() }),
+          "initiate multipart upload",
+        );
+      });
+      return reply.send({
+        uploadSessionId,
+        storageUploadId: initResult.storageUploadId,
+        partSize,
+        totalParts,
+        expiresAt: nextUploadSessionExpiry(body.assetKind).toISOString(),
+        maxConcurrency: VOD_MULTIPART_MAX_CONCURRENCY,
+      });
+    },
+  );
+
+  fastify.post(
+    "/admin/upload-sessions/:sessionId/parts/:partNumber/sign",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const sessionId = ZID.parse(req.params.sessionId);
+      const partNumber = z.coerce.number().int().min(1).parse(req.params.partNumber);
+      const bodyResult = ZVOD_MULTIPART_SIGN.safeParse(req.body || {});
+      if (!bodyResult.success) {
+        return reply.status(400).send({
+          error: VOD_ERROR_CLASS.invalid_input,
+          errorClass: "invalid_checksum_sha256",
+          message: "checksumSha256 必须是严格的 SHA-256 Base64 字符串",
+          details: bodyResult.error.flatten(),
+        });
+      }
+      const body = bodyResult.data;
+      const meta = adminMeta(req);
+      let session = await vodPrisma.uploadSession.findUnique({
+        where: { id: sessionId },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      if (!session || !isMultipartVodAssetKind(session.assetKind) || !session.storageUploadId) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "分片上传会话不存在" });
+      }
+      session = await expireMultipartSessionIfNeeded(session, meta);
+      if (!session || session.status === "expired") {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_expired, message: "上传会话已过期，请重新发起上传" });
+      }
+      if (!session.totalParts || partNumber < 1 || partNumber > session.totalParts) {
+        return reply.status(400).send({ error: VOD_ERROR_CLASS.invalid_input, errorClass: "part_number_out_of_range", message: "分片编号超出允许范围" });
+      }
+      if (!["initiated", "uploading", "paused"].includes(session.status)) {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_invalid, errorClass: "upload_session_not_writable", message: "当前会话状态不允许继续上传分片" });
+      }
+      let signed;
+      try {
+        signed = await createPrivateMultipartPartUploadUrl({
+          objectKey: session.objectKey,
+          storageUploadId: session.storageUploadId,
+          partNumber,
+          checksumSha256: body.checksumSha256 || null,
+        });
+      } catch (error) {
+        emitSafetyEvent({ event: "vod_multipart_part_sign_failed", errorClass: "exhausted", adminId: meta.adminId, note: `session=${sessionId} part=${partNumber}` }, error);
+        return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "对象存储暂不可用，无法签发分片上传地址" });
+      }
+      await touchUploadSession(vodPrisma, session.id, session.assetKind, { status: "uploading" });
+      return reply.send({
+        uploadSessionId: session.id,
+        partNumber,
+        uploadUrl: signed.uploadUrl,
+        uploadExpiresAt: signed.uploadExpiresAt.toISOString(),
+        expectedHttpHeaders: signed.expectedHttpHeaders,
+      });
+    },
+  );
+
+  fastify.get(
+    "/admin/upload-sessions/:sessionId",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const sessionId = ZID.parse(req.params.sessionId);
+      const meta = adminMeta(req);
+      let session = await vodPrisma.uploadSession.findUnique({
+        where: { id: sessionId },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      if (!session) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "上传会话不存在" });
+      }
+      session = await expireMultipartSessionIfNeeded(session, meta);
+      if (!session) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "上传会话不存在" });
+      }
+      if (isMultipartVodAssetKind(session.assetKind) && session.storageUploadId && !["cancelled", "expired"].includes(session.status)) {
+        try {
+          session = await syncMultipartSessionParts(session);
+        } catch (error) {
+          emitSafetyEvent({ event: "vod_multipart_list_parts_failed", errorClass: "unknown", adminId: meta.adminId, note: `session=${sessionId}` }, error);
+          return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "对象存储暂不可用，无法刷新分片状态" });
+        }
+      }
+      const uploadedBytes = BigInt(String(session.uploadedBytes || 0));
+      const expectedSize = BigInt(String(session.expectedSize || 0));
+      return reply.send({
+        session: summarizeUploadSession(session),
+        progressPercent: expectedSize > 0n ? Number((uploadedBytes * 10000n) / expectedSize) / 100 : 0,
+      });
+    },
+  );
+
+  fastify.post(
     "/admin/contents/:contentId/assets/complete",
     { preHandler: [requireAdmin("content:edit")] },
     async (req: any, reply) => {
@@ -1066,17 +1431,15 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       if (!session || session.contentId !== contentId) {
         return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "上传会话不存在或不属于当前内容" });
       }
+      if (isMultipartVodAssetKind(session.assetKind)) {
+        return reply.status(409).send({
+          error: "multipart_required",
+          message: "完整源视频必须调用 /admin/upload-sessions/:sessionId/complete 完成分片合并。",
+        });
+      }
       if (session.expiresAt.getTime() < Date.now()) {
         return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_expired, message: "上传会话已过期，请重新发起上传" });
       }
-      const existingAsset = await vodPrisma.videoAsset.findFirst({
-        where: { uploadSessionId: session.id },
-        include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
-      });
-      if (session.completedAt && existingAsset) {
-        return reply.send({ ok: true, asset: summarizeVodAsset(existingAsset) });
-      }
-
       let storageEnv;
       try {
         storageEnv = requireObjectStorageEnv();
@@ -1113,12 +1476,15 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       }
 
       const result = await prisma.$transaction(async (tx: any) => {
-        const completedSession = session.completedAt
-          ? session
-          : await tx.uploadSession.update({
-              where: { id: session.id },
-              data: { completedAt: new Date() },
-            });
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${session.id}))`;
+        const lockedSession = await tx.uploadSession.findUnique({ where: { id: session.id } });
+        const existingAsset = await tx.videoAsset.findFirst({
+          where: { uploadSessionId: session.id },
+          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+        });
+        if (lockedSession?.completedAt && existingAsset) {
+          return existingAsset;
+        }
         const asset = existingAsset
           ? await tx.videoAsset.update({
               where: { id: existingAsset.id },
@@ -1136,7 +1502,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           : await tx.videoAsset.create({
               data: {
                 contentId,
-                uploadSessionId: completedSession.id,
+                uploadSessionId: session.id,
                 kind: session.assetKind,
                 objectKey: session.objectKey,
                 originalFilename: session.originalFilename,
@@ -1148,33 +1514,329 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
               },
             });
         if (session.assetKind !== "cover") {
-          const existingJob = await tx.transcodeJob.findUnique({ where: { assetId: asset.id } });
-          if (!existingJob) {
-            await tx.transcodeJob.create({
-              data: {
-                contentId,
-                assetId: asset.id,
-                status: "queued",
-              },
-            });
-          }
+          await tx.transcodeJob.upsert({
+            where: { assetId: asset.id },
+            update: {},
+            create: {
+              contentId,
+              assetId: asset.id,
+              status: "queued",
+            },
+          });
         }
-        await writeAudit(
-          tx,
-          meta,
-          "vod.asset.complete",
-          "video_asset",
-          asset.id,
-          null,
-          serialize({ contentId, kind: asset.kind, status: asset.status, byteSize: asset.byteSize.toString() }),
-          body.proof?.etag || null,
-        );
+        await tx.uploadSession.update({
+          where: { id: session.id },
+          data: {
+            status: "completed",
+            completedAt: new Date(),
+            uploadedBytes: expectedSize,
+            lastActivityAt: new Date(),
+            expiresAt: nextUploadSessionExpiry(session.assetKind),
+          },
+        });
+        if (!existingAsset) {
+          await writeAudit(
+            tx,
+            meta,
+            "vod.asset.complete",
+            "video_asset",
+            asset.id,
+            null,
+            serialize({ contentId, kind: asset.kind, status: asset.status, byteSize: asset.byteSize.toString() }),
+            body.proof?.etag || null,
+          );
+        }
         return tx.videoAsset.findUnique({
           where: { id: asset.id },
           include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
         });
       });
 
+      return reply.send({ ok: true, asset: summarizeVodAsset(result) });
+    },
+  );
+
+  fastify.post(
+    "/admin/upload-sessions/:sessionId/pause",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const sessionId = ZID.parse(req.params.sessionId);
+      const meta = adminMeta(req);
+      let session = await vodPrisma.uploadSession.findUnique({
+        where: { id: sessionId },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      if (!session) return reply.status(404).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "上传会话不存在" });
+      session = await expireMultipartSessionIfNeeded(session, meta);
+      if (!session || session.status === "expired") {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_expired, message: "上传会话已过期，请重新发起上传" });
+      }
+      if (session.status !== "completed" && session.status !== "cancelled") {
+        session = await touchUploadSession(vodPrisma, session.id, session.assetKind, { status: "paused" });
+      }
+      const refreshed = await vodPrisma.uploadSession.findUnique({
+        where: { id: sessionId },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      return reply.send({ ok: true, session: summarizeUploadSession(refreshed) });
+    },
+  );
+
+  fastify.post(
+    "/admin/upload-sessions/:sessionId/resume",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const sessionId = ZID.parse(req.params.sessionId);
+      const meta = adminMeta(req);
+      let session = await vodPrisma.uploadSession.findUnique({
+        where: { id: sessionId },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      if (!session) return reply.status(404).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "上传会话不存在" });
+      session = await expireMultipartSessionIfNeeded(session, meta);
+      if (!session || session.status === "expired") {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_expired, message: "上传会话已过期，请重新发起上传" });
+      }
+      if (session.status === "cancelled") {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_invalid, errorClass: "upload_session_cancelled", message: "上传已取消，不能继续恢复" });
+      }
+      await touchUploadSession(vodPrisma, session.id, session.assetKind, { status: "uploading" });
+      session = await vodPrisma.uploadSession.findUnique({
+        where: { id: sessionId },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      if (isMultipartVodAssetKind(session.assetKind) && session.storageUploadId) {
+        session = await syncMultipartSessionParts(session);
+      }
+      return reply.send({ ok: true, session: summarizeUploadSession(session) });
+    },
+  );
+
+  fastify.post(
+    "/admin/upload-sessions/:sessionId/abort",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const sessionId = ZID.parse(req.params.sessionId);
+      const meta = adminMeta(req);
+      const session = await vodPrisma.uploadSession.findUnique({
+        where: { id: sessionId },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      if (!session) return reply.status(404).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "上传会话不存在" });
+      if (session.status !== "completed" && session.status !== "cancelled" && session.storageUploadId && isMultipartVodAssetKind(session.assetKind)) {
+        try {
+          await abortPrivateMultipartUpload(session.objectKey, session.storageUploadId);
+        } catch (error) {
+          emitSafetyEvent({ event: "vod_multipart_abort_failed", errorClass: "unknown", adminId: meta.adminId, note: `session=${session.id}` }, error);
+          return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "对象存储暂不可用，无法取消上传" });
+        }
+      }
+      await prisma.$transaction(async (tx: any) => {
+        await tx.uploadSession.update({
+          where: { id: session.id },
+          data: {
+            status: "cancelled",
+            lastActivityAt: new Date(),
+          },
+        });
+        await writeAudit(tx, meta, "vod.upload_session.abort", "upload_session", session.id, serialize({ status: session.status }), serialize({ status: "cancelled" }), "multipart upload aborted");
+      });
+      const refreshed = await vodPrisma.uploadSession.findUnique({
+        where: { id: session.id },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      return reply.send({ ok: true, session: summarizeUploadSession(refreshed) });
+    },
+  );
+
+  fastify.post(
+    "/admin/upload-sessions/:sessionId/complete",
+    { preHandler: [requireAdmin("content:edit")] },
+    async (req: any, reply) => {
+      const sessionId = ZID.parse(req.params.sessionId);
+      const meta = adminMeta(req);
+      let session = await vodPrisma.uploadSession.findUnique({
+        where: { id: sessionId },
+        include: { parts: { orderBy: { partNumber: "asc" } } },
+      });
+      if (!session || !isMultipartVodAssetKind(session.assetKind) || !session.storageUploadId) {
+        return reply.status(404).send({ error: VOD_ERROR_CLASS.upload_session_invalid, message: "分片上传会话不存在" });
+      }
+      session = await expireMultipartSessionIfNeeded(session, meta);
+      if (!session || session.status === "expired") {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_expired, message: "上传会话已过期，请重新发起上传" });
+      }
+      if (session.status === "cancelled") {
+        return reply.status(409).send({ error: VOD_ERROR_CLASS.upload_session_invalid, errorClass: "upload_session_cancelled", message: "上传已取消，不能继续完成" });
+      }
+      try {
+        session = await syncMultipartSessionParts(session);
+      } catch (error) {
+        emitSafetyEvent({ event: "vod_multipart_sync_before_complete_failed", errorClass: "unknown", adminId: meta.adminId, note: `session=${session.id}` }, error);
+        return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "对象存储暂不可用，无法刷新分片状态" });
+      }
+      const uploadedPartNumbers = new Set((session.parts || []).map((part: any) => part.partNumber));
+      const missingParts: number[] = [];
+      const totalParts = session.totalParts || 0;
+      for (let partNumber = 1; partNumber <= totalParts; partNumber += 1) {
+        if (!uploadedPartNumbers.has(partNumber)) missingParts.push(partNumber);
+      }
+      if (missingParts.length > 0) {
+        return reply.status(409).send({
+          error: VOD_ERROR_CLASS.invalid_input,
+          errorClass: "multipart_parts_incomplete",
+          message: `仍有 ${missingParts.length} 个分片未完成上传`,
+          missingParts,
+        });
+      }
+      const preflight = await prisma.$transaction(async (tx: any) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${session.id}))`;
+        const lockedSession = await tx.uploadSession.findUnique({
+          where: { id: session.id },
+          include: { parts: { orderBy: { partNumber: "asc" } } },
+        });
+        const existingAsset = await tx.videoAsset.findFirst({
+          where: { uploadSessionId: session.id },
+          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+        });
+        if (lockedSession?.completedAt && existingAsset) {
+          return { done: true as const, asset: existingAsset };
+        }
+        await tx.uploadSession.update({
+          where: { id: session.id },
+          data: {
+            status: "completing",
+            lastActivityAt: new Date(),
+            expiresAt: nextUploadSessionExpiry(session.assetKind),
+          },
+        });
+        return {
+          done: false as const,
+          parts: (lockedSession?.parts || []).map((part: any) => ({ partNumber: part.partNumber, etag: part.etag })),
+        };
+      });
+      if (preflight.done) {
+        return reply.send({ ok: true, asset: summarizeVodAsset(preflight.asset) });
+      }
+      let completeErrored = false;
+      try {
+        await completePrivateMultipartUpload({
+          objectKey: session.objectKey,
+          storageUploadId: session.storageUploadId,
+          parts: preflight.parts,
+        });
+      } catch (error: any) {
+        completeErrored = true;
+        emitSafetyEvent({ event: "vod_multipart_complete_storage_failed", errorClass: "unknown", adminId: meta.adminId, note: `session=${session.id}` }, error);
+      }
+
+      let storageEnv;
+      try {
+        storageEnv = requireObjectStorageEnv();
+      } catch (error) {
+        emitSafetyEvent({ event: "vod_multipart_complete_storage_env_missing", errorClass: "exhausted", adminId: meta.adminId, note: `session=${session.id}` }, error);
+        return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "对象存储暂不可用，无法完成最终校验" });
+      }
+      const verify = await headObject(storageEnv.bucket, session.objectKey);
+      if (!verify.ok || !verify.head) {
+        await resetMultipartCompletingSession(session);
+        return reply.status(503).send({
+          error: VOD_ERROR_CLASS.object_storage_unavailable,
+          errorClass: completeErrored ? "multipart_complete_unconfirmed" : sanitizeErrorClass(verify.userError),
+          message: "对象存储暂不可用，暂时无法确认完整视频合并结果，请稍后重试",
+        });
+      }
+      const headMeta = normalizeHeadMetadata(verify.head);
+      const expectedSize = BigInt(String(session.expectedSize));
+      const expectedMime = String(session.expectedMime || "").trim().toLowerCase();
+      const expectedSha256 = String(session.expectedSha256 || "").trim();
+      const mismatches: string[] = [];
+      if (headMeta.contentLength == null || headMeta.contentLength !== expectedSize) mismatches.push("byte_size");
+      if ((headMeta.contentType || "").trim().toLowerCase() !== expectedMime) mismatches.push("mime_type");
+      if (headMeta.uploadSessionId && headMeta.uploadSessionId !== session.id) mismatches.push("upload_session_id");
+      if ((headMeta.metadataSha256 || "").trim() !== expectedSha256) mismatches.push("sha256_metadata");
+      if (mismatches.length > 0) {
+        await resetMultipartCompletingSession(session);
+        return reply.status(409).send({
+          error: VOD_ERROR_CLASS.object_metadata_mismatch,
+          errorClass: "upload_verify_failed",
+          message: "合并后的对象校验失败，请重新发起上传",
+        });
+      }
+      const result = await prisma.$transaction(async (tx: any) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${session.id}))`;
+        const lockedSession = await tx.uploadSession.findUnique({ where: { id: session.id } });
+        const existingAsset = await tx.videoAsset.findFirst({
+          where: { uploadSessionId: session.id },
+          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+        });
+        if (lockedSession?.completedAt && existingAsset) {
+          return existingAsset;
+        }
+        const asset = existingAsset
+          ? await tx.videoAsset.update({
+              where: { id: existingAsset.id },
+              data: {
+                objectKey: session.objectKey,
+                originalFilename: session.originalFilename,
+                mimeType: session.expectedMime,
+                byteSize: expectedSize,
+                sha256: expectedSha256,
+                status: "verified",
+                errorClass: null,
+                verifiedAt: new Date(),
+              },
+            })
+          : await tx.videoAsset.create({
+              data: {
+                contentId: session.contentId,
+                uploadSessionId: session.id,
+                kind: session.assetKind,
+                objectKey: session.objectKey,
+                originalFilename: session.originalFilename,
+                mimeType: session.expectedMime,
+                byteSize: expectedSize,
+                sha256: expectedSha256,
+                status: "verified",
+                verifiedAt: new Date(),
+              },
+            });
+        await tx.transcodeJob.upsert({
+          where: { assetId: asset.id },
+          update: {},
+          create: {
+            contentId: session.contentId,
+            assetId: asset.id,
+            status: "queued",
+          },
+        });
+        await tx.uploadSession.update({
+          where: { id: session.id },
+          data: {
+            status: "completed",
+            completedAt: new Date(),
+            uploadedBytes: expectedSize,
+            lastActivityAt: new Date(),
+            expiresAt: nextUploadSessionExpiry(session.assetKind),
+          },
+        });
+        if (!existingAsset) {
+          await writeAudit(
+            tx,
+            meta,
+            "vod.multipart.complete",
+            "video_asset",
+            asset.id,
+            null,
+            serialize({ contentId: session.contentId, kind: asset.kind, status: asset.status, byteSize: asset.byteSize.toString() }),
+            "multipart complete",
+          );
+        }
+        return tx.videoAsset.findUnique({
+          where: { id: asset.id },
+          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+        });
+      });
       return reply.send({ ok: true, asset: summarizeVodAsset(result) });
     },
   );
@@ -1198,7 +1860,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           orderBy: [{ createdAt: "asc" }],
         }),
         vodPrisma.uploadSession.findMany({
-          where: { contentId, completedAt: null, expiresAt: { gte: new Date() } },
+          where: { contentId, status: { notIn: ["completed", "cancelled", "expired"] }, expiresAt: { gte: new Date() } },
+          include: { parts: { orderBy: { partNumber: "asc" } } },
           orderBy: [{ createdAt: "asc" }],
         }),
       ]);
@@ -1211,7 +1874,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           filename: summarizeFilename(session.originalFilename),
           byteSize: session.expectedSize != null ? String(session.expectedSize) : null,
           mimeType: session.expectedMime || null,
-          status: "uploading",
+          status: session.status === "failed" ? "failed" : "uploading",
           errorClass: null,
           verifiedAt: null,
           createdAt: session.createdAt ? new Date(session.createdAt).toISOString() : null,
@@ -1220,6 +1883,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       return reply.send({
         contentStatus: content.status,
         items: [...assets.map((row: any) => summarizeVodAsset(row)), ...pendingItems],
+        uploadSessions: pendingSessions.map((session: any) => summarizeUploadSession(session)),
       });
     },
   );

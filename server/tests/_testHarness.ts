@@ -163,6 +163,7 @@ const ALL_TABLES_ORDERED = [
   "watch_events",
   "transcode_jobs_v2",
   "video_assets",
+  "upload_session_parts",
   "upload_sessions",
   "usdt_monitor_cursors",
   "usdt_monitor_runtime_states",

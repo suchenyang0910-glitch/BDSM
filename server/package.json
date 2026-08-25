@@ -14,7 +14,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 tests/pseudonym.test.ts tests/telegram.test.ts tests/pin-mini-app.test.ts tests/object-storage.test.ts tests/api-smoke.test.ts tests/entitlements.test.ts tests/orders.test.ts tests/admin-permissions.test.ts tests/smoke-sprint2.test.ts tests/s1-content-access.test.ts tests/usdt-monitor.test.ts tests/analytics-finance.test.ts tests/vod-phase-a-media.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 tests/pseudonym.test.ts tests/telegram.test.ts tests/pin-mini-app.test.ts tests/object-storage.test.ts tests/api-smoke.test.ts tests/entitlements.test.ts tests/orders.test.ts tests/admin-permissions.test.ts tests/smoke-sprint2.test.ts tests/s1-content-access.test.ts tests/usdt-monitor.test.ts tests/analytics-finance.test.ts tests/vod-phase-a-media.test.ts tests/watch-progress.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

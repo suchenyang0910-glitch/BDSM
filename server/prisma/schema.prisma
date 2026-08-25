@@ -998,6 +998,21 @@ enum TranscodeJobStatus {
   cancelled
 }
 
+enum UploadSessionStatus {
+  initiated
+  uploading
+  paused
+  completing
+  completed
+  cancelled
+  expired
+  failed
+}
+
+enum UploadSessionPartStatus {
+  uploaded
+}
+
 enum MediaAssetStatus {
   initialized
   uploading
@@ -1086,13 +1101,18 @@ model UploadSession {
   id                String         @id @default(uuid())
   contentId         String         @map("content_id")
   assetKind         VideoAssetKind @map("asset_kind")
+  status            UploadSessionStatus @default(initiated) @map("status")
   objectKey         String         @unique @map("object_key") @db.VarChar(1024)
   originalFilename  String?        @map("original_filename") @db.VarChar(512)
   expectedSize      BigInt         @map("expected_size")
   expectedMime      String         @map("expected_mime") @db.VarChar(128)
   expectedSha256    String         @map("expected_sha256") @db.VarChar(128)
   storageUploadId   String?        @map("storage_upload_id") @db.VarChar(256)
+  partSize          Int?           @map("part_size")
+  totalParts        Int?           @map("total_parts")
+  uploadedBytes     BigInt         @default(0) @map("uploaded_bytes")
   expiresAt         DateTime       @map("expires_at")
+  lastActivityAt    DateTime       @default(now()) @map("last_activity_at")
   completedAt       DateTime?      @map("completed_at")
   createdBy         String?        @map("created_by")
   createdAt         DateTime       @default(now()) @map("created_at")
@@ -1100,11 +1120,30 @@ model UploadSession {
   content           Content        @relation(fields: [contentId], references: [id], onDelete: Cascade)
   creator           AdminUser?     @relation("UploadSessionCreator", fields: [createdBy], references: [id], onDelete: SetNull)
   videoAsset        VideoAsset?
+  parts             UploadSessionPart[]
 
   @@index([contentId, assetKind, createdAt])
+  @@index([contentId, status, assetKind, createdAt])
   @@index([expiresAt])
   @@index([createdBy, createdAt])
   @@map("upload_sessions")
+}
+
+model UploadSessionPart {
+  id                String                  @id @default(uuid())
+  uploadSessionId   String                  @map("upload_session_id")
+  partNumber        Int                     @map("part_number")
+  etag              String                  @db.VarChar(256)
+  bytes             BigInt                  @map("bytes")
+  checksum          String?                 @db.VarChar(128)
+  status            UploadSessionPartStatus @default(uploaded) @map("status")
+  uploadedAt        DateTime                @default(now()) @map("uploaded_at")
+
+  uploadSession     UploadSession           @relation(fields: [uploadSessionId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadSessionId, partNumber])
+  @@index([uploadSessionId, status, partNumber])
+  @@map("upload_session_parts")
 }
 
 model TranscodeJob {
