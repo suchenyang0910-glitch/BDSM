@@ -212,6 +212,7 @@ model User {
   analyticsEvents AnalyticsEvent[]
   contentPreferences UserContentPreference[]
   watchEvents     WatchEvent[]
+  watchProgresses WatchProgress[]
   mergedFromUsers User[]    @relation("UserMergeTarget")
   mergedTargetUser User?    @relation("UserMergeTarget", fields: [mergedIntoUserId], references: [id], onDelete: SetNull)
 
@@ -385,6 +386,7 @@ model Content {
   uploadSessions     UploadSession[]
   transcodeJobs      TranscodeJob[]
   watchEvents        WatchEvent[]
+  watchProgresses    WatchProgress[]
 
   @@index([status, accessType])
   @@index([isFeatured, featuredSort])
@@ -1140,6 +1142,25 @@ model WatchEvent {
   @@index([userId, occurredAt])
   @@index([occurredAt])
   @@map("watch_events")
+}
+
+model WatchProgress {
+  userId         String     @map("user_id")
+  contentId      String     @map("content_id")
+  positionSec    Int        @default(0) @map("position_sec")
+  durationSec    Int?       @map("duration_sec")
+  lastPlayedAt   DateTime   @default(now()) @map("last_played_at")
+  completedAt    DateTime?  @map("completed_at")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  user           User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content        Content    @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@id([userId, contentId])
+  @@index([lastPlayedAt])
+  @@index([contentId, lastPlayedAt])
+  @@map("watch_progresses")
 }
 
 enum TelegramPublishChannelKind {

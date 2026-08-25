@@ -159,6 +159,7 @@ export function assertTestDatabaseName(dbName: string): void {
 
 const ALL_TABLES_ORDERED = [
   "telegram_channel_messages",
+  "watch_progresses",
   "watch_events",
   "transcode_jobs_v2",
   "video_assets",
@@ -683,6 +684,30 @@ export async function ensurePlatformMetadataTable(prisma: PrismaClient): Promise
   }
 }
 
+export async function ensureWatchProgressTable(prisma: PrismaClient): Promise<void> {
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "watch_progresses" (
+        "user_id" TEXT NOT NULL,
+        "content_id" TEXT NOT NULL,
+        "position_sec" INTEGER NOT NULL DEFAULT 0,
+        "duration_sec" INTEGER,
+        "last_played_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "completed_at" TIMESTAMPTZ,
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "watch_progresses_pkey" PRIMARY KEY ("user_id", "content_id"),
+        CONSTRAINT "watch_progresses_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT "watch_progresses_content_id_fkey" FOREIGN KEY ("content_id") REFERENCES "contents"("id") ON DELETE CASCADE ON UPDATE CASCADE
+      );
+    `);
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "watch_progresses_last_played_at_idx" ON "watch_progresses"("last_played_at");`);
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "watch_progresses_content_id_last_played_at_idx" ON "watch_progresses"("content_id", "last_played_at");`);
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function ensureSeoMetadataColumns(prisma: PrismaClient): Promise<void> {
   try {
     await prisma.$executeRawUnsafe(
@@ -709,8 +734,13 @@ export async function wipeTestDatabase(prisma: PrismaClient): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const migrateFolder = path.join(__dirname, "..", "prisma", "migrations");
   await ensureMigrationsApplied(prisma, migrateFolder);
+  await ensureWatchProgressTable(prisma);
   for (const table of ALL_TABLES_ORDERED) {
-    await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE;`);
+    try {
+      await prisma.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE;`);
+    } catch {
+      /* ignore missing tables from partially migrated local test DBs */
+    }
   }
 }
 

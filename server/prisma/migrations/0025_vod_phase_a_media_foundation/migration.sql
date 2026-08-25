@@ -76,6 +76,20 @@ CREATE TABLE "watch_events" (
   CONSTRAINT "watch_events_content_id_fkey" FOREIGN KEY ("content_id") REFERENCES "contents"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
+CREATE TABLE "watch_progresses" (
+  "user_id" TEXT NOT NULL,
+  "content_id" TEXT NOT NULL,
+  "position_sec" INTEGER NOT NULL DEFAULT 0,
+  "duration_sec" INTEGER,
+  "last_played_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "completed_at" TIMESTAMPTZ,
+  "created_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updated_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "watch_progresses_pkey" PRIMARY KEY ("user_id", "content_id"),
+  CONSTRAINT "watch_progresses_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT "watch_progresses_content_id_fkey" FOREIGN KEY ("content_id") REFERENCES "contents"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
 CREATE UNIQUE INDEX "video_assets_object_key_key" ON "video_assets"("object_key");
 CREATE INDEX "video_assets_content_id_kind_created_at_idx" ON "video_assets"("content_id", "kind", "created_at");
 CREATE INDEX "video_assets_content_id_status_idx" ON "video_assets"("content_id", "status");
@@ -92,3 +106,5 @@ CREATE INDEX "transcode_jobs_v2_status_queued_at_idx" ON "transcode_jobs_v2"("st
 CREATE INDEX "watch_events_content_id_event_name_occurred_at_idx" ON "watch_events"("content_id", "event_name", "occurred_at");
 CREATE INDEX "watch_events_user_id_occurred_at_idx" ON "watch_events"("user_id", "occurred_at");
 CREATE INDEX "watch_events_occurred_at_idx" ON "watch_events"("occurred_at");
+CREATE INDEX "watch_progresses_last_played_at_idx" ON "watch_progresses"("last_played_at");
+CREATE INDEX "watch_progresses_content_id_last_played_at_idx" ON "watch_progresses"("content_id", "last_played_at");

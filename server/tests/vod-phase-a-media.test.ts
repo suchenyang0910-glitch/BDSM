@@ -210,6 +210,52 @@ test("Phase A: complete rejects metadata mismatch and leaves no asset or transco
   }
 });
 
+test("Phase A: watch progress keeps one row per user and content for resume reads", async () => {
+  const user = await prisma.user.create({
+    data: {
+      telegramUserId: BigInt(900000000001),
+      displayName: "Phase A Watch Progress",
+      status: "active",
+    },
+  });
+  const userId = user.id;
+  const contentId = TEST_KNOWN_IDS.contentMembership;
+
+  await prisma.watchProgress.create({
+    data: {
+      userId,
+      contentId,
+      positionSec: 42,
+      durationSec: 600,
+      lastPlayedAt: new Date("2026-08-25T12:00:00.000Z"),
+    },
+  });
+
+  await prisma.watchProgress.upsert({
+    where: { userId_contentId: { userId, contentId } },
+    update: {
+      positionSec: 128,
+      durationSec: 600,
+      lastPlayedAt: new Date("2026-08-25T12:05:00.000Z"),
+      completedAt: new Date("2026-08-25T12:09:30.000Z"),
+    },
+    create: {
+      userId,
+      contentId,
+      positionSec: 128,
+      durationSec: 600,
+      lastPlayedAt: new Date("2026-08-25T12:05:00.000Z"),
+      completedAt: new Date("2026-08-25T12:09:30.000Z"),
+    },
+  });
+
+  const rows = await prisma.watchProgress.findMany({ where: { userId, contentId } });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].positionSec, 128);
+  assert.equal(rows[0].durationSec, 600);
+  assert.ok(rows[0].completedAt instanceof Date);
+});
+
 test("Phase A: repeated complete is idempotent and creates at most one asset and one transcode job", async () => {
   const app = await createApp(prisma);
   let uploadSessionId = "";
