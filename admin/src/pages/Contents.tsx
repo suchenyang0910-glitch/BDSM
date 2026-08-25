@@ -1141,7 +1141,7 @@ const ContentsPage: React.FC = () => {
       return Upload.LIST_IGNORE;
     }
     if (file.size > 8 * 1024 * 1024 * 1024) {
-      message.error("完整源视频当前限制为 8GB 以内，请先压缩或拆分素材后重试");
+      message.error("完整源视频尚未完成超大文件验收，当前暂不接受超过 8GB 的源文件");
       return Upload.LIST_IGNORE;
     }
 
@@ -2321,7 +2321,7 @@ const ContentsPage: React.FC = () => {
                             : <ClockCircleOutlined style={{ color: "#888" }} />}
                       </Space>
                     }
-                    extra={<Tag color="purple">Multipart 分片上传 · ≤ 8GB</Tag>}
+                    extra={<Tag color="purple">Multipart 分片上传</Tag>}
                   >
                     <Space direction="vertical" size={12} style={{ width: "100%" }}>
                       <Alert
