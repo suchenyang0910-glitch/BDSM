@@ -616,6 +616,9 @@ const ContentsPage: React.FC = () => {
   // ================== 素材上传 state ==================
   const [coverAssetId, setCoverAssetId] = React.useState<string | null>(null);
   const [coverAsset, setCoverAsset] = React.useState<MediaAssetItem | null>(null);
+  // 仅允许把当前编辑内容的已校验素材写回内容。抽屉切换、网络重试期间，
+  // 旧内容的 React state 不能作为新内容的素材引用提交。
+  const [coverAssetContentId, setCoverAssetContentId] = React.useState<string | null>(null);
   const [coverProgress, setCoverProgress] = React.useState<number>(0);
   const [coverUploading, setCoverUploading] = React.useState(false);
 
@@ -842,6 +845,7 @@ const ContentsPage: React.FC = () => {
         .sort((a, b) => String(b.lastActivityAt || "").localeCompare(String(a.lastActivityAt || "")))[0] || null;
       setCoverAsset(cover);
       setCoverAssetId(cover?.id || null);
+      setCoverAssetContentId(cover?.id ? contentId : null);
       setPreviewAsset(preview);
       setPreviewAssetId(preview?.id || null);
       setFullVideoSegments(fulls);
@@ -869,6 +873,7 @@ const ContentsPage: React.FC = () => {
     } catch {
       setCoverAsset(null);
       setCoverAssetId(null);
+      setCoverAssetContentId(null);
       setPreviewAsset(null);
       setPreviewAssetId(null);
       setFullVideoSegments([]);
@@ -906,7 +911,7 @@ const ContentsPage: React.FC = () => {
   }, [drawerOpen, editing?.id, refreshPublishJobs, refreshChannelMessages]);
 
   const resetMediaState = React.useCallback(() => {
-    setCoverAssetId(null); setCoverAsset(null); setCoverProgress(0); setCoverUploading(false);
+    setCoverAssetId(null); setCoverAsset(null); setCoverAssetContentId(null); setCoverProgress(0); setCoverUploading(false);
     setPreviewAssetId(null); setPreviewAsset(null); setPreviewProgress(0); setPreviewUploading(false);
     setFullVideoAssetId(null); setFullVideoAsset(null); setFullVideoSegments([]); setFullVideoProgress(0); setFullVideoUploading(false);
     setFullVideoFingerprinting(false);
@@ -1473,6 +1478,7 @@ const ContentsPage: React.FC = () => {
       const verified = normalizeMediaAsset(comp.asset);
       setters.setAssetId(verified.id);
       setters.setAsset(verified);
+      if (kind === "cover_image") setCoverAssetContentId(editing.id);
       await refreshContentMedia(editing.id);
       message.success(`${kind === "cover_image" ? "封面" : kind === "preview_video" ? "试看源视频" : "完整源视频"}上传并校验完成`);
     } catch (e) {
@@ -1493,12 +1499,17 @@ const ContentsPage: React.FC = () => {
         return;
       }
       setSubmitting(true);
+      // 禁止携带旧抽屉/失败上传遗留的 coverAssetId。编辑时未加载到当前内容的
+      // 封面字段直接省略，由服务端保留既有值；新建时才明确写 null。
+      const currentReadyCoverAssetId =
+        coverAssetContentId === editing?.id && coverAsset?.status === "ready"
+          ? coverAsset.id
+          : null;
       const payload: any = {
         ...values,
         tags: values.tags || [],
         seoKeywords: values.seoKeywords || [],
         geoKeywords: values.geoKeywords || [],
-        coverAssetId,
         fullVideoAssetId: fullVideoAssetId ?? null,
         fullVideoAssetIds: fullVideoSegments.map((asset) => asset.id),
         categoryIds: values.categoryIds || [],
@@ -1507,6 +1518,11 @@ const ContentsPage: React.FC = () => {
         scheduledAt: values.scheduledAt ? values.scheduledAt.toISOString() : null,
         reason: editing ? `编辑内容：${editing.title}` : `新建内容：${values.title}`,
       };
+      if (editing) {
+        if (currentReadyCoverAssetId) payload.coverAssetId = currentReadyCoverAssetId;
+      } else {
+        payload.coverAssetId = currentReadyCoverAssetId;
+      }
       if (editing) {
         await updateAdminContent(editing.id, payload);
         message.success("内容已更新");
