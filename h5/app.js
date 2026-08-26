@@ -823,15 +823,31 @@
     return items.find(function (item) { return item.accessType === "membership"; }) || null;
   }
 
+  function getMembershipPurchaseDetail(entry) {
+    if (!entry) return null;
+    if (entry.product && entry.product.id) return entry;
+    if (!entry.productId) return null;
+    return Object.assign({}, entry, {
+      product: {
+        id: entry.productId,
+        priceMinor: entry.priceMinor,
+        currency: entry.priceCurrency,
+        usdtPriceMinor: entry.usdtPriceMinor,
+        type: "membership",
+      },
+    });
+  }
+
   function appendMembershipRenewal(host, membershipEntry, membershipState) {
-    if (!membershipEntry || !membershipEntry.product) return;
+    const purchaseDetail = getMembershipPurchaseDetail(membershipEntry);
+    if (!purchaseDetail) return;
     const card = document.createElement("article");
     card.className = "stack-card";
     card.innerHTML =
       '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(membershipState.title) + '</div>' +
       '<div class="stack-subtitle">' + escapeHtml(membershipState.copy) + '</div></div><div class="' + membershipState.badgeClass + '">' + escapeHtml(membershipState.badgeText) + '</div></div>' +
       '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + escapeHtml(membershipState.actionText) + "</button></div>";
-    card.querySelector("button").addEventListener("click", function () { startPurchase(membershipEntry); });
+    card.querySelector("button").addEventListener("click", function () { startPurchase(purchaseDetail); });
     host.appendChild(card);
   }
 

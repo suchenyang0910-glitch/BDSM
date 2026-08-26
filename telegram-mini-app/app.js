@@ -602,18 +602,40 @@
     return items.find(function (item) { return item.accessType === "membership"; }) || null;
   }
 
+  function getMembershipPurchaseDetail(entry) {
+    if (!entry) return null;
+    if (entry.product && entry.product.id) return entry;
+    if (!entry.productId) return null;
+    return Object.assign({}, entry, {
+      product: {
+        id: entry.productId,
+        priceMinor: entry.priceMinor,
+        currency: entry.priceCurrency,
+        usdtPriceMinor: entry.usdtPriceMinor,
+        type: "membership",
+      },
+    });
+  }
+
   function appendMembershipRenewal(host, membershipEntry, summary) {
-    if (!membershipEntry || !membershipEntry.product || summary.status === "none") return;
+    const purchaseDetail = getMembershipPurchaseDetail(membershipEntry);
+    if (!purchaseDetail) return;
     const active = summary.status === "active";
+    const inactive = !summary.status || summary.status === "none";
+    const title = active ? "续费会员" : (inactive ? "开通会员" : "恢复会员权益");
+    const actionText = active ? "立即续费" : (inactive ? "立即开通" : "续费恢复权益");
+    const subtitle = active && summary.expiresAt
+      ? "当前有效至 " + formatDateShort(summary.expiresAt) + "；续费会在到期后顺延。"
+      : inactive
+        ? "开通后即可获得会员频道与会员内容访问。"
+        : "完成续费后即可恢复会员频道与会员内容访问。";
     const card = document.createElement("article");
     card.className = "stack-card";
     card.innerHTML =
-      '<div class="stack-head"><div><div class="stack-title">' + (active ? "续费会员" : "恢复会员权益") + '</div>' +
-      '<div class="stack-subtitle">' + escapeHtml(active && summary.expiresAt
-        ? "当前有效至 " + formatDateShort(summary.expiresAt) + "；续费会在到期后顺延。"
-        : "完成续费后即可恢复会员频道与会员内容访问。") + '</div></div></div>' +
-      '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + (active ? "立即续费" : "立即续费恢复") + "</button></div>";
-    card.querySelector("button").addEventListener("click", function () { startPurchase(membershipEntry); });
+      '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(title) + '</div>' +
+      '<div class="stack-subtitle">' + escapeHtml(subtitle) + '</div></div></div>' +
+      '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + escapeHtml(actionText) + "</button></div>";
+    card.querySelector("button").addEventListener("click", function () { startPurchase(purchaseDetail); });
     host.appendChild(card);
   }
 
