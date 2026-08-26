@@ -30,9 +30,14 @@
         min-height: 100vh;
       }
       .app-shell {
+        display: block;
+        width: min(100%, 560px);
         max-width: 560px;
         margin: 0 auto;
         padding: 20px 18px 110px;
+        grid-template-columns: none;
+        column-gap: 0;
+        align-items: initial;
       }
       .topbar {
         display: flex; align-items: center; justify-content: space-between;

@@ -1154,11 +1154,13 @@ h3 {
   }
 
   .banner-rail {
-    overflow: visible;
+    /* Desktop has a single focused hero. Keep the next carousel card off-canvas. */
+    overflow: hidden;
   }
 
   .banner-card {
-    flex-basis: min(100%, 1200px);
+    flex: 0 0 100%;
+    max-width: 100%;
   }
 
   .content-grid {
