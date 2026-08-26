@@ -225,6 +225,9 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     if (content.status !== "published") {
       return reply.status(403).send({ error: "content_unavailable", message: "内容已下架或未上架" });
     }
+    // This payload varies by the current user (entitlement and playback state).
+    // It must never be served from an intermediary cache created for another visitor.
+    reply.header("Cache-Control", "private, no-store, max-age=0");
 
     let unlocked = content.accessType === "public";
     let ownedBy = "";

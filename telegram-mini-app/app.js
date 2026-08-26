@@ -877,7 +877,10 @@
 
   function getPrimaryDetailAction(detail) {
     const playback = detail && detail.playbackStatus;
-    if (playback && !playback.errorClass && (playback.action === "preview" || playback.action === "play_full")) {
+    if (playback && playback.previewAvailable) {
+      return { text: playback.action === "play_full" ? "播放完整视频" : "免费试看", handler: function () { startManagedPlayback(detail); } };
+    }
+    if (playback && !playback.errorClass && playback.action === "play_full") {
       return { text: playback.action === "play_full" ? "播放完整视频" : "免费试看", handler: function () { startManagedPlayback(detail); } };
     }
     if (detail.unlocked) {
@@ -952,7 +955,7 @@
     const previewUpgradeEnabled = !detail.unlocked && !!detail.product &&
       (detail.accessType === "membership" || detail.accessType === "package");
     const previewUpgradeText = detail.accessType === "membership" ? "开通会员" : "解锁内容包";
-    const managedPreview = detail.playbackStatus && detail.playbackStatus.previewAvailable && !detail.playbackStatus.errorClass;
+    const managedPreview = detail.playbackStatus && detail.playbackStatus.previewAvailable;
     const mediaSlot = (managedPreview || detail.previewUrl)
       ? '<section class="detail-media detail-media-preview" aria-label="免费试看">' +
         '<video class="detail-preview-video" controls playsinline preload="metadata"' +
