@@ -29,6 +29,7 @@
   };
 
   const BOT_USERNAME_FALLBACK = "InTune_bdsm_bot";
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 
   const VIEW_MAP = ["unauth", "orders", "entitlements", "channels", "payDetail", "error"];
   let currentView = "";
@@ -131,6 +132,25 @@
     });
   }
 
+  function trackAnalytics(eventName, payload) {
+    return requestWithCompatibility("/api/analytics/events", {
+      credentials: "include",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        events: [{
+          eventName: eventName,
+          payload: Object.assign({
+            platform: tg && typeof tg.openInvoice === "function" ? "telegram_mini_app" : "h5",
+          }, payload || {}),
+        }],
+      }),
+    }).catch(function () {});
+  }
+
   function $(id) {
     return document.getElementById(id);
   }
@@ -203,6 +223,71 @@
     const p = new URLSearchParams(location.search);
     return p.get("productId") || "";
   }
+  function currentPaymentMethodFromQs() {
+    const p = new URLSearchParams(location.search);
+    return p.get("paymentMethod") || "";
+  }
+
+  function replaceCheckoutQuery(input) {
+    const qs = new URLSearchParams(location.search);
+    if (input.orderNo) qs.set("orderNo", input.orderNo); else qs.delete("orderNo");
+    if (input.productId) qs.set("productId", input.productId); else qs.delete("productId");
+    if (input.paymentMethod) qs.set("paymentMethod", input.paymentMethod); else qs.delete("paymentMethod");
+    history.replaceState(null, "", `${location.pathname}?${qs.toString()}${location.hash || ""}`);
+  }
+
+  function isUsdtOrder(order) {
+    return !!(order && (order.currency === "USDT" || order.paymentMethod === "usdt_trc20" || order.paymentMethod === "usdt_trc20_external"));
+  }
+
+  function isStarsOrder(order) {
+    return !!(order && (order.paymentMethod === "telegram_stars" || order.paymentProvider === "telegram_stars" || order.currency === "XTR"));
+  }
+
+  function configurePaymentDetailMode(order, options) {
+    const opts = options || {};
+    const stars = opts.forceStars || isStarsOrder(order);
+    const payTitle = $("payTitle");
+    const paySubtitle = $("paySubtitle");
+    const listPriceLabel = $("listPriceLabel");
+    const payableLabelText = $("payableLabelText");
+    const payCurrency = $("payCurrency");
+    const copyAmountBtn = $("copyAmountBtn");
+    const btnCopyAmount = $("btnCopyAmount");
+    const addressWrap = $("addressWrap");
+    const pollingWrap = $("pollingWrap");
+    const starsWrap = $("starsWrap");
+
+    if (stars) {
+      if (payTitle) payTitle.textContent = "Telegram Stars 支付";
+      if (paySubtitle) {
+        paySubtitle.textContent = opts.invoiceFallback
+          ? "当前环境无法直接拉起 Stars 原生支付，请复制发票链接回到 Telegram 内完成。"
+          : "Telegram 内优先使用 Stars；若未完成，订单仍可稍后继续支付或切换 USDT。";
+      }
+      if (listPriceLabel) listPriceLabel.textContent = "商品价格";
+      if (payableLabelText) payableLabelText.textContent = "应付金额";
+      if (payCurrency) payCurrency.textContent = "XTR";
+      if (copyAmountBtn) copyAmountBtn.style.display = "none";
+      if (btnCopyAmount) btnCopyAmount.style.display = "none";
+      if (addressWrap) addressWrap.style.display = "none";
+      if (pollingWrap) pollingWrap.style.display = "block";
+      if (starsWrap) starsWrap.style.display = opts.invoiceFallback ? "block" : "none";
+      return;
+    }
+
+    if (payTitle) payTitle.textContent = "USDT-TRC20 支付";
+    if (paySubtitle) paySubtitle.textContent = "请使用 TRON (TRC-20) 网络按精确金额转账，页面会自动恢复订单状态。";
+    if (listPriceLabel) listPriceLabel.textContent = "商品价格";
+    if (payableLabelText) payableLabelText.textContent = "实际应付（尾数唯一识别）";
+    if (payCurrency) payCurrency.textContent = "USDT";
+    if (addressWrap) addressWrap.style.display = "block";
+    if (pollingWrap) pollingWrap.style.display = "block";
+    if (starsWrap) starsWrap.style.display = "none";
+    const refreshedCopyAmount = $("copyAmountBtn");
+    if (refreshedCopyAmount) refreshedCopyAmount.style.display = "";
+    if (btnCopyAmount) btnCopyAmount.style.display = "";
+  }
 
   function setStep(stepIdx) {
     document.querySelectorAll("#paySteps .step").forEach((el, idx) => {
@@ -245,6 +330,26 @@
       clearInterval(pollTimer);
       pollTimer = null;
     }
+  }
+
+  function handleStarsInvoiceResult(orderNo, status) {
+    loadOrders();
+    loadEntitlements();
+    if (status === "paid") {
+      setStatus("processing", "Stars 支付成功，正在核验权益…");
+      handleQueryOrder(orderNo);
+      return;
+    }
+    if (status === "pending") {
+      setStatus("processing", "Stars 支付确认中…");
+      startPolling(orderNo);
+      return;
+    }
+    if (status === "failed") {
+      showError("Stars 支付未完成。你可以稍后继续支付，或切换到 USDT-TRC20。");
+      return;
+    }
+    showError("已取消 Stars 支付，订单仍可在此继续处理。");
   }
 
   function startPolling(orderNo) {
@@ -331,6 +436,7 @@
   }
 
   function applyOrderData(o) {
+    configurePaymentDetailMode(o);
     const metaEl = $("orderMeta");
     if (metaEl) {
       metaEl.innerHTML =
@@ -339,7 +445,7 @@
         (o.currency ? `<div style="margin-top:4px">币种：${o.currency}｜状态：${o.status}</div>` : "");
     }
 
-    const isUsdt = o.currency === "USDT";
+    const isUsdt = isUsdtOrder(o);
     const displayAmount =
       o.usdtPayment?.displayAmountDecimal ??
       (isUsdt ? minorToDecimalUsdt(o.amountMinor) :
@@ -463,8 +569,9 @@
 
     const qsOrder = currentOrderNoFromQs();
     const qsProd = currentProductIdFromQs();
+    const qsPaymentMethod = currentPaymentMethodFromQs();
     if (qsOrder) $("orderNo").value = qsOrder;
-    if (qsProd) $("productId").value = qsProd;
+    if (qsProd && qsProd !== "list") $("productId").value = qsProd;
 
     // 首屏自动恢复登录；首次访问时由服务端创建持久会话。
     let established = false;
@@ -525,11 +632,20 @@
     }
 
     if (qsOrder) {
+      trackAnalytics("checkout_open", {
+        orderNo: qsOrder,
+        paymentMethod: qsPaymentMethod === "stars" ? "telegram_stars" : qsPaymentMethod === "usdt" ? "usdt_trc20" : "manual",
+      });
       await handleQueryOrder(qsOrder);
       return;
     }
-    if (qsProd) {
-      await handleCreateOrder(qsProd);
+    if (qsProd && qsProd !== "list") {
+      trackAnalytics("checkout_open", {
+        productId: qsProd,
+        paymentMethod: qsPaymentMethod === "stars" ? "telegram_stars" : qsPaymentMethod === "usdt" ? "usdt_trc20" : "manual",
+      });
+      if (qsPaymentMethod === "stars") await handleCreateStarsOrder(qsProd);
+      else await handleCreateOrder(qsProd);
       return;
     }
     showView("orders");
@@ -570,12 +686,10 @@
         const amount = o.currency === "USDT" ? minorToDecimalUsdt(o.amountMinor) :
           o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : o.amountMinor;
         const isUsdt = o.currency === "USDT" || o.paymentMethod === "usdt_trc20" || o.paymentMethod === "usdt_trc20_external";
+        const isStars = o.paymentMethod === "telegram_stars" || o.paymentProvider === "telegram_stars" || o.currency === "XTR";
         const canContinueUsdt = ["pending", "processing"].includes(o.status) && isUsdt;
-        // Standalone H5 is the USDT checkout only. Stars stay inside Telegram
-        // Mini App, so historical Stars orders are intentionally view-only here.
-        const canContinue = canContinueUsdt;
+        const canContinueStars = ["pending", "processing"].includes(o.status) && isStars;
         const canViewPaid = ["paid", "expired", "cancelled", "failed", "refunded"].includes(o.status);
-        const payBtnLabel = "继续支付";
         return `
           <div class="order-list-item">
             <div class="oli-head">
@@ -590,7 +704,8 @@
             </div>
             ${o._h5QuickNote ? `<div class="ent-sub" style="margin-bottom:8px;">${o._h5QuickNote}</div>` : ""}
             <div class="oli-cta">
-              ${canContinue ? `<button class="btn btn-primary" data-act="pay" data-pay="usdt" data-no="${o.orderNo}">${payBtnLabel}</button>` : ""}
+              ${canContinueUsdt ? `<button class="btn btn-primary" data-act="pay" data-pay="usdt" data-no="${o.orderNo}">继续 USDT 支付</button>` : ""}
+              ${canContinueStars ? `<button class="btn btn-primary" data-act="pay" data-pay="stars" data-no="${o.orderNo}">继续 Stars 支付</button>` : ""}
               ${canViewPaid ? `<button class="btn btn-ghost" data-act="view" data-no="${o.orderNo}">查看详情</button>` : ""}
               <button class="btn btn-ghost" data-act="copy" data-no="${o.orderNo}" title="复制订单号">复制单号</button>
             </div>
@@ -792,21 +907,27 @@
 
     const link = resp.order.invoiceLink;
     applyOrderData(resp.order);
+    trackAnalytics("checkout_open", {
+      orderNo: orderNo,
+      productId: resp.order?.product?.id || null,
+      paymentMethod: "telegram_stars",
+    });
+    if (tg && typeof tg.openInvoice === "function") {
+      tg.openInvoice(link, function (status) {
+        handleStarsInvoiceResult(orderNo, status);
+      });
+      return;
+    }
     setStep(2);
-    setStatus("warning", "已取得 Stars 发票链接");
+    setStatus("processing", "已取得 Stars 发票链接");
 
-    const titleEl = $("payTitle");
-    const subEl = $("paySubtitle");
-    const addrWrap = $("addressWrap");
-    const amountWrap = $("amountWrap");
-    const pollWrap = $("pollingWrap");
-    const stepText = $("paySteps");
-    if (titleEl) titleEl.textContent = "Stars 发票已就绪（H5 无法直接唤起）";
-    if (subEl) subEl.textContent = "请在 Telegram Mini App 内打开本页面，或复制下方链接到 Telegram 内访问以完成支付。";
-    if (stepText) stepText.textContent = "步骤 1 / 2 · 复制链接 → 步骤 2 / 2 · 在 Telegram Mini App 中打开完成支付";
-    if (addrWrap) {
-      addrWrap.style.display = "block";
-      addrWrap.innerHTML = `
+    configurePaymentDetailMode(resp.order, { forceStars: true, invoiceFallback: true });
+
+    const starsWrap = $("starsWrap");
+    const starsContent = $("starsFallbackContent");
+    if (starsWrap) starsWrap.style.display = "block";
+    if (starsContent) {
+      starsContent.innerHTML = `
         <div style="margin-bottom:8px; font-size:13px; color:#b9a7e6;">★ Stars 发票链接：</div>
         <div class="card-row" id="starsLinkRow" style="word-break:break-all; padding:10px 12px; font-size:12px; color:#e8dfff; background:rgba(180,112,255,.08); border:1px solid rgba(180,112,255,.2); border-radius:10px; user-select:text;">${escapeHtml(link)}</div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px;">
@@ -828,8 +949,6 @@
         location.href = `./index.html?${qs.toString()}#view=orders`;
       });
     }
-    if (amountWrap) amountWrap.style.display = "none";
-    if (pollWrap) pollWrap.style.display = "block";
     startPolling(orderNo);
   }
 
@@ -841,15 +960,20 @@
     const meta = $("orderMeta");
     if (meta) meta.textContent = "订单号 " + orderNo;
     try {
-      // 与服务端 ordersQuerySchema 的上限保持一致（最大 50），否则刷新待支付订单会被 400 拒绝。
-      const data = await api(`/api/user/orders?page=1&pageSize=50`);
-      const order = (data?.items || []).find((o) => o.orderNo === orderNo);
+      const data = await api(`/api/orders/${encodeURIComponent(orderNo)}/status`);
+      const order = data?.order || null;
       if (!order) {
         return showError(
           "未找到该订单（或未登录导致无法读取你的订单）。请回到 Telegram Mini App 中打开本页，或确认订单号正确。",
         );
       }
       applyOrderData(order);
+      replaceCheckoutQuery({ orderNo: order.orderNo, paymentMethod: order.paymentMethod === "telegram_stars" ? "stars" : "usdt" });
+      trackAnalytics("checkout_open", {
+        orderNo: order.orderNo,
+        productId: order.product?.id || null,
+        paymentMethod: order.paymentMethod === "telegram_stars" ? "telegram_stars" : "usdt_trc20",
+      });
       if (["pending", "processing"].includes(order.status)) startPolling(orderNo);
       if (order.status === "paid") {
         setStep(4);
@@ -865,7 +989,6 @@
   }
 
   async function handleCreateOrder(productId) {
-    // H5 自动登录账户即可创建 USDT 订单；Telegram 绑定仅在用户领取私密频道时需要。
     showView("payDetail");
     const card = $("activatedCard");
     if (card) card.style.display = "none";
@@ -873,6 +996,7 @@
     const meta = $("orderMeta");
     if (meta) meta.textContent = `商品 ID：${productId}`;
     try {
+      trackAnalytics("payment_method_selected", { productId: productId, paymentMethod: "usdt_trc20" });
       const created = await api("/api/orders/usdt", {
         method: "POST",
         body: JSON.stringify({ productId }),
@@ -883,10 +1007,9 @@
       });
       applyOrderData(order);
       if (order.orderNo) {
-        const qs = new URLSearchParams(location.search);
-        qs.set("orderNo", order.orderNo);
-        history.replaceState(null, "", `${location.pathname}?${qs.toString()}`);
+        replaceCheckoutQuery({ orderNo: order.orderNo, productId, paymentMethod: "usdt" });
         $("orderNo").value = order.orderNo;
+        trackAnalytics("order_created", { orderNo: order.orderNo, productId: productId, paymentMethod: "usdt_trc20" });
       }
       if (["pending", "processing"].includes(order.status || "pending")) {
         startPolling(created.orderNo);
@@ -901,6 +1024,44 @@
         return;
       }
       showError("创建 USDT 支付订单失败：" + zhMsg(err));
+    }
+  }
+
+  async function handleCreateStarsOrder(productId) {
+    showView("payDetail");
+    const card = $("activatedCard");
+    if (card) card.style.display = "none";
+    setStatus("processing", "创建 Stars 订单中…");
+    const meta = $("orderMeta");
+    if (meta) meta.textContent = `商品 ID：${productId}`;
+    try {
+      trackAnalytics("payment_method_selected", { productId: productId, paymentMethod: "telegram_stars" });
+      const created = await api("/api/orders/stars", {
+        method: "POST",
+        body: JSON.stringify({ productId }),
+      });
+      const order = created?.created || created?.order || null;
+      if (!order?.orderNo || !order?.invoiceLink) {
+        showError("未获得有效的 Stars 发票链接。");
+        return;
+      }
+      applyOrderData(order);
+      replaceCheckoutQuery({ orderNo: order.orderNo, productId, paymentMethod: "stars" });
+      $("orderNo").value = order.orderNo;
+      trackAnalytics("order_created", { orderNo: order.orderNo, productId: productId, paymentMethod: "telegram_stars" });
+      if (tg && typeof tg.openInvoice === "function") {
+        tg.openInvoice(order.invoiceLink, function (status) {
+          handleStarsInvoiceResult(order.orderNo, status);
+        });
+        return;
+      }
+      await handleContinueStars(order.orderNo);
+    } catch (err) {
+      if (err.status === 401) {
+        showView("unauth");
+        return;
+      }
+      showError("创建 Stars 支付订单失败：" + zhMsg(err));
     }
   }
 
@@ -972,6 +1133,14 @@
   }
 
   function bindQuickActions() {
+    $("btnCreateStarsOrder")?.addEventListener("click", () => {
+      const p = ($("productId") && $("productId").value.trim()) || "";
+      if (!p) {
+        showError("请先填写产品 ID。");
+        return;
+      }
+      handleCreateStarsOrder(p);
+    });
     $("btnCreateOrder")?.addEventListener("click", () => {
       const p = ($("productId") && $("productId").value.trim()) || "";
       if (!p) {

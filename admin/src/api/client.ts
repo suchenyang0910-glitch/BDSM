@@ -69,6 +69,17 @@ import type {
   StartTelegramPublishInput,
   StartTelegramPublishResp,
   AdminAnalyticsOverview,
+  AdminTrafficEntryListResp,
+  CreateAdminTrafficEntryInput,
+  UpdateAdminTrafficEntryInput,
+  FinanceQuery,
+  FinanceOverviewResp,
+  FinanceTrendsResp,
+  FinanceAddressPoolResp,
+  FinanceReconciliationResp,
+  AdminCampaignListResp,
+  CreateAdminCampaignInput,
+  UpdateAdminCampaignInput,
 } from "./types";
 
 const http = axios.create({
@@ -314,6 +325,41 @@ export async function listAdminPackages(): Promise<{ data: AdminPackageItem[] }>
 
 export async function getAdminAnalyticsOverview(preset: "7d" | "30d" = "7d"): Promise<AdminAnalyticsOverview> {
   const res = await http.get("/admin/analytics/overview", { params: { preset } });
+  return res.data;
+}
+
+export async function listAdminTrafficEntries(params: {
+  preset?: "7d" | "30d";
+  q?: string;
+  status?: "active" | "inactive";
+  entryType?: "telegram_channel" | "telegram_bot" | "web" | "facebook" | "x" | "partner";
+} = {}): Promise<AdminTrafficEntryListResp> {
+  const res = await http.get("/admin/traffic-entries", { params });
+  return res.data;
+}
+
+export async function createAdminTrafficEntry(input: CreateAdminTrafficEntryInput): Promise<{ ok: true; id: string }> {
+  const res = await http.post("/admin/traffic-entries", input);
+  return res.data;
+}
+
+export async function updateAdminTrafficEntry(id: string, input: UpdateAdminTrafficEntryInput): Promise<{ ok: true; id: string }> {
+  const res = await http.patch(`/admin/traffic-entries/${encodeURIComponent(id)}`, input);
+  return res.data;
+}
+
+export async function listAdminCampaigns(params: { q?: string; status?: "draft" | "scheduled" | "active" | "paused" | "archived" } = {}): Promise<AdminCampaignListResp> {
+  const res = await http.get("/admin/campaigns", { params });
+  return res.data;
+}
+
+export async function createAdminCampaign(input: CreateAdminCampaignInput): Promise<{ ok: true; id: string }> {
+  const res = await http.post("/admin/campaigns", input);
+  return res.data;
+}
+
+export async function updateAdminCampaign(id: string, input: UpdateAdminCampaignInput): Promise<{ ok: true; id: string }> {
+  const res = await http.patch(`/admin/campaigns/${encodeURIComponent(id)}`, input);
   return res.data;
 }
 
@@ -598,4 +644,33 @@ export async function refreshAdminChannels(opts: { reason: string; force?: boole
 export async function listAdminDashboard(): Promise<AdminDashboardSummary> {
   const res = await http.get("/admin/dashboard/summary");
   return res.data;
+}
+
+export async function getAdminFinanceOverview(params: FinanceQuery = {}): Promise<FinanceOverviewResp> {
+  const res = await http.get("/admin/finance/overview", { params });
+  return res.data;
+}
+
+export async function getAdminFinanceTrends(params: FinanceQuery = {}): Promise<FinanceTrendsResp> {
+  const res = await http.get("/admin/finance/trends", { params });
+  return res.data;
+}
+
+export async function getAdminFinanceAddressPool(): Promise<FinanceAddressPoolResp> {
+  const res = await http.get("/admin/finance/address-pool");
+  return res.data;
+}
+
+export async function getAdminFinanceReconciliation(params: FinanceQuery = {}): Promise<FinanceReconciliationResp> {
+  const res = await http.get("/admin/finance/reconciliation", { params });
+  return res.data;
+}
+
+export function buildAdminFinanceExportUrl(kind: "overview" | "orders" | "reconciliation", params: FinanceQuery = {}): string {
+  const search = new URLSearchParams();
+  search.set("kind", kind);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
+  }
+  return `/api/admin/finance/export?${search.toString()}`;
 }

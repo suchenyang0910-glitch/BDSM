@@ -17,11 +17,17 @@ const contentsQuerySchema = z.object({
 
 export default async function contentRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
-  // The public content page must remain renderable while delivery is disabled,
-  // but it must only offer managed playback when the server explicitly permits it.
   const playbackConfig = (((fastify as any).playbackConfig as PlaybackConfig | undefined) || {
-    mode: "disabled", configured: false, missingKeys: [], cdnBaseUrl: "", signingMode: "signed_cookie",
-    sessionTtlSeconds: 300, heartbeatIntervalSeconds: 15, maxActiveDevices: 2, allowContentIds: [], allowUserIds: [],
+    mode: "disabled",
+    configured: false,
+    missingKeys: [],
+    cdnBaseUrl: "",
+    signingMode: "signed_cookie",
+    sessionTtlSeconds: 300,
+    heartbeatIntervalSeconds: 15,
+    maxActiveDevices: 2,
+    allowContentIds: [],
+    allowUserIds: [],
   }) as PlaybackConfig;
 
   async function tryGetPlatformMetadata() {
@@ -34,8 +40,8 @@ export default async function contentRoutes(fastify: FastifyInstance) {
 
   function resolvePublishedCoverUrl(content: any) {
     const cover = Array.isArray(content.videoAssets) ? content.videoAssets[0] : null;
-    // VOD covers are stored in video_assets. The browser receives a controlled
-    // application route, never an object key or a stable object-storage URL.
+    // Covers created by the VOD pipeline live in VideoAsset. Return only a
+    // controlled application URL so object keys and durable storage URLs stay private.
     return cover ? `/api/contents/${encodeURIComponent(content.id)}/cover` : content.coverUrl || null;
   }
 
@@ -219,9 +225,6 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     if (content.status !== "published") {
       return reply.status(403).send({ error: "content_unavailable", message: "内容已下架或未上架" });
     }
-    // This payload varies by the current user (entitlement and playback state).
-    // It must never be served from an intermediary cache created for another visitor.
-    reply.header("Cache-Control", "private, no-store, max-age=0");
 
     let unlocked = content.accessType === "public";
     let ownedBy = "";
@@ -293,8 +296,8 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       publishedAt: content.publishedAt?.toISOString(),
       effectiveSeo,
       robots: "noindex,nofollow",
-      // 内容详情属于受控应用内页面；即使页面有 robots=noindex，也不能下发
-      // VideoObject，以免社交预抓取或忽略 robots 的爬虫读取封面、描述和播放地址。
+      // 私密/付费详情由应用内用户会话控制；不向页面下发 VideoObject，
+      // 防止社交预取与不遵守 robots 的抓取器收集标题、简介或试看地址。
       videoObjectJsonLd: null,
     };
   });

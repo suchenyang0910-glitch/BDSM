@@ -4,15 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#12111A" />
-    <meta name="description" content="Samewave 同频：免费试看、单条购买、内容包与月度会员。" />
+    <meta name="description" content="同频 H5 点播：免费试看、单条购买、内容包与月度会员。" />
     <meta name="keywords" content="" />
     <meta name="robots" content="noindex,nofollow" />
-    <meta property="og:title" content="Samewave 同频 · 点播" />
-    <meta property="og:description" content="Samewave 同频：免费试看、单条购买、内容包与月度会员。" />
+    <meta property="og:title" content="同频 · H5 点播" />
+    <meta property="og:description" content="同频 H5 点播：免费试看、单条购买、内容包与月度会员。" />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="" />
-    <title>Samewave 同频 · 点播</title>
-    <link rel="stylesheet" href="./styles.css?v=20260826-desktop-layout-4" />
+    <title>同频 · H5 点播</title>
+    <link rel="stylesheet" href="./styles.css?v=20260826-preview-gate-1" />
     <script src="/api/vendor/hls/hls.min.js"></script>
     <script id="videoObjectJsonLd" type="application/ld+json"></script>
   </head>
@@ -24,15 +24,11 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
           </button>
           <div class="header-copy">
-            <p id="headerEyebrow" class="eyebrow">同频</p>
+            <p id="headerEyebrow" class="eyebrow">INTUNE VOD</p>
             <h1 id="headerTitle">同频</h1>
-            <p id="headerSubtitle" class="header-subtitle">视频点播目录、会员权益与续费入口</p>
+            <p id="headerSubtitle" class="header-subtitle">视频点播目录、会员权益与 Telegram 频道交付</p>
           </div>
         </div>
-        <form id="desktopSearchForm" class="desktop-global-search" role="search">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
-          <input id="desktopSearchInput" type="search" placeholder="搜索视频、主题或关键词" autocomplete="off" />
-        </form>
         <div class="header-actions">
           <button id="searchButton" class="icon-button" type="button" aria-label="搜索">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
@@ -40,10 +36,6 @@
           <button id="notifyButton" class="icon-button" type="button" aria-label="通知">
             <span id="notifyBadge" class="header-badge is-hidden">0</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6"></path><path d="M10 18a2 2 0 0 0 4 0"></path></svg>
-          </button>
-          <button id="profileButton" class="header-pill-button" type="button" aria-label="我的">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M5 20a7 7 0 0 1 14 0"></path></svg>
-            <span>我的</span>
           </button>
         </div>
       </header>
@@ -62,23 +54,23 @@
             <div id="homeBannerList" class="banner-rail"></div>
           </section>
 
-          <section id="homeRecentSection" class="section-block is-hidden">
-            <div class="section-head">
-              <h3>继续观看</h3>
-            </div>
-            <div id="homeRecentCard"></div>
-          </section>
-
           <section class="section-block home-featured-section">
             <div class="section-head">
               <h3>今日精选</h3>
             </div>
-            <div id="homeFeaturedCard" class="content-grid"></div>
+            <div id="homeFeaturedCard"></div>
+          </section>
+
+          <section id="homeRecentSection" class="section-block is-hidden">
+            <div class="section-head">
+              <h3>上次播放</h3>
+            </div>
+            <div id="homeRecentCard"></div>
           </section>
 
           <section class="section-block">
             <div class="section-head">
-              <h3>最新上架</h3>
+              <h3>最新</h3>
               <button id="jumpLibraryButton" class="text-button" type="button">查看全部</button>
             </div>
             <div id="homeLatestGrid" class="content-grid"></div>
@@ -103,10 +95,6 @@
               <button type="button" class="segment-button is-active" data-sort="newest">最新</button>
               <button type="button" class="segment-button" data-sort="popular">最受欢迎</button>
               <button type="button" class="segment-button" data-sort="featured">精选</button>
-            </div>
-            <div class="toolbar-actions">
-              <p id="libraryFilterSummary" class="toolbar-hint">当前显示全部内容</p>
-              <button id="libraryClearFiltersButton" class="ghost-button is-hidden" type="button">清空筛选</button>
             </div>
           </div>
           <div id="libraryState" class="inline-state"></div>
@@ -168,16 +156,6 @@
             <div id="meResumeCard"></div>
           </section>
 
-          <section class="section-block" id="meOrdersSection">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">ORDERS</p>
-                <h3>我的订单</h3>
-              </div>
-            </div>
-            <div id="meOrdersList" class="stack-list"></div>
-          </section>
-
           <div class="info-grid">
             <article class="info-card">
               <p class="info-label">会员状态</p>
@@ -211,6 +189,16 @@
             <div id="meChannelsList" class="stack-list"></div>
           </section>
 
+          <section class="section-block" id="meOrdersSection">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">ORDERS</p>
+                <h3>我的订单</h3>
+              </div>
+            </div>
+            <div id="meOrdersList" class="stack-list"></div>
+          </section>
+
           <section class="section-block">
             <div class="section-head">
               <div>
@@ -242,7 +230,7 @@
         </section>
       </main>
 
-      <aside id="desktopRail" class="desktop-rail" aria-label="继续观看、会员状态与待支付订单">
+      <aside id="desktopRail" class="desktop-rail" aria-label="账户与继续观看">
         <div id="desktopRailContent" class="desktop-rail-content" aria-live="polite"></div>
       </aside>
 
@@ -267,10 +255,6 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M5 20a7 7 0 0 1 14 0"></path></svg>
           <span>我的</span>
         </button>
-        <div class="nav-footer">
-          <button id="navRulesButton" class="nav-footer-button" type="button">规则</button>
-          <button id="navFeedbackButton" class="nav-footer-button" type="button">反馈</button>
-        </div>
       </nav>
     </div>
 
@@ -295,6 +279,6 @@
       </article>
     </template>
 
-    <script src="./app.js?v=20260826-membership-checkout-1"></script>
+    <script src="./app.js?v=20260826-preview-gate-1"></script>
   </body>
 </html>

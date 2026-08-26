@@ -5,11 +5,25 @@ import { hmacSha256Hex } from "../utils/crypto.js";
 export const ANALYTICS_EVENT_NAMES = [
   "session_started",
   "page_viewed",
+  "traffic_entry_open",
   "content_impression",
   "content_opened",
   "preview_started",
+  "preview_ended",
   "preview_completed",
   "preview_upgrade_shown",
+  "checkout_open",
+  "payment_method_selected",
+  "playback_started",
+  "playback_completed",
+  "playback_error",
+  "playback_manifest_ready",
+  "playback_first_frame",
+  "playback_buffer_start",
+  "playback_buffer_end",
+  "playback_quality_change",
+  "playback_prefetch_result",
+  "paywall_shown",
   "unlock_clicked",
   "order_created",
   "payment_confirmed",
@@ -40,6 +54,12 @@ const PAYMENT_METHOD_VALUES = ["telegram_stars", "usdt_trc20", "manual"] as cons
 const RESOURCE_TYPE_VALUES = ["content", "package", "membership_channel"] as const;
 const DELIVERY_TYPE_VALUES = ["redirect_302", "telegram_dm", "manual"] as const;
 const PREFERENCE_SOURCE_VALUES = ["guest_onboarding", "my_preferences", "first_browse_prompt", "migration_confirmed"] as const;
+const TRAFFIC_ENTRY_TYPE_VALUES = ["telegram_channel", "telegram_bot", "web", "facebook", "x", "partner"] as const;
+const DESTINATION_TYPE_VALUES = ["content", "category", "package", "membership"] as const;
+const PLAYBACK_QUALITY_VALUES = ["auto", "preview", "480p", "720p", "1080p"] as const;
+const PLAYBACK_PREFETCH_RESULT_VALUES = ["hit", "miss", "error"] as const;
+const PLAYBACK_SOURCE_VALUES = ["preview_prefetch", "preview_play", "full_play"] as const;
+const PLAYBACK_QUALITY_REASON_VALUES = ["auto", "manual", "startup", "buffer", "save_data", "cellular"] as const;
 
 function normalizeSmallString(input: unknown, max = 64): string | null {
   if (typeof input !== "string") return null;
@@ -52,6 +72,16 @@ function toPositiveInt(input: unknown, max = 10_000): number | null {
   const value = Number(input);
   if (!Number.isInteger(value) || value < 0 || value > max) return null;
   return value;
+}
+
+function bucketDurationMs(input: unknown): string | null {
+  const value = toPositiveInt(input, 60_000);
+  if (value == null) return null;
+  if (value < 500) return "lt_500ms";
+  if (value < 1000) return "500_999ms";
+  if (value < 2000) return "1_2s";
+  if (value < 5000) return "2_5s";
+  return "gte_5s";
 }
 
 function normalizePageName(input: unknown): string | null {
@@ -76,6 +106,21 @@ function analyticsIdHmac(kind: string, raw: unknown): string | null {
   const value = normalizeSmallString(raw, 128);
   if (!value) return null;
   return hmacSha256Hex(`analytics:${kind}:${value}`);
+}
+
+function appendTrafficEntryAttribution(
+  payload: Record<string, unknown>,
+  propertiesJson: Record<string, unknown>,
+): Record<string, unknown> {
+  const trafficEntryCode = normalizeSmallString(payload.trafficEntryCode, 64);
+  if (!trafficEntryCode) return propertiesJson;
+  return {
+    ...propertiesJson,
+    trafficEntryCode,
+    entryType: normalizeEnumValue(payload.entryType, TRAFFIC_ENTRY_TYPE_VALUES) ?? "web",
+    destinationType: normalizeEnumValue(payload.destinationType, DESTINATION_TYPE_VALUES) ?? "content",
+    destinationIdHmac: analyticsIdHmac("destination", payload.destinationId),
+  };
 }
 
 export function ensureAnalyticsSessionSeed(req: any): string {
@@ -119,9 +164,9 @@ export function sanitizeAnalyticsEvent(input: {
       return {
         eventName: input.eventName,
         platform,
-        propertiesJson: {
+        propertiesJson: appendTrafficEntryAttribution(payload, {
           entrySource: entrySource && ENTRY_SOURCE_RE.test(entrySource) ? entrySource : "unknown",
-        },
+        }),
       };
     }
     case "page_viewed": {
@@ -130,6 +175,19 @@ export function sanitizeAnalyticsEvent(input: {
         platform,
         propertiesJson: {
           pageName: normalizePageName(payload.pageName) ?? "home",
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+        },
+      };
+    }
+    case "traffic_entry_open": {
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          trafficEntryCode: normalizeSmallString(payload.trafficEntryCode, 64),
+          entryType: normalizeEnumValue(payload.entryType, TRAFFIC_ENTRY_TYPE_VALUES) ?? "web",
+          destinationType: normalizeEnumValue(payload.destinationType, DESTINATION_TYPE_VALUES) ?? "content",
+          destinationIdHmac: analyticsIdHmac("destination", payload.destinationId),
           contentIdHmac: analyticsIdHmac("content", payload.contentId),
         },
       };
@@ -151,22 +209,27 @@ export function sanitizeAnalyticsEvent(input: {
       return {
         eventName: input.eventName,
         platform,
-        propertiesJson: {
+        propertiesJson: appendTrafficEntryAttribution(payload, {
           contentIdHmac: analyticsIdHmac("content", payload.contentId),
           sourceModule: sourceModule && SOURCE_MODULE_RE.test(sourceModule) ? sourceModule : "unknown",
-        },
+        }),
       };
     }
     case "preview_started":
+    case "preview_ended":
     case "preview_completed":
+    case "playback_started":
+    case "playback_completed":
       return {
         eventName: input.eventName,
         platform,
-        propertiesJson: {
+        propertiesJson: appendTrafficEntryAttribution(payload, {
           contentIdHmac: analyticsIdHmac("content", payload.contentId),
-        },
+          deliveryVariant: normalizeEnumValue(payload.deliveryVariant, ["preview", "full"]) ?? null,
+        }),
       };
     case "preview_upgrade_shown":
+    case "paywall_shown":
       return {
         eventName: input.eventName,
         platform,
@@ -175,34 +238,106 @@ export function sanitizeAnalyticsEvent(input: {
           accessType: normalizeEnumValue(payload.accessType, ["membership", "package"]) ?? "membership",
         },
       };
-    case "unlock_clicked":
+    case "playback_error":
       return {
         eventName: input.eventName,
         platform,
         propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          deliveryVariant: normalizeEnumValue(payload.deliveryVariant, ["preview", "full"]) ?? null,
+          errorCode: normalizeSmallString(payload.errorCode, 64) ?? "unknown",
+        },
+      };
+    case "playback_manifest_ready":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          sessionIdHmac: analyticsIdHmac("playback_session", payload.sessionId),
+          quality: normalizeEnumValue(payload.quality, PLAYBACK_QUALITY_VALUES) ?? "auto",
+          source: normalizeEnumValue(payload.source, PLAYBACK_SOURCE_VALUES) ?? "preview_play",
+        },
+      };
+    case "playback_first_frame":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          sessionIdHmac: analyticsIdHmac("playback_session", payload.sessionId),
+          quality: normalizeEnumValue(payload.quality, PLAYBACK_QUALITY_VALUES) ?? "auto",
+          elapsedBucket: bucketDurationMs(payload.elapsedMs) ?? "unknown",
+        },
+      };
+    case "playback_buffer_start":
+    case "playback_buffer_end":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          sessionIdHmac: analyticsIdHmac("playback_session", payload.sessionId),
+          quality: normalizeEnumValue(payload.quality, PLAYBACK_QUALITY_VALUES) ?? "auto",
+          bufferDurationBucket: bucketDurationMs(payload.bufferDurationMs) ?? "unknown",
+        },
+      };
+    case "playback_quality_change":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          sessionIdHmac: analyticsIdHmac("playback_session", payload.sessionId),
+          fromQuality: normalizeEnumValue(payload.fromQuality, PLAYBACK_QUALITY_VALUES) ?? "auto",
+          toQuality: normalizeEnumValue(payload.toQuality, PLAYBACK_QUALITY_VALUES) ?? "auto",
+          reason: normalizeEnumValue(payload.reason, PLAYBACK_QUALITY_REASON_VALUES) ?? "auto",
+        },
+      };
+    case "playback_prefetch_result":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          sessionIdHmac: analyticsIdHmac("playback_session", payload.sessionId),
+          quality: normalizeEnumValue(payload.quality, PLAYBACK_QUALITY_VALUES) ?? "preview",
+          result: normalizeEnumValue(payload.result, PLAYBACK_PREFETCH_RESULT_VALUES) ?? "miss",
+          source: normalizeEnumValue(payload.source, PLAYBACK_SOURCE_VALUES) ?? "preview_prefetch",
+        },
+      };
+    case "unlock_clicked":
+    case "checkout_open":
+    case "payment_method_selected":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: appendTrafficEntryAttribution(payload, {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          orderNoHmac: analyticsIdHmac("order", payload.orderNo),
           productIdHmac: analyticsIdHmac("product", payload.productId),
           paymentMethod: normalizeEnumValue(payload.paymentMethod, PAYMENT_METHOD_VALUES) ?? "manual",
-        },
+        }),
       };
     case "order_created":
       return {
         eventName: input.eventName,
         platform,
-        propertiesJson: {
+        propertiesJson: appendTrafficEntryAttribution(payload, {
           orderNoHmac: analyticsIdHmac("order", payload.orderNo),
           productIdHmac: analyticsIdHmac("product", payload.productId),
           paymentMethod: normalizeEnumValue(payload.paymentMethod, PAYMENT_METHOD_VALUES) ?? "manual",
-        },
+        }),
       };
     case "payment_confirmed":
       return {
         eventName: input.eventName,
         platform,
-        propertiesJson: {
+        propertiesJson: appendTrafficEntryAttribution(payload, {
           orderNoHmac: analyticsIdHmac("order", payload.orderNo),
           productIdHmac: analyticsIdHmac("product", payload.productId),
           paymentMethod: normalizeEnumValue(payload.paymentMethod, PAYMENT_METHOD_VALUES) ?? "manual",
-        },
+        }),
       };
     case "entitlement_activated":
       return {

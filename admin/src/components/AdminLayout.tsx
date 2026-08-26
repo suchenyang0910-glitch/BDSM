@@ -38,6 +38,9 @@ const ROLE_LABEL: Record<AdminRole, string> = {
 const PAGE_TITLE_BY_PATH: Record<string, string> = {
   "/dashboard": "运营概览 · 数据看板",
   "/analytics": "运营概览 · 数据分析",
+  "/traffic-entries": "运营概览 · 流量入口",
+  "/campaigns": "运营概览 · 活动管理",
+  "/finance": "财务中心 · 四页数据中心",
   "/orders": "订单与权益 · 订单管理",
   "/entitlements": "订单与权益 · 权益管理",
   "/payment-addresses": "订单与权益 · USDT 收款地址",
@@ -62,6 +65,9 @@ const AdminLayout: React.FC = () => {
     const p = location.pathname;
     if (p.startsWith("/dashboard")) return "/dashboard";
     if (p.startsWith("/analytics")) return "/analytics";
+    if (p.startsWith("/traffic-entries")) return "/traffic-entries";
+    if (p.startsWith("/campaigns")) return "/campaigns";
+    if (p.startsWith("/finance")) return "/finance";
     if (p.startsWith("/contents")) return "/contents";
     if (p.startsWith("/packages")) return "/packages";
     if (p.startsWith("/categories")) return "/categories";
@@ -141,6 +147,21 @@ const AdminLayout: React.FC = () => {
               key: "/analytics",
               icon: <BarChartOutlined />,
               label: "数据分析",
+            },
+            {
+              key: "/traffic-entries",
+              icon: <ApiOutlined />,
+              label: "流量入口",
+            },
+            {
+              key: "/campaigns",
+              icon: <HomeOutlined />,
+              label: "活动管理",
+            },
+            {
+              key: "/finance",
+              icon: <SafetyCertificateOutlined />,
+              label: "财务数据中心",
             },
             {
               key: "content",

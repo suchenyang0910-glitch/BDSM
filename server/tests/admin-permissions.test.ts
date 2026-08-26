@@ -354,7 +354,7 @@ test("免费频道自动投放封面推广入口，试看仍由 Web HLS 承担",
     await prisma.content.create({
       data: {
         id: membershipContentId,
-        title: "会员内容可同时投放免费封面入口与完整交付",
+        title: "会员内容只投放完整交付，试看改走 Web HLS",
         accessType: "membership",
         status: "draft",
       },
@@ -378,11 +378,11 @@ test("免费频道自动投放封面推广入口，试看仍由 Web HLS 承担",
       method: "POST",
       url: `/api/admin/contents/${membershipContentId}/start-telegram-publish`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { channelKinds: ["membership_full"], reason: "会员视频自动投放免费入口与完整交付" },
+      payload: { channelKinds: ["membership_full"], reason: "会员视频必须同时进入免费流量入口与私密完整交付" },
     });
     assert.equal(membershipResponse.statusCode, 201, membershipResponse.body);
     const membershipJobs = (membershipResponse.json() as any).jobs;
-    assert.equal(membershipJobs.length, 3, "两个免费频道推广 + 一个会员完整交付");
+    assert.equal(membershipJobs.length, 3, "会员内容应创建一个完整交付任务和两个免费流量入口封面推广任务");
     assert.equal(membershipJobs.filter((job: any) => job.channelKind === "membership_full").length, 1);
     assert.equal(membershipJobs.filter((job: any) => job.channelKind === "public_free_preview").length, 2);
 
@@ -400,7 +400,7 @@ test("免费频道自动投放封面推广入口，试看仍由 Web HLS 承担",
       "同一内容重复请求必须复用原任务，而不是再创建一组频道发布任务",
     );
     const storedJobCount = await prisma.telegramPublishJob.count({ where: { contentId: membershipContentId } });
-    assert.equal(storedJobCount, 3, "重复请求后数据库只能保留每个目标各一条任务");
+    assert.equal(storedJobCount, 3, "重复请求后数据库只能保留一个私密交付和每个免费入口各一条推广任务");
   } finally {
     await app.close();
     for (const [key, value] of [[mainKey, before[0]], [tutorialKey, before[1]], [announcementKey, before[2]]] as const) {

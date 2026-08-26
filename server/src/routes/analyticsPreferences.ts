@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
@@ -38,11 +39,158 @@ const FORMAT_KEYS = ["curated_on_demand", "creator_interview", "community_discus
 const DISCOVERY_KEYS = ["latest_first", "featured_first", "following_first"] as const;
 const PERSONALIZATION_KEY = "personalized_ranking";
 const ANALYTICS_ADMIN_QUERY = z.object({ preset: z.enum(["7d", "30d"]).optional().default("7d") }).strict();
-const FUNNEL_EVENTS = ["session_started", "content_opened", "preview_upgrade_shown", "unlock_clicked", "order_created", "payment_confirmed"] as const;
+const FUNNEL_EVENTS = [
+  "session_started",
+  "content_opened",
+  "preview_started",
+  "preview_completed",
+  "checkout_open",
+  "payment_confirmed",
+  "playback_started",
+] as const;
 
 function analyticsRange(preset: "7d" | "30d") {
   const to = new Date();
   return { from: new Date(to.getTime() - (preset === "30d" ? 30 : 7) * 24 * 60 * 60 * 1000), to };
+}
+
+type EventCountRow = { eventName: string; value: number };
+type PlatformCountRow = { platform: string; eventCount: number };
+type TrendRow = { date: string; sessions: number; contentOpened: number; paymentsConfirmed: number };
+type BucketRow = { bucket: string; value: number };
+type QualityTransitionRow = { transition: string; value: number };
+type AnalyticsQueryClient = {
+  $queryRaw: <T = unknown>(query: Prisma.Sql) => Promise<T>;
+};
+
+async function loadAnalyticsOverviewAggregates(prisma: AnalyticsQueryClient, from: Date, to: Date) {
+  const queryRaw = prisma.$queryRaw.bind(prisma) as AnalyticsQueryClient["$queryRaw"];
+  const funnelEventsSql = Prisma.join(FUNNEL_EVENTS.map((eventName) => Prisma.sql`${eventName}`));
+  const [
+    totalRows,
+    funnelRows,
+    platformRows,
+    trendRows,
+    firstFrameTotalRows,
+    firstFrameBucketRows,
+    bufferRows,
+    bufferBucketRows,
+    prefetchRows,
+    qualityRows,
+  ] = await Promise.all([
+    queryRaw<Array<{ eventCount: number }>>(Prisma.sql`
+      SELECT COUNT(*)::int AS "eventCount"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to}
+    `),
+    queryRaw<EventCountRow[]>(Prisma.sql`
+      SELECT "event_name" AS "eventName", COUNT(DISTINCT "session_id_hmac")::int AS "value"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from}
+        AND "occurred_at" <= ${to}
+        AND "event_name" IN (${funnelEventsSql})
+      GROUP BY "event_name"
+    `),
+    queryRaw<PlatformCountRow[]>(Prisma.sql`
+      SELECT "platform"::text AS "platform", COUNT(*)::int AS "eventCount"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to}
+      GROUP BY "platform"
+      ORDER BY "eventCount" DESC, "platform" ASC
+    `),
+    queryRaw<TrendRow[]>(Prisma.sql`
+      SELECT
+        TO_CHAR(("occurred_at" AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS "date",
+        COUNT(DISTINCT CASE WHEN "event_name" = 'session_started' THEN "session_id_hmac" END)::int AS "sessions",
+        COUNT(DISTINCT CASE WHEN "event_name" = 'content_opened' THEN "session_id_hmac" END)::int AS "contentOpened",
+        COUNT(DISTINCT CASE WHEN "event_name" = 'payment_confirmed' THEN "session_id_hmac" END)::int AS "paymentsConfirmed"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to}
+      GROUP BY 1
+      ORDER BY 1 ASC
+    `),
+    queryRaw<Array<{ total: number }>>(Prisma.sql`
+      SELECT COUNT(DISTINCT "session_id_hmac")::int AS "total"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from}
+        AND "occurred_at" <= ${to}
+        AND "event_name" = 'playback_first_frame'
+    `),
+    queryRaw<BucketRow[]>(Prisma.sql`
+      SELECT COALESCE("properties_json"->>'elapsedBucket', 'unknown') AS "bucket", COUNT(*)::int AS "value"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from}
+        AND "occurred_at" <= ${to}
+        AND "event_name" = 'playback_first_frame'
+        AND "properties_json"->>'elapsedBucket' IS NOT NULL
+      GROUP BY 1
+      ORDER BY "value" DESC, "bucket" ASC
+    `),
+    queryRaw<Array<{ starts: number; ends: number }>>(Prisma.sql`
+      SELECT
+        COUNT(*) FILTER (WHERE "event_name" = 'playback_buffer_start')::int AS "starts",
+        COUNT(*) FILTER (WHERE "event_name" = 'playback_buffer_end')::int AS "ends"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from}
+        AND "occurred_at" <= ${to}
+        AND "event_name" IN ('playback_buffer_start', 'playback_buffer_end')
+    `),
+    queryRaw<BucketRow[]>(Prisma.sql`
+      SELECT COALESCE("properties_json"->>'bufferDurationBucket', 'unknown') AS "bucket", COUNT(*)::int AS "value"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from}
+        AND "occurred_at" <= ${to}
+        AND "event_name" IN ('playback_buffer_start', 'playback_buffer_end')
+        AND "properties_json"->>'bufferDurationBucket' IS NOT NULL
+      GROUP BY 1
+      ORDER BY "value" DESC, "bucket" ASC
+    `),
+    queryRaw<Array<{ hit: number; miss: number; error: number }>>(Prisma.sql`
+      SELECT
+        COUNT(*) FILTER (WHERE "properties_json"->>'result' = 'hit')::int AS "hit",
+        COUNT(*) FILTER (WHERE "properties_json"->>'result' = 'miss')::int AS "miss",
+        COUNT(*) FILTER (WHERE "properties_json"->>'result' = 'error')::int AS "error"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from}
+        AND "occurred_at" <= ${to}
+        AND "event_name" = 'playback_prefetch_result'
+    `),
+    queryRaw<QualityTransitionRow[]>(Prisma.sql`
+      SELECT
+        CONCAT(
+          COALESCE("properties_json"->>'fromQuality', 'auto'),
+          '→',
+          COALESCE("properties_json"->>'toQuality', 'auto'),
+          ' (',
+          COALESCE("properties_json"->>'reason', 'auto'),
+          ')'
+        ) AS "transition",
+        COUNT(*)::int AS "value"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from}
+        AND "occurred_at" <= ${to}
+        AND "event_name" = 'playback_quality_change'
+      GROUP BY 1
+      ORDER BY "value" DESC, "transition" ASC
+      LIMIT 8
+    `),
+  ]);
+
+  return {
+    eventCount: totalRows[0]?.eventCount ?? 0,
+    funnelValues: new Map<string, number>(funnelRows.map((row: EventCountRow) => [row.eventName, row.value])),
+    platforms: platformRows,
+    trend: trendRows,
+    playback: {
+      firstFrameTotal: firstFrameTotalRows[0]?.total ?? 0,
+      firstFrameBuckets: firstFrameBucketRows,
+      bufferStarts: bufferRows[0]?.starts ?? 0,
+      bufferEnds: bufferRows[0]?.ends ?? 0,
+      bufferDurationBuckets: bufferBucketRows,
+      prefetch: prefetchRows[0] ?? { hit: 0, miss: 0, error: 0 },
+      qualityChanges: qualityRows,
+    },
+  };
 }
 
 export default async function analyticsAndPreferenceRoutes(fastify: FastifyInstance) {
@@ -52,44 +200,48 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
     const parsed = ANALYTICS_ADMIN_QUERY.safeParse(req.query || {});
     if (!parsed.success) return reply.status(400).send({ error: "bad_request", message: "统计周期不合法" });
     const { from, to } = analyticsRange(parsed.data.preset);
-    const [events, preferences] = await Promise.all([
-      prisma.analyticsEvent.findMany({
-        where: { occurredAt: { gte: from, lte: to } },
-        select: { occurredAt: true, eventName: true, platform: true, sessionIdHmac: true, userIdHmac: true },
-        orderBy: { occurredAt: "asc" },
-      }),
+    const [overview, preferences] = await Promise.all([
+      loadAnalyticsOverviewAggregates(prisma, from, to),
       prisma.userContentPreference.groupBy({
         by: ["preferenceType", "valueKey"], where: { isEnabled: true }, _count: { _all: true },
         orderBy: { _count: { valueKey: "desc" } }, take: 20,
       }),
     ]);
-    const distinctByEvent = new Map<string, Set<string>>();
-    const platformTotals = new Map<string, number>();
-    const daily = new Map<string, { date: string; sessions: Set<string>; opens: Set<string>; paid: Set<string> }>();
-    for (const event of events) {
-      const eventSet = distinctByEvent.get(event.eventName) || new Set<string>();
-      eventSet.add(event.sessionIdHmac || event.userIdHmac || "unknown");
-      distinctByEvent.set(event.eventName, eventSet);
-      platformTotals.set(event.platform, (platformTotals.get(event.platform) || 0) + 1);
-      const date = event.occurredAt.toISOString().slice(0, 10);
-      const bucket = daily.get(date) || { date, sessions: new Set<string>(), opens: new Set<string>(), paid: new Set<string>() };
-      const key = event.sessionIdHmac || event.userIdHmac || "unknown";
-      if (event.eventName === "session_started") bucket.sessions.add(key);
-      if (event.eventName === "content_opened") bucket.opens.add(key);
-      if (event.eventName === "payment_confirmed") bucket.paid.add(key);
-      daily.set(date, bucket);
-    }
-    const start = distinctByEvent.get("session_started")?.size || 0;
+    const start = overview.funnelValues.get("session_started") || 0;
     const funnel = FUNNEL_EVENTS.map((eventName) => {
-      const value = distinctByEvent.get(eventName)?.size || 0;
+      const value = overview.funnelValues.get(eventName) || 0;
       return { eventName, value, conversionFromStart: start ? Number(((value / start) * 100).toFixed(1)) : 0 };
     });
+    const prefetchAttempts = overview.playback.prefetch.hit + overview.playback.prefetch.miss + overview.playback.prefetch.error;
     return reply.send({
       period: { preset: parsed.data.preset, from: from.toISOString(), to: to.toISOString() },
-      totals: { eventCount: events.length, sessions: start, contentOpened: distinctByEvent.get("content_opened")?.size || 0, paymentsConfirmed: distinctByEvent.get("payment_confirmed")?.size || 0 },
+      totals: {
+        eventCount: overview.eventCount,
+        sessions: start,
+        contentOpened: overview.funnelValues.get("content_opened") || 0,
+        paymentsConfirmed: overview.funnelValues.get("payment_confirmed") || 0,
+      },
       funnel,
-      platforms: Array.from(platformTotals, ([platform, eventCount]) => ({ platform, eventCount })),
-      trend: Array.from(daily.values()).sort((a, b) => a.date.localeCompare(b.date)).map((row) => ({ date: row.date, sessions: row.sessions.size, contentOpened: row.opens.size, paymentsConfirmed: row.paid.size })),
+      platforms: overview.platforms,
+      trend: overview.trend,
+      playback: {
+        firstFrame: {
+          total: overview.playback.firstFrameTotal,
+          buckets: overview.playback.firstFrameBuckets,
+        },
+        buffering: {
+          starts: overview.playback.bufferStarts,
+          ends: overview.playback.bufferEnds,
+          buckets: overview.playback.bufferDurationBuckets,
+        },
+        prefetch: {
+          hit: overview.playback.prefetch.hit,
+          miss: overview.playback.prefetch.miss,
+          error: overview.playback.prefetch.error,
+          hitRate: prefetchAttempts ? Number(((overview.playback.prefetch.hit / prefetchAttempts) * 100).toFixed(1)) : 0,
+        },
+        qualityChanges: overview.playback.qualityChanges,
+      },
       preferences: preferences.map((row: any) => ({ preferenceType: row.preferenceType, valueKey: row.valueKey, selectedUsers: row._count._all })),
       privacy: "仅展示聚合统计；不展示用户身份、内容标题、会话标识或个人浏览轨迹。",
     });

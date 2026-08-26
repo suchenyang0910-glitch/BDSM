@@ -13,9 +13,112 @@ export type AdminAnalyticsOverview = {
   funnel: Array<{ eventName: string; value: number; conversionFromStart: number }>;
   platforms: Array<{ platform: string; eventCount: number }>;
   trend: Array<{ date: string; sessions: number; contentOpened: number; paymentsConfirmed: number }>;
+  playback: {
+    firstFrame: { total: number; buckets: Array<{ bucket: string; value: number }> };
+    buffering: { starts: number; ends: number; buckets: Array<{ bucket: string; value: number }> };
+    prefetch: { hit: number; miss: number; error: number; hitRate: number };
+    qualityChanges: Array<{ transition: string; value: number }>;
+  };
   preferences: Array<{ preferenceType: string; valueKey: string; selectedUsers: number }>;
   privacy: string;
 };
+
+export type TrafficEntryType = "telegram_channel" | "telegram_bot" | "web" | "facebook" | "x" | "partner";
+export type TrafficEntryDestinationType = "content" | "category" | "package" | "membership";
+export type TrafficEntryStatus = "active" | "inactive";
+
+export type AdminTrafficEntryItem = {
+  id: string;
+  code: string;
+  name: string;
+  status: TrafficEntryStatus;
+  entryType: TrafficEntryType;
+  destinationType: TrafficEntryDestinationType;
+  destinationId: string;
+  destinationLabel: string;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  links: {
+    h5: string;
+    miniApp: string;
+  };
+  metrics: {
+    opens: number;
+    contentOpened: number;
+    previewStarted: number;
+    checkoutOpen: number;
+    paymentConfirmed: number;
+    playbackStarted: number;
+  };
+};
+
+export type AdminTrafficEntryListResp = {
+  period: { preset: "7d" | "30d"; from: string; to: string };
+  summary: { total: number; active: number; opens: number; paymentsConfirmed: number };
+  items: AdminTrafficEntryItem[];
+  privacy: string;
+};
+
+export type CreateAdminTrafficEntryInput = {
+  name: string;
+  code: string;
+  status?: TrafficEntryStatus;
+  entryType: TrafficEntryType;
+  destinationType: TrafficEntryDestinationType;
+  destinationId?: string | null;
+  note?: string | null;
+  reason?: string;
+};
+
+export type UpdateAdminTrafficEntryInput = CreateAdminTrafficEntryInput;
+
+export type CampaignStatus = "draft" | "scheduled" | "active" | "paused" | "archived";
+
+export type AdminCampaignItem = {
+  id: string;
+  code: string;
+  name: string;
+  status: CampaignStatus;
+  summary: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  banners: Array<{ id: string; title: string; status: string }>;
+  trafficEntries: Array<{ id: string; code: string; name: string; status: string }>;
+  metrics: {
+    opens: number;
+    contentOpened: number;
+    checkoutOpen: number;
+    paymentConfirmed: number;
+    playbackStarted: number;
+  };
+};
+
+export type AdminCampaignListResp = {
+  items: AdminCampaignItem[];
+  summary: {
+    total: number;
+    active: number;
+    scheduled: number;
+    paymentsConfirmed: number;
+  };
+};
+
+export type CreateAdminCampaignInput = {
+  name: string;
+  code: string;
+  status?: CampaignStatus;
+  summary?: string | null;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  bannerIds: string[];
+  trafficEntryIds: string[];
+  reason?: string;
+};
+
+export type UpdateAdminCampaignInput = CreateAdminCampaignInput;
 
 export type OrderStatus = "pending" | "processing" | "paid" | "failed" | "refunded" | "cancelled" | "expired";
 
@@ -493,6 +596,127 @@ export type UsdtMonitorStatusResp = {
     lastErrorClass: string | null;
     lastProviderStatus: string | null;
   };
+};
+
+export type FinanceFilterPreset = "today" | "7d" | "30d" | "custom";
+export type FinancePaymentMethod = "telegram_stars" | "usdt_trc20" | "manual";
+
+export type FinanceQuery = {
+  preset?: FinanceFilterPreset;
+  from?: string;
+  to?: string;
+  paymentMethod?: FinancePaymentMethod;
+  status?: OrderStatus;
+  productType?: ProductType;
+};
+
+export type FinanceAmountBucket = {
+  telegram_stars: string;
+  usdt_trc20: string;
+  manual: string;
+};
+
+export type FinanceOverviewResp = {
+  ok: true;
+  filters: {
+    preset: FinanceFilterPreset;
+    from: string;
+    to: string;
+    paymentMethod: FinancePaymentMethod | null;
+    status: OrderStatus | null;
+    productType: ProductType | null;
+  };
+  metrics: {
+    confirmedGmv: FinanceAmountBucket;
+    refundedAmount: FinanceAmountBucket;
+    netRevenue: FinanceAmountBucket;
+    paidOrderCount: number;
+    paidUserCount: number;
+    paidOrderCountByMethod: {
+      telegram_stars: number;
+      usdt_trc20: number;
+      manual: number;
+    };
+    averageOrderValueByMethod: FinanceAmountBucket;
+    paymentSuccessRateBps: number;
+    pendingUsdtAmount: string;
+    pendingOrderCount: number;
+    expiredOrderCount: number;
+    refundedOrderCount: number;
+    usdtAverageConfirmMs: number | null;
+    starsAverageSuccessMs: number | null;
+  };
+};
+
+export type FinanceTrendRow = {
+  date: string;
+  orderCount: number;
+  confirmedAmount: FinanceAmountBucket;
+  refundedAmount: FinanceAmountBucket;
+  netRevenue: FinanceAmountBucket;
+};
+
+export type FinanceTrendsResp = {
+  ok: true;
+  from: string;
+  to: string;
+  rows: FinanceTrendRow[];
+};
+
+export type FinanceAddressPoolResp = {
+  ok: true;
+  globalAlerts: {
+    lowAvailableAddresses: boolean;
+    monitorScanStale24h: boolean;
+    runtimeLastSuccessAt: string | null;
+    runtimeConsecutiveFailures: number;
+  };
+  rows: Array<{
+    id: string;
+    addressMasked: string;
+    status: PaymentAddressStatus;
+    createdAt: string;
+    lastUsedAt: string | null;
+    assignedOrderCount: number;
+    confirmedOrderCount: number;
+    confirmingOrderCount: number;
+    expiredReleasedCount: number;
+    refundedCount: number;
+    lastMonitorSuccessAt: string | null;
+    monitorConsecutiveFailures: number;
+    abnormalFlags: string[];
+  }>;
+};
+
+export type FinanceReconciliationReasonCode =
+  | "paid_without_confirmed_tx"
+  | "confirmed_tx_without_paid_order"
+  | "paid_without_active_entitlement"
+  | "refunded_without_refunded_tx";
+
+export type FinanceReconciliationResp = {
+  ok: true;
+  from: string;
+  to: string;
+  totals: {
+    orderCount: number;
+    paidOrderCount: number;
+    confirmedTransactionCount: number;
+    confirmedTransactionAmount: string;
+    activeEntitlementCount: number;
+  };
+  differences: Record<FinanceReconciliationReasonCode, { count: number; amount: string }>;
+  rows: Array<{
+    orderNoMasked: string;
+    paymentMethod: FinancePaymentMethod;
+    orderStatus: OrderStatus;
+    orderAmountMinor: string;
+    currency: string;
+    confirmedAt: string | null;
+    confirmDurationMs: number | null;
+    addressMasked: string | null;
+    reasonCodes: FinanceReconciliationReasonCode[];
+  }>;
 };
 
 export type CategoryItem = {

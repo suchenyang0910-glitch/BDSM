@@ -464,6 +464,44 @@ model AnalyticsDailyAggregate {
   @@map("analytics_daily_aggregates")
 }
 
+model TrafficEntry {
+  id                String   @id @default(uuid())
+  code              String   @unique @db.VarChar(64)
+  name              String   @db.VarChar(120)
+  status            String   @default("active") @db.VarChar(16)
+  entryType         String   @map("entry_type") @db.VarChar(32)
+  destinationType   String   @map("destination_type") @db.VarChar(32)
+  destinationId     String   @map("destination_id") @db.VarChar(64)
+  note              String?  @db.VarChar(500)
+  createdBy         String?  @map("created_by") @db.VarChar(64)
+  updatedBy         String?  @map("updated_by") @db.VarChar(64)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([status, entryType])
+  @@index([destinationType, destinationId])
+  @@map("traffic_entries")
+}
+
+model OperationCampaign {
+  id                String   @id @default(uuid())
+  code              String   @unique @db.VarChar(64)
+  name              String   @db.VarChar(120)
+  status            String   @default("draft") @db.VarChar(16)
+  summary           String?  @db.VarChar(500)
+  startsAt          DateTime? @map("starts_at")
+  endsAt            DateTime? @map("ends_at")
+  bannerIds         String[] @default([]) @map("banner_ids")
+  trafficEntryIds   String[] @default([]) @map("traffic_entry_ids")
+  createdBy         String?  @map("created_by") @db.VarChar(64)
+  updatedBy         String?  @map("updated_by") @db.VarChar(64)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([status, startsAt, endsAt])
+  @@map("operation_campaigns")
+}
+
 model UserContentPreference {
   id              String           @id @default(uuid())
   userId          String           @map("user_id")

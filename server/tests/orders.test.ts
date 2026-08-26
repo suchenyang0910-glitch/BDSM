@@ -486,6 +486,55 @@ test("Stars 创单：POST /api/orders/stars 校验 XTR/金额/返回 invoiceLink
   }
 });
 
+test("Stars 创单异常必须脱敏，不得把原始异常正文写入安全事件", async () => {
+  const app = await createTestApp(prisma);
+  const originalFetch = globalThis.fetch;
+  const stderrBuf: string[] = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  try {
+    const now = Date.now();
+    const tgid = BigInt(6_250_000_000 + (now % 100_000_000));
+    const user = await prisma.user.create({
+      data: { telegramUserId: tgid, displayName: `Stars Safe ${tgid.toString()}` },
+    });
+    const userCookie = await loginAs(app, user.id);
+    const secret = "tg raw exception token=abc123 invoice=createInvoiceLink failed";
+
+    globalThis.fetch = (async (input: any, init: any) => {
+      const urlStr = typeof input === "string" ? input : (input as Request)?.url || String(input);
+      if (typeof urlStr === "string" && urlStr.includes("api.telegram.org")) {
+        throw new Error(secret);
+      }
+      if (originalFetch) return (originalFetch as any)(input, init);
+      throw new Error("unexpected_non_telegram_fetch");
+    }) as typeof globalThis.fetch;
+    (process.stderr as any).write = (chunk: any) => {
+      try {
+        stderrBuf.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+      } catch {}
+      return true;
+    };
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/orders/stars",
+      headers: { cookie: userCookie, "Content-Type": "application/json" },
+      payload: { productId: TEST_KNOWN_IDS.singleProductKey },
+    });
+    assert.equal(res.statusCode, 503, res.body);
+    assert.equal(res.json().error, "stars_invoice_service_unavailable");
+
+    const stderrAll = stderrBuf.join("\n");
+    assert.ok(stderrAll.includes("event=stars_create_invoice_failed"), stderrAll);
+    assert.equal(stderrAll.includes(secret), false, `安全事件禁止泄露原始异常正文: ${stderrAll}`);
+    assert.equal(res.body.includes(secret), false, "用户响应也不得包含原始异常正文");
+  } finally {
+    globalThis.fetch = originalFetch;
+    (process.stderr as any).write = origWrite;
+    await app.close();
+  }
+});
+
 test("XTR 价格归一化：兼容 legacy 1e6 存储，同时保留整数 Stars", () => {
   assert.equal(normalizeStoredXtrAmountToStars(150_000_000n), 150n);
   assert.equal(normalizeStoredXtrAmountToStars(299n), 299n);
@@ -1763,5 +1812,129 @@ test("P0-B Prisma 事件脱敏: 运行时 Pxxxx 错误 → $on('error') → 安�
       await tmp.adminUser.deleteMany({ where: { email: { startsWith: "p0b-prisma-on-test-" } } });
     } catch {}
     try { await tmp.$disconnect(); } catch {}
+  }
+});
+
+test("Phase D checkout products: GET /api/checkout/products 返回内容可购商品与推荐标记", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const user = await prisma.user.create({
+      data: { telegramUserId: BigInt(7_300_000_000 + (Date.now() % 100_000_000)), displayName: "checkout products user" },
+    });
+    const cookie = await loginAs(app, user.id);
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/checkout/products?contentId=${encodeURIComponent(TEST_KNOWN_IDS.contentPackage)}`,
+      headers: { cookie },
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const body = res.json() as any;
+    assert.equal(body.ok, true);
+    assert.equal(body.content.id, TEST_KNOWN_IDS.contentPackage);
+    assert.ok(Array.isArray(body.items));
+    assert.ok(body.items.some((item: any) => item.id === TEST_KNOWN_IDS.packageProductKey));
+    const pkg = body.items.find((item: any) => item.id === TEST_KNOWN_IDS.packageProductKey);
+    assert.equal(pkg.recommended, true);
+    assert.equal(pkg.reason, "content_package");
+    assert.equal(pkg.owned, false);
+  } finally {
+    await app.close();
+  }
+});
+
+test("Phase D checkout products: 旧版 USDT 商品必须回填 usdtPriceMinor", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const legacyProductId = `prod-legacy-usdt-${Date.now()}`;
+    await prisma.product.create({
+      data: {
+        id: legacyProductId,
+        type: "membership",
+        title: "Legacy USDT Membership",
+        priceMinor: 29_900_000n,
+        currency: "USDT",
+        durationDays: 30,
+        status: "active",
+      },
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/checkout/products",
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const body = res.json() as any;
+    const legacy = body.items.find((item: any) => item.id === legacyProductId);
+    assert.ok(legacy, "必须能返回旧版 USDT 商品");
+    assert.equal(legacy.starsPriceMinor, null);
+    assert.equal(legacy.usdtPriceMinor, "29900000");
+  } finally {
+    await app.close();
+  }
+});
+
+test("Phase D order status: GET /api/orders/:orderNo/status 仅本人可见并返回 USDT 恢复信息", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const seed = Date.now() % 100_000_000;
+    const owner = await prisma.user.create({
+      data: { telegramUserId: BigInt(7_400_000_000 + seed), displayName: "order status owner" },
+    });
+    const stranger = await prisma.user.create({
+      data: { telegramUserId: BigInt(7_500_000_000 + seed), displayName: "order status stranger" },
+    });
+    const product = await prisma.product.create({
+      data: {
+        id: `prod-phase-d-usdt-${seed}`,
+        type: "membership",
+        title: "Phase D USDT 30d",
+        priceMinor: 19_900_000n,
+        currency: "USDT",
+        durationDays: 30,
+        status: "active",
+      },
+    });
+    await prisma.paymentAddress.create({
+      data: {
+        network: "tron_trc20",
+        address: `TPhaseDStatus${seed}000000000000000000`,
+        addressMasked: "TP…0000",
+        status: "available",
+      },
+    });
+
+    const ownerCookie = await loginAs(app, owner.id);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/orders/usdt",
+      headers: { cookie: ownerCookie, "Content-Type": "application/json" },
+      payload: { productId: product.id },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const createdBody = created.json() as any;
+
+    const statusRes = await app.inject({
+      method: "GET",
+      url: `/api/orders/${encodeURIComponent(createdBody.orderNo)}/status`,
+      headers: { cookie: ownerCookie },
+    });
+    assert.equal(statusRes.statusCode, 200, statusRes.body);
+    const statusBody = statusRes.json() as any;
+    assert.equal(statusBody.ok, true);
+    assert.equal(statusBody.order.orderNo, createdBody.orderNo);
+    assert.equal(statusBody.order.paymentMethod, "usdt_trc20_external");
+    assert.equal(statusBody.order.usdtPayment.network, "tron_trc20");
+    assert.equal(typeof statusBody.order.usdtPayment.toAddress, "string");
+    assert.equal(statusBody.order.usdtPayment.baseAmountMinor, product.priceMinor.toString());
+
+    const strangerCookie = await loginAs(app, stranger.id);
+    const denied = await app.inject({
+      method: "GET",
+      url: `/api/orders/${encodeURIComponent(createdBody.orderNo)}/status`,
+      headers: { cookie: strangerCookie },
+    });
+    assert.equal(denied.statusCode, 404, denied.body);
+  } finally {
+    await app.close();
   }
 });

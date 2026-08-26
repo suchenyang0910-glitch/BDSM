@@ -366,7 +366,9 @@ if (entryPath && currentPath === entryPath) {
   void main().catch((error) => {
     console.log(JSON.stringify({
       ok: false,
-      error: String((error as Error)?.message || error),
+      // Validation output is often copied into CI/staging tickets. Raw
+      // storage/Prisma errors may contain private bucket or DB information.
+      error: "validation_failed",
       hint: "Use --env-file or configure OBJECT_STORAGE_* / S3_* before running the Phase B validation.",
     }, null, 2));
     process.exit(1);

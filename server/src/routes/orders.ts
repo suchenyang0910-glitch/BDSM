@@ -10,6 +10,7 @@ import {
   starsPaymentPayloadForOrder,
   parseStarsPayloadPlain,
 } from "../services/orders.js";
+import { resolveDefaultMonthlyMembershipProduct } from "../services/membershipProduct.js";
 import { requireAdmin } from "./admin.js";
 import {
   createStarsInvoice,
@@ -36,6 +37,10 @@ const TRON_BASE58_ADDRESS_RE = /^T[A-Za-z0-9]{8,63}$/;
 const createOrderSchema = z.object({
   productId: z.string().min(1),
 });
+
+const checkoutProductsQuerySchema = z.object({
+  contentId: z.string().min(1).max(64).optional(),
+}).strict();
 
 const adminMarkPaidSchema = z.object({
   reason: z.string().min(2, { message: "到账说明至少 2 个字符" }).max(1000),
@@ -72,6 +77,36 @@ function resolveUsdtPriceMinor(product: { priceMinor: bigint; currency?: string 
   return legacy > 0n ? legacy : null;
 }
 
+function sanitizeStarsInvoiceFailureReason(result: Pick<CreateStarsInvoiceResult, "ok"> & Partial<CreateStarsInvoiceResult>): string {
+  if (result.ok) {
+    const invoiceLink = (result as any).invoiceLink;
+    return typeof invoiceLink === "string"
+      ? `stars_invoice_link_malformed:len=${invoiceLink.length}`
+      : "stars_invoice_link_malformed";
+  }
+  const errorClass = typeof result.errorClass === "string" && /^[a-z0-9_:-]{1,64}$/i.test(result.errorClass)
+    ? result.errorClass
+    : "create_stars_invoice_failed";
+  return `create_stars_invoice_failed:${errorClass}`;
+}
+
+function checkoutProductResponse(product: any, input?: { owned?: boolean; recommended?: boolean; reason?: string | null }) {
+  return {
+    id: product.id,
+    type: product.type,
+    title: product.title,
+    starsPriceMinor: String(product.currency || "").toUpperCase() === "XTR"
+      ? product.priceMinor?.toString?.() ?? null
+      : null,
+    usdtPriceMinor: resolveUsdtPriceMinor(product)?.toString() ?? null,
+    currency: product.currency,
+    durationDays: product.durationDays ?? null,
+    owned: !!input?.owned,
+    recommended: !!input?.recommended,
+    reason: input?.reason || null,
+  };
+}
+
 function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null; exposeUsdtPaymentIfOwnedBy?: string | null }) {
   const out: any = {
     id: o.id,
@@ -84,7 +119,7 @@ function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null; 
           title: o.product.title,
           priceMinor: o.product.priceMinor?.toString(),
           currency: o.product.currency,
-          usdtPriceMinor: o.product.usdtPriceMinor?.toString() ?? null,
+          usdtPriceMinor: resolveUsdtPriceMinor(o.product)?.toString() ?? null,
           durationDays: o.product.durationDays ?? null,
         }
       : null,
@@ -214,6 +249,126 @@ function adminOrderResponse(o: any) {
 export default async function orderRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
 
+  fastify.get("/checkout/products", async (req, reply) => {
+    const parsed = checkoutProductsQuerySchema.safeParse(req.query || {});
+    if (!parsed.success) return reply.status(400).send({ error: "bad_request", details: parsed.error.issues });
+    const uid = (req as any).userId as string | undefined;
+
+    const candidates = new Map<string, { product: any; recommended: boolean; reason: string | null }>();
+    let contentMeta: { id: string; accessType: string; title: string } | null = null;
+
+    if (parsed.data.contentId) {
+      const content = await prisma.content.findUnique({
+        where: { id: parsed.data.contentId },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          accessType: true,
+          product: {
+            select: {
+              id: true, type: true, title: true, priceMinor: true, currency: true, usdtPriceMinor: true, durationDays: true, status: true,
+            },
+          },
+          package: {
+            select: {
+              product: {
+                select: {
+                  id: true, type: true, title: true, priceMinor: true, currency: true, usdtPriceMinor: true, durationDays: true, status: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!content || content.status !== "published") {
+        return reply.status(404).send({ error: "content_not_found" });
+      }
+      contentMeta = { id: content.id, accessType: content.accessType, title: content.title };
+      if (content.product?.status === "active") {
+        candidates.set(content.product.id, {
+          product: content.product,
+          recommended: content.accessType === "single" || content.accessType === "public",
+          reason: content.accessType === "single" || content.accessType === "public" ? "single_content" : null,
+        });
+      }
+      if (content.package?.product?.status === "active") {
+        candidates.set(content.package.product.id, {
+          product: content.package.product,
+          recommended: content.accessType === "package",
+          reason: content.accessType === "package" ? "content_package" : null,
+        });
+      }
+      const membership = await resolveDefaultMonthlyMembershipProduct(prisma);
+      if (membership) {
+        candidates.set(membership.id, {
+          product: membership,
+          recommended: content.accessType === "membership",
+          reason: content.accessType === "membership" ? "membership_monthly" : null,
+        });
+      }
+    } else {
+      const rows = await prisma.product.findMany({
+        where: { status: "active" },
+        orderBy: [{ type: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true, type: true, title: true, priceMinor: true, currency: true, usdtPriceMinor: true, durationDays: true, status: true,
+        },
+      });
+      for (const row of rows) {
+        candidates.set(row.id, { product: row, recommended: row.type === "membership", reason: row.type === "membership" ? "membership_monthly" : null });
+      }
+    }
+
+    const ids = [...candidates.keys()];
+    const ownedByProductId = new Set<string>();
+    if (uid && ids.length > 0) {
+      const [activeEntitlements, productRelations] = await Promise.all([
+        prisma.entitlement.findMany({
+          where: {
+            userId: uid,
+            status: "active",
+          },
+          select: { resourceType: true, resourceId: true, expiresAt: true },
+        }),
+        prisma.product.findMany({
+          where: { id: { in: ids } },
+          select: {
+            id: true,
+            type: true,
+            contents: { select: { id: true } },
+            contentPackage: { select: { id: true } },
+          },
+        }),
+      ]);
+      const now = Date.now();
+      const activeMembership = activeEntitlements.some((item: any) =>
+        item.resourceType === "membership_channel" && (!item.expiresAt || new Date(item.expiresAt).getTime() >= now));
+      const activePackageIds = new Set(activeEntitlements.filter((item: any) =>
+        item.resourceType === "package" && (!item.expiresAt || new Date(item.expiresAt).getTime() >= now)).map((item: any) => item.resourceId));
+      const activeContentIds = new Set(activeEntitlements.filter((item: any) =>
+        item.resourceType === "content" && (!item.expiresAt || new Date(item.expiresAt).getTime() >= now)).map((item: any) => item.resourceId));
+      for (const product of productRelations) {
+        if (product.type === "membership" && activeMembership) ownedByProductId.add(product.id);
+        if (product.type === "package" && product.contentPackage?.id && activePackageIds.has(product.contentPackage.id)) ownedByProductId.add(product.id);
+        if (product.type === "single" && (product.contents || []).some((row: any) => activeContentIds.has(row.id))) ownedByProductId.add(product.id);
+      }
+    }
+
+    const items = [...candidates.values()].map((entry) =>
+      checkoutProductResponse(entry.product, {
+        owned: ownedByProductId.has(entry.product.id),
+        recommended: entry.recommended,
+        reason: entry.reason,
+      }));
+
+    return reply.send({
+      ok: true,
+      content: contentMeta,
+      items,
+    });
+  });
+
   fastify.post("/orders", async (req, reply) => {
     const uid = (req as any).userId as string | undefined;
     if (!uid) return reply.status(401).send({ error: "unauthorized" });
@@ -248,6 +403,26 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     });
 
     return reply.status(201).send(orderResponse(order));
+  });
+
+  fastify.get<{ Params: { orderNo: string } }>("/orders/:orderNo/status", { preHandler: [requireUser] }, async (req, reply) => {
+    const uid = (req as any).userId as string;
+    const orderNo = String((req.params as any)?.orderNo || "").trim();
+    if (!orderNo) return reply.status(400).send({ error: "bad_request" });
+    const order = await prisma.order.findFirst({
+      where: { orderNo, userId: uid },
+      include: {
+        product: true,
+        entitlements: true,
+        usdtPaymentAddress: true,
+        paymentTransactions: true,
+      },
+    });
+    if (!order) return reply.status(404).send({ error: "not_found" });
+    return reply.send({
+      ok: true,
+      order: orderResponse(order, { exposeInvoiceIfOwnedBy: uid, exposeUsdtPaymentIfOwnedBy: uid }),
+    });
   });
 
   // ============================================================
@@ -342,8 +517,8 @@ export default async function orderRoutes(fastify: FastifyInstance) {
         prices,
         sendToTelegramUserId: tgid ?? undefined, // 仅作额外私信提醒，不决定 invoiceLink
       });
-    } catch (e: any) {
-      inv = { ok: false, errorClass: "stars_invoice_unexpected_exception", reason: e?.message || String(e) };
+    } catch {
+      inv = { ok: false, errorClass: "stars_invoice_unexpected_exception", reason: "unexpected_exception" };
     }
 
     const base: any = orderResponse(order);
@@ -352,9 +527,6 @@ export default async function orderRoutes(fastify: FastifyInstance) {
 
     // 路由层二次 Fail-Closed 校验：链接必须是 https://t.me/
     if (!inv.ok || typeof (inv as any).invoiceLink !== "string" || !(inv as any).invoiceLink.startsWith("https://t.me/")) {
-      const reason = inv.ok
-        ? `stars_invoice_link_malformed:len=${(inv as any).invoiceLink?.length || 0}`
-        : (inv as any).reason?.slice?.(0, 120) || "create_stars_invoice_failed";
       emitSafetyEvent(
         {
           event: "stars_create_invoice_failed",
@@ -362,7 +534,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
           userId: uid,
           productId: product.id,
           orderNo,
-          note: reason,
+          note: sanitizeStarsInvoiceFailureReason(inv),
           counts: { attempt: 1 },
         },
       );
@@ -844,7 +1016,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
           userId: uid,
           productId: order.productId,
           orderNo,
-          note: (reinv as any).reason?.slice?.(0, 120) || "recreate_stars_invoice_failed",
+          note: sanitizeStarsInvoiceFailureReason(reinv),
         });
         return reply.status(503).send({
           ok: false,

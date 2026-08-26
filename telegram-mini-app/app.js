@@ -27,7 +27,6 @@
       hasInitData: !!(tg && tg.initData && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id),
     },
     session: null,
-    sessionReady: false,
     booting: false,
     home: null,
     detailCache: {},
@@ -66,9 +65,17 @@
       video: null,
       lastProgressSecond: -1,
       started: false,
-      preparedContentId: "",
-      preparingPlayback: null,
+      managed: false,
+      playbackSessionId: "",
+      deliveryVariant: "",
+      hls: null,
+      currentQuality: "auto",
+      bufferStartedAt: 0,
+      playRequestedAt: 0,
+      prefetchContentId: "",
+      prefetchedSession: null,
     },
+    trafficEntry: null,
     resumeIntent: null,
     route: {
       tab: "home",
@@ -144,14 +151,392 @@
     return payload;
   }
 
+  function currentTrafficEntryPayload() {
+    if (!state.trafficEntry || !state.trafficEntry.code) return null;
+    return {
+      trafficEntryCode: state.trafficEntry.code,
+      entryType: state.trafficEntry.entryType,
+      destinationType: state.trafficEntry.destinationType,
+      destinationId: state.trafficEntry.destinationId,
+    };
+  }
+
+  function shouldAttachTrafficEntry(eventName) {
+    return [
+      "session_started",
+      "content_opened",
+      "preview_started",
+      "preview_completed",
+      "playback_started",
+      "playback_completed",
+      "unlock_clicked",
+      "checkout_open",
+      "payment_method_selected",
+      "payment_confirmed",
+    ].indexOf(eventName) >= 0;
+  }
+
   function trackAnalytics(eventName, payload) {
+    var mergedPayload = payload || {};
+    if (shouldAttachTrafficEntry(eventName)) {
+      mergedPayload = Object.assign({}, currentTrafficEntryPayload() || {}, mergedPayload);
+    }
     // 仅发送白名单事件与最小业务字段；服务端会再次校验、哈希化并丢弃未知字段。
     requestWithCompatibility("/api/analytics/events", {
       credentials: "include",
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ events: [{ eventName: eventName, payload: Object.assign({ platform: state.env.isTelegram ? "telegram_mini_app" : "h5" }, payload || {}) }] }),
+      body: JSON.stringify({ events: [{ eventName: eventName, payload: Object.assign({ platform: state.env.isTelegram ? "telegram_mini_app" : "h5" }, mergedPayload) }] }),
     }).catch(function () {});
+  }
+
+  function getDetailPlaybackStatus(detail) {
+    return detail && detail.playbackStatus && typeof detail.playbackStatus === "object"
+      ? detail.playbackStatus
+      : null;
+  }
+
+  function hasManagedPlayback(detail) {
+    const playback = getDetailPlaybackStatus(detail);
+    return !!(playback && !playback.errorClass && (playback.action === "preview" || playback.action === "play_full"));
+  }
+
+  function canUseNativeHls(video) {
+    if (!video || typeof video.canPlayType !== "function") return false;
+    return /maybe|probably/i.test(video.canPlayType("application/vnd.apple.mpegurl")) ||
+      /maybe|probably/i.test(video.canPlayType("application/x-mpegURL"));
+  }
+
+  function destroyManagedHls() {
+    const active = state.player.hls;
+    if (active && typeof active.destroy === "function") {
+      try { active.destroy(); } catch (_) {}
+    }
+    state.player.hls = null;
+  }
+
+  function clearManagedPlaybackState() {
+    destroyManagedHls();
+    state.player.managed = false;
+    state.player.playbackSessionId = "";
+    state.player.deliveryVariant = "";
+    state.player.currentQuality = "auto";
+    state.player.bufferStartedAt = 0;
+    state.player.playRequestedAt = 0;
+  }
+
+  function reportPlaybackError(detail, errorCode) {
+    trackAnalytics("playback_error", {
+      contentId: detail && detail.id ? detail.id : null,
+      deliveryVariant: state.player.deliveryVariant || null,
+      errorCode: errorCode || "unknown",
+    });
+  }
+
+  function currentPlaybackSource(detail) {
+    return state.player.deliveryVariant === "full"
+      ? "full_play"
+      : (hasManagedPlayback(detail) ? "preview_play" : "preview_prefetch");
+  }
+
+  function detectPlaybackNetworkPolicy() {
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
+    const effectiveType = conn && typeof conn.effectiveType === "string" ? conn.effectiveType : "";
+    const saveData = !!(conn && conn.saveData);
+    const constrained = saveData || /(^|[^a-z])(slow-2g|2g|3g)([^a-z]|$)/i.test(effectiveType);
+    const cellular = /(^|[^a-z])(cellular|2g|3g)([^a-z]|$)/i.test(effectiveType);
+    return {
+      saveData: saveData,
+      constrained: constrained,
+      cellular: cellular,
+      defaultQuality: constrained ? "480p" : "720p",
+      maxForwardBufferSec: constrained ? 6 : 15,
+      prefetchSegmentCount: constrained ? 1 : 2,
+      qualityReason: saveData ? "save_data" : cellular ? "cellular" : "startup",
+    };
+  }
+
+  function inferQualityLabelFromHeight(height) {
+    const value = Number(height || 0);
+    if (value >= 900) return "1080p";
+    if (value >= 600) return "720p";
+    if (value >= 360) return "480p";
+    return "preview";
+  }
+
+  function trackManagedAnalytics(detail, eventName, payload) {
+    trackAnalytics(eventName, Object.assign({
+      contentId: detail && detail.id ? detail.id : null,
+      sessionId: state.player.playbackSessionId || null,
+      quality: state.player.currentQuality || "auto",
+      source: currentPlaybackSource(detail),
+    }, payload || {}));
+  }
+
+  function createManagedRequest(url, init) {
+    return new Request(url, Object.assign({}, init || {}, {
+      credentials: "include",
+      cache: "no-store",
+      headers: Object.assign({}, (init && init.headers) || {}, {
+        "Cache-Control": state.player.deliveryVariant === "full" ? "no-store" : "no-cache",
+        Pragma: "no-cache",
+      }),
+    }));
+  }
+
+  function findPreferredLevelIndex(levels, qualityLabel) {
+    var preferredHeight = qualityLabel === "480p" ? 480 : qualityLabel === "720p" ? 720 : 1080;
+    var found = -1;
+    for (var i = 0; i < levels.length; i += 1) {
+      if (Number(levels[i].height || 0) <= preferredHeight) found = i;
+    }
+    return found >= 0 ? found : Math.max(0, Math.min(levels.length - 1, qualityLabel === "480p" ? 0 : 1));
+  }
+
+  async function prefetchManagedManifest(detail, manifestUrl, sessionId) {
+    try {
+      const manifestRes = await requestWithCompatibility(manifestUrl, {
+        credentials: "include",
+        cache: "no-store",
+        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+      });
+      if (!manifestRes.ok) throw new Error("prefetch_manifest_failed");
+      const manifestText = await manifestRes.text();
+      const targets = [];
+      var mapLine = manifestText.match(/#EXT-X-MAP:.*URI="([^"]+)"/i);
+      if (mapLine && mapLine[1]) targets.push(new URL(mapLine[1], manifestUrl).toString());
+      manifestText.split(/\r?\n/).forEach(function (line) {
+        var value = String(line || "").trim();
+        if (!value || value.charAt(0) === "#") return;
+        if (/\.m3u8($|\?)/i.test(value)) return;
+        if (targets.length >= detectPlaybackNetworkPolicy().prefetchSegmentCount + (mapLine ? 1 : 0)) return;
+        targets.push(new URL(value, manifestUrl).toString());
+      });
+      for (var i = 0; i < targets.length; i += 1) {
+        await requestWithCompatibility(targets[i], {
+          credentials: "include",
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+        });
+      }
+      trackAnalytics("playback_prefetch_result", {
+        contentId: detail.id,
+        sessionId: sessionId,
+        quality: "preview",
+        result: "hit",
+        source: "preview_prefetch",
+      });
+    } catch (_) {
+      trackAnalytics("playback_prefetch_result", {
+        contentId: detail.id,
+        sessionId: sessionId,
+        quality: "preview",
+        result: "error",
+        source: "preview_prefetch",
+      });
+    }
+  }
+
+  async function prefetchDetailPreview(detail) {
+    if (!detail || state.player.prefetchContentId === detail.id) return;
+    const playback = getDetailPlaybackStatus(detail);
+    if (!playback || playback.action !== "preview" || playback.errorClass || !state.session || !state.session.userId) return;
+    state.player.prefetchContentId = detail.id;
+    try {
+      const prefetched = await apiCall("/api/contents/" + encodeURIComponent(detail.id) + "/playback-session", {
+        method: "POST",
+        body: JSON.stringify({ purpose: "prefetch" }),
+      });
+      if (prefetched && prefetched.sessionId && prefetched.manifestUrl) {
+        state.player.prefetchedSession = {
+          contentId: detail.id,
+          sessionId: prefetched.sessionId,
+          manifestUrl: prefetched.manifestUrl,
+          deliveryVariant: prefetched.deliveryVariant || "preview",
+          expiresAt: prefetched.expiresAt || null,
+        };
+      }
+      await prefetchManagedManifest(detail, prefetched.manifestUrl, prefetched.sessionId || "");
+    } catch (_) {
+      state.player.prefetchContentId = "";
+      state.player.prefetchedSession = null;
+      trackAnalytics("playback_prefetch_result", {
+        contentId: detail.id,
+        sessionId: null,
+        quality: "preview",
+        result: "miss",
+        source: "preview_prefetch",
+      });
+    }
+  }
+
+  function loadManagedVideoSource(video, manifestUrl, detail) {
+    destroyManagedHls();
+    try { video.pause(); } catch (_) {}
+    try { video.removeAttribute("src"); video.load(); } catch (_) {}
+    state.player.playRequestedAt = Date.now();
+    state.player.currentQuality = state.player.deliveryVariant === "full" ? detectPlaybackNetworkPolicy().defaultQuality : "preview";
+
+    if (canUseNativeHls(video)) {
+      video.src = manifestUrl;
+      video.load();
+      trackManagedAnalytics(detail, "playback_manifest_ready");
+      return;
+    }
+
+    const HlsCtor = window.Hls;
+    if (HlsCtor && typeof HlsCtor.isSupported === "function" && HlsCtor.isSupported()) {
+      const networkPolicy = detectPlaybackNetworkPolicy();
+      const hls = new HlsCtor({
+        enableWorker: true,
+        maxBufferLength: networkPolicy.maxForwardBufferSec,
+        maxMaxBufferLength: networkPolicy.maxForwardBufferSec,
+        backBufferLength: 15,
+        fetchSetup: function (context, init) {
+          return createManagedRequest(context.url, init);
+        },
+        xhrSetup: function (xhr) {
+          xhr.withCredentials = true;
+          try {
+            xhr.setRequestHeader("Cache-Control", state.player.deliveryVariant === "full" ? "no-store" : "no-cache");
+            xhr.setRequestHeader("Pragma", "no-cache");
+          } catch (_) {}
+        },
+      });
+      state.player.hls = hls;
+      if (HlsCtor.Events && typeof hls.on === "function") {
+        hls.on(HlsCtor.Events.MANIFEST_PARSED, function (_, data) {
+          const levels = (data && data.levels) || [];
+          const preferredLevel = findPreferredLevelIndex(levels, networkPolicy.defaultQuality);
+          if (state.player.deliveryVariant === "full") {
+            hls.autoLevelCapping = Math.min(preferredLevel, levels.length - 1);
+            hls.startLevel = preferredLevel;
+            state.player.currentQuality = networkPolicy.defaultQuality;
+          } else {
+            state.player.currentQuality = "preview";
+          }
+          trackManagedAnalytics(detail, "playback_manifest_ready");
+        });
+        hls.on(HlsCtor.Events.LEVEL_SWITCHED, function (_, data) {
+          var fromQuality = state.player.currentQuality || "auto";
+          var level = typeof data.level === "number" ? hls.levels[data.level] : null;
+          var toQuality = level ? inferQualityLabelFromHeight(level.height) : fromQuality;
+          if (toQuality !== fromQuality) {
+            state.player.currentQuality = toQuality;
+            trackManagedAnalytics(detail, "playback_quality_change", {
+              fromQuality: fromQuality,
+              toQuality: toQuality,
+              reason: detectPlaybackNetworkPolicy().qualityReason,
+            });
+          }
+        });
+        hls.on(HlsCtor.Events.ERROR, function (_, data) {
+          if (!data || !data.fatal) return;
+          reportPlaybackError(detail, data.type || data.details || "hls_error");
+          showInlineMessage("视频播放中断，请稍后重试。");
+          destroyManagedHls();
+        });
+      }
+      hls.loadSource(manifestUrl);
+      hls.attachMedia(video);
+      return;
+    }
+
+    video.src = manifestUrl;
+    video.load();
+  }
+
+  function postManagedPlayback(sessionId, endpointSuffix, payload, detail) {
+    if (!sessionId) return Promise.resolve(null);
+    return apiCall("/api/playback-sessions/" + encodeURIComponent(sessionId) + endpointSuffix, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }).catch(function (err) {
+      reportPlaybackError(detail, err && err.payload ? (err.payload.error || err.payload.errorClass) : "playback_request_failed");
+      if (err && err.payload && err.payload.error === "playback_session_inactive") {
+        clearManagedPlaybackState();
+      }
+      return null;
+    });
+  }
+
+  function writePlayerProgress(detail, payload) {
+    if (state.player.managed && state.player.playbackSessionId) {
+      const isEndEvent = payload.eventName === "leave" || payload.eventName === "complete";
+      return postManagedPlayback(
+        state.player.playbackSessionId,
+        isEndEvent ? "/end" : "/heartbeat",
+        {
+          eventName: payload.eventName === "start"
+            ? "start"
+            : payload.eventName === "pause"
+              ? "pause"
+              : payload.eventName === "complete"
+                ? "complete"
+                : "progress",
+          positionSec: payload.positionSec || 0,
+          durationSec: payload.durationSec || null,
+          quality: payload.quality || state.player.currentQuality || "auto",
+        },
+        detail,
+      );
+    }
+    return writeWatchProgress(detail.id, payload);
+  }
+
+  function playInlineDetailVideo() {
+    const video = $("detailContent").querySelector(".detail-preview-video");
+    if (!video) {
+      showInlineMessage("当前内容暂未准备好播放器。");
+      return;
+    }
+    const playback = video.play();
+    if (playback && typeof playback.catch === "function") playback.catch(function () {});
+  }
+
+  async function startManagedPlayback(detail) {
+    const video = $("detailContent").querySelector(".detail-preview-video");
+    if (!video) {
+      showInlineMessage("当前内容暂未准备好播放器。");
+      return;
+    }
+    if (state.player.managed && state.player.playbackSessionId && state.player.contentId === detail.id) {
+      playInlineDetailVideo();
+      return;
+    }
+    const prefetched = state.player.prefetchedSession;
+    let created = prefetched && prefetched.contentId === detail.id ? prefetched : null;
+    if (created) state.player.prefetchedSession = null;
+    try {
+      if (!created) {
+        created = await apiCall("/api/contents/" + encodeURIComponent(detail.id) + "/playback-session", {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+      }
+    } catch (err) {
+      reportPlaybackError(detail, err && err.payload ? (err.payload.error || err.payload.errorClass) : "playback_session_failed");
+      if (detail.previewUrl) {
+        showInlineMessage("Web 受控播放尚未开放，先为你展示当前试看。");
+        playInlineDetailVideo();
+        return;
+      }
+      if (detail.unlocked) {
+        showInlineMessage("完整 Web 播放仍保持关闭，请先使用 Telegram 备用观看。");
+        return;
+      }
+      showInlineMessage("创建播放会话失败：" + apiText(err));
+      return;
+    }
+
+    state.player.managed = true;
+    state.player.playbackSessionId = created.sessionId || "";
+    state.player.deliveryVariant = created.deliveryVariant || "";
+    loadManagedVideoSource(video, created.manifestUrl, detail);
+    const gate = $("previewUpgradeGate");
+    if (gate) gate.classList.add("is-hidden");
+    const playback = video.play();
+    if (playback && typeof playback.catch === "function") playback.catch(function () {});
   }
 
   function isStarsProduct(product) {
@@ -252,12 +637,32 @@
     if (el) el.textContent = jsonLd ? JSON.stringify(jsonLd) : "";
   }
 
+  function clearLandingQueryParams() {
+    const url = new URL(window.location.href);
+    ["content", "te", "category", "package", "membership"].forEach(function (key) {
+      url.searchParams.delete(key);
+    });
+    window.history.replaceState(null, "", url.pathname + (url.search || ""));
+  }
+
   function parseHash() {
     // Telegram 免费频道/H5 外链使用 ?content=<UUID>；查询参数优先于首页 hash，
     // 确保用户点击推广链接时直接进入对应内容详情，而不是落回首页。
-    const queryContentId = new URLSearchParams(window.location.search).get("content");
+    const queryParams = new URLSearchParams(window.location.search);
+    const queryContentId = queryParams.get("content");
     if (queryContentId) {
       return { view: "detail", id: queryContentId, tab: "home", fromTab: "home" };
+    }
+    const queryCategoryId = queryParams.get("category");
+    if (queryCategoryId) {
+      return { view: "tab", id: "", tab: "library", fromTab: "home", categoryId: queryCategoryId };
+    }
+    const queryPackageId = queryParams.get("package");
+    if (queryPackageId) {
+      return { view: "tab", id: "", tab: "membership", fromTab: "home", packageId: queryPackageId };
+    }
+    if (queryParams.get("membership") === "1") {
+      return { view: "tab", id: "", tab: "membership", fromTab: "home" };
     }
     const raw = String(window.location.hash || "").replace(/^#/, "");
     const params = new URLSearchParams(raw);
@@ -282,15 +687,14 @@
   }
 
   function setHashForTab(tab) {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("content");
-    window.history.replaceState(null, "", url.pathname + (url.search || ""));
+    clearLandingQueryParams();
     const params = new URLSearchParams();
     params.set("tab", tab);
     window.location.hash = params.toString();
   }
 
   function setHashForDetail(id, fromTab) {
+    clearLandingQueryParams();
     const params = new URLSearchParams();
     params.set("view", "content");
     params.set("id", id);
@@ -299,6 +703,7 @@
   }
 
   function setHashForHistory(fromTab) {
+    clearLandingQueryParams();
     const params = new URLSearchParams();
     params.set("view", "history");
     params.set("from", fromTab || "me");
@@ -602,41 +1007,20 @@
     return items.find(function (item) { return item.accessType === "membership"; }) || null;
   }
 
-  function getMembershipPurchaseDetail(entry) {
-    if (!entry) return null;
-    if (entry.product && entry.product.id) return entry;
-    if (!entry.productId) return null;
-    return Object.assign({}, entry, {
-      product: {
-        id: entry.productId,
-        priceMinor: entry.priceMinor,
-        currency: entry.priceCurrency,
-        usdtPriceMinor: entry.usdtPriceMinor,
-        type: "membership",
-      },
+  function appendMembershipPurchaseAction(host, membershipEntry, summary) {
+    if (!host || !membershipEntry || !membershipEntry.product) return;
+    const isActive = summary.status === "active";
+    const action = document.createElement("div");
+    action.className = "channel-actions membership-purchase-action";
+    action.innerHTML =
+      '<p class="stack-note">' + escapeHtml(isActive
+        ? "会员有效期内续费会从当前到期日顺延。"
+        : "完成支付后将恢复会员主频道与对应内容权益。") + '</p>' +
+      '<button class="primary-button" type="button">' + (isActive ? "立即续费" : "开通会员") + "</button>";
+    action.querySelector("button").addEventListener("click", function () {
+      startPurchase(membershipEntry);
     });
-  }
-
-  function appendMembershipRenewal(host, membershipEntry, summary) {
-    const purchaseDetail = getMembershipPurchaseDetail(membershipEntry);
-    if (!purchaseDetail) return;
-    const active = summary.status === "active";
-    const inactive = !summary.status || summary.status === "none";
-    const title = active ? "续费会员" : (inactive ? "开通会员" : "恢复会员权益");
-    const actionText = active ? "立即续费" : (inactive ? "立即开通" : "续费恢复权益");
-    const subtitle = active && summary.expiresAt
-      ? "当前有效至 " + formatDateShort(summary.expiresAt) + "；续费会在到期后顺延。"
-      : inactive
-        ? "开通后即可获得会员频道与会员内容访问。"
-        : "完成续费后即可恢复会员频道与会员内容访问。";
-    const card = document.createElement("article");
-    card.className = "stack-card";
-    card.innerHTML =
-      '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(title) + '</div>' +
-      '<div class="stack-subtitle">' + escapeHtml(subtitle) + '</div></div></div>' +
-      '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + escapeHtml(actionText) + "</button></div>";
-    card.querySelector("button").addEventListener("click", function () { startPurchase(purchaseDetail); });
-    host.appendChild(card);
+    host.appendChild(action);
   }
 
   function renderMembership() {
@@ -648,11 +1032,11 @@
       badge.textContent = summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已开通";
       badge.className = "status-badge";
       $("membershipHeadline").textContent = "会员主频道与内容包";
-      $("membershipCopy").textContent = "支付成功后，只会进入你实际拥有权益对应的频道。";
+      $("membershipCopy").textContent = "支付成功后，只会进入你实际拥有权益对应的频道；可随时续费延长有效期。";
     } else {
-      badge.textContent = "未开通";
+      badge.textContent = summary.status === "expired" ? "已到期" : "未开通";
       badge.className = "status-badge status-warning";
-      $("membershipHeadline").textContent = "理解权益，再决定购买方式";
+      $("membershipHeadline").textContent = summary.status === "expired" ? "恢复会员权益" : "理解权益，再决定购买方式";
       $("membershipCopy").textContent = state.env.isTelegram
         ? "Telegram 内默认优先使用 Stars，同时提供 USDT。"
         : "H5 默认使用 USDT；若需 Stars，请在 Telegram 内打开。";
@@ -665,7 +1049,7 @@
     } else {
       membershipHost.innerHTML = "";
       renderContentCards("membershipPrimaryCard", [membershipEntry], "membership");
-      appendMembershipRenewal(membershipHost, membershipEntry, summary);
+      appendMembershipPurchaseAction(membershipHost, membershipEntry, summary);
     }
 
     const packageHost = $("membershipPackagesList");
@@ -896,8 +1280,8 @@
       ? (membershipSummary.expiresAt ? "已开通至 " + formatDateShort(membershipSummary.expiresAt) : "已开通")
       : "未开通";
     $("meMembershipHint").textContent = membershipSummary.status === "active"
-      ? "会员内容会在详情页直接展示频道入口。"
-      : "会员与内容包购买入口在「会员」页。";
+      ? "会员内容会在详情页直接展示频道入口；可在「会员」页续费。"
+      : (membershipSummary.status === "expired" ? "会员已到期，可在「会员」页恢复权益。" : "会员与内容包购买入口在「会员」页。");
     $("meOrdersText").textContent = state.orders.items.length ? "共 " + state.orders.items.length + " 条" : "暂无订单";
     $("meOrdersHint").textContent = state.orders.items.some(function (item) { return item.status === "pending"; })
       ? "你有待支付订单，通知入口会直接带你回到这里。"
@@ -917,100 +1301,29 @@
   }
 
   function getPrimaryDetailAction(detail) {
-    const playback = detail && detail.playbackStatus;
-    if (playback && playback.previewAvailable) {
-      return { text: playback.action === "play_full" ? "播放完整视频" : "免费试看", handler: function () { startManagedPlayback(detail); } };
-    }
+    const playback = getDetailPlaybackStatus(detail);
     if (playback && !playback.errorClass && playback.action === "play_full") {
-      return { text: playback.action === "play_full" ? "播放完整视频" : "免费试看", handler: function () { startManagedPlayback(detail); } };
+      return { text: "播放完整", handler: function () { startManagedPlayback(detail); } };
+    }
+    if (playback && !playback.errorClass && playback.action === "preview") {
+      return { text: "试看", handler: function () { startManagedPlayback(detail); } };
+    }
+    if (detail.previewUrl) {
+      return { text: "试看", handler: function () { playInlineDetailVideo(); } };
     }
     if (detail.unlocked) {
-      return { text: "观看完整视频", handler: function () { openChannelAccess(detail.id); } };
+      return { text: "Telegram 备用观看", handler: function () { openChannelAccess(detail.id); } };
+    }
+    if (playback && playback.action === "processing") {
+      return { text: "转码处理中", handler: function () { showInlineMessage("视频转码处理中，请稍后再试。"); } };
     }
     if (detail.accessType === "membership") {
       return { text: "开通会员", handler: function () { startPurchase(detail); } };
     }
     if (detail.accessType === "package") {
-      return { text: "查看内容包", handler: function () { startPurchase(detail); } };
+      return { text: "解锁内容包", handler: function () { startPurchase(detail); } };
     }
     return { text: "查看频道预览", handler: function () { openChannelAccess(detail.id); } };
-  }
-
-  function canPlayNativeHls(video) {
-    return !!(video && video.canPlayType && /maybe|probably/i.test(video.canPlayType("application/vnd.apple.mpegurl")));
-  }
-
-  function playbackErrorClass(err) {
-    const payload = err && err.payload ? err.payload : {};
-    const code = String(payload.userError || payload.error || payload.errorClass || "").toLowerCase();
-    const message = String(err && err.message || "").toLowerCase();
-    if (err && Number(err.status) === 401) return "session_not_ready";
-    if (code === "playback_not_configured" || code === "content_unavailable") return code;
-    if (/hls_not_supported|mediasource/.test(message)) return "hls_unsupported";
-    if (/playback_session_missing/.test(message)) return "session_unavailable";
-    return "playback_unavailable";
-  }
-
-  function showPlaybackFailure(err, shouldNotify) {
-    const errorClass = playbackErrorClass(err);
-    const notice = $("previewPlaybackNotice");
-    if (notice) {
-      notice.classList.remove("is-hidden");
-      notice.setAttribute("data-error-class", errorClass);
-      notice.textContent = errorClass === "hls_unsupported"
-        ? "当前浏览器暂不支持试看播放，请使用最新版浏览器后重试。"
-        : "试看暂时不可用，请刷新后重试。";
-    }
-    try { console.warn("[playback] failed", errorClass); } catch (_) {}
-    if (shouldNotify) showInlineMessage(notice ? notice.textContent : "试看暂时不可用，请刷新后重试。");
-  }
-
-  async function prepareManagedPlayback(detail, autoplay) {
-    const video = $("detailContent").querySelector(".detail-preview-video");
-    if (!video) return;
-    try {
-      if (!state.sessionReady) throw Object.assign(new Error("session_not_ready"), { status: 401 });
-      let session;
-      // HLS.js attaches through MediaSource asynchronously; currentSrc can stay
-      // empty briefly even though the already-created session is valid. Do not
-      // create a second session on the user's first click, or the device-limit
-      // guard will reject the click as a concurrent playback attempt.
-      if (state.player.preparedContentId === detail.id) {
-        if (autoplay) video.play().catch(function () {});
-        return;
-      } else if (state.player.preparingPlayback && state.player.preparingPlayback.contentId === detail.id) {
-        session = await state.player.preparingPlayback.promise;
-      } else {
-        const promise = apiCall("/api/contents/" + encodeURIComponent(detail.id) + "/playback-session", {
-          method: "POST", body: JSON.stringify({}),
-        });
-        state.player.preparingPlayback = { contentId: detail.id, promise: promise };
-        session = await promise;
-        state.player.preparingPlayback = null;
-      }
-      if (!session || !session.manifestUrl) throw new Error("playback_session_missing");
-      if (canPlayNativeHls(video)) {
-        video.src = session.manifestUrl;
-      } else if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) {
-        if (state.player.hls && state.player.hls.destroy) state.player.hls.destroy();
-        state.player.hls = new window.Hls({ enableWorker: true, maxBufferLength: 30, maxMaxBufferLength: 60 });
-        state.player.hls.loadSource(session.manifestUrl);
-        state.player.hls.attachMedia(video);
-      } else {
-        throw new Error("hls_not_supported");
-      }
-      state.player.preparedContentId = detail.id;
-      if (autoplay) video.play().catch(function () {});
-      const button = $("detailPrimaryButton");
-      if (button && session.deliveryVariant === "preview") button.textContent = "正在试看";
-    } catch (_) {
-      state.player.preparingPlayback = null;
-      showPlaybackFailure(_, autoplay);
-    }
-  }
-
-  function startManagedPlayback(detail) {
-    return prepareManagedPlayback(detail, true);
   }
 
   async function renderDetail(id) {
@@ -1032,27 +1345,35 @@
     }
     const detail = state.detailCache[id];
     trackAnalytics("content_opened", { contentId: detail.id, sourceModule: state.route.fromTab || "home" });
-    updatePageSeo(detail.effectiveSeo || { title: detail.title, description: detail.description, keywords: [] });
-    updateOgImage(detail.coverUrl || "");
-    updateJsonLd(detail.videoObjectJsonLd || null);
+    // Mini App 详情同样不暴露私密内容元数据给页面预取器。
+    updatePageSeo(null);
+    updateOgImage("");
+    updateJsonLd(null);
 
+    const playback = getDetailPlaybackStatus(detail);
     const primaryAction = getPrimaryDetailAction(detail);
     const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;
     // 详情页只保留一个 16:9 媒体位：有试看直接播放试看；无试看才展示封面。
     // 这样不会把同一张封面和同一段视频上下重复展示，首屏也更聚焦。
+    const managedPlaybackEnabled = hasManagedPlayback(detail);
+    const canRenderPlayer = !!detail.previewUrl || managedPlaybackEnabled;
     const previewUpgradeEnabled = !detail.unlocked && !!detail.product &&
       (detail.accessType === "membership" || detail.accessType === "package");
     const previewUpgradeText = detail.accessType === "membership" ? "开通会员" : "解锁内容包";
-    const managedPreview = detail.playbackStatus && detail.playbackStatus.previewAvailable;
-    const mediaSlot = (managedPreview || detail.previewUrl)
+    const mediaSlot = canRenderPlayer
       ? '<section class="detail-media detail-media-preview" aria-label="免费试看">' +
         '<video class="detail-preview-video" controls playsinline preload="metadata"' +
-          (detail.previewUrl ? ' src="' + escapeHtml(detail.previewUrl) + '"' : '') +
+          (detail.previewUrl ? ' src="' + escapeHtml(detail.previewUrl) + '"' : "") +
           (detail.coverUrl ? ' poster="' + escapeHtml(detail.coverUrl) + '"' : '') + '>' +
           '当前浏览器不支持视频在线播放。' +
         '</video>' +
-        '<div class="detail-media-label"><strong>免费试看</strong><span>试看不需要开通会员</span></div>' +
-        '<div id="previewPlaybackNotice" class="detail-playback-notice is-hidden" role="status" aria-live="polite"></div>' +
+        '<div class="detail-media-label"><strong>' + escapeHtml(playback && playback.action === "play_full" ? "受控播放" : "免费试看") + '</strong><span>' +
+          escapeHtml(playback && playback.action === "play_full"
+            ? "完整播放走服务端会话与短时鉴权。"
+            : managedPlaybackEnabled
+              ? "试看将优先使用服务端签发的私有 HLS。"
+              : "试看不需要开通会员") +
+        '</span></div>' +
         (previewUpgradeEnabled
           ? '<div id="previewUpgradeGate" class="detail-preview-gate is-hidden" role="status" aria-live="polite">' +
             '<div class="detail-preview-gate-copy"><span>试看结束</span><strong>开通后继续观看完整内容</strong>' +
@@ -1071,15 +1392,26 @@
       '<div class="detail-meta"><span>' + escapeHtml(detail.duration || "—") + '</span><span>' + escapeHtml(detail.categories && detail.categories[0] ? detail.categories[0].name : "未分类") + '</span><span>' + escapeHtml(formatDateShort(detail.publishedAt)) + '</span></div>' +
       '<div class="detail-description">' + escapeHtml(detail.description || "暂无内容介绍。") + '</div>' +
       '<div class="detail-status-card">' +
-      '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(detail.unlocked ? "已解锁，可直接进入频道" : getAccessLabel(detail)) + '</div>' +
-      '<div class="stack-subtitle">' + escapeHtml(detail.unlocked
+      '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(playback && playback.action === "play_full"
+        ? "已解锁，可直接受控播放"
+        : detail.unlocked
+          ? "已解锁，可走备用交付"
+          : getAccessLabel(detail)) + '</div>' +
+      '<div class="stack-subtitle">' + escapeHtml(playback && playback.action === "play_full"
+        ? "当前账户已满足权益，可创建完整播放会话。"
+        : playback && playback.action === "preview" && !playback.errorClass
+          ? "当前可直接试看；试看结束后可继续开通对应权益。"
+          : detail.unlocked && playback && playback.errorClass
+            ? "完整 Web 播放仍保持关闭，当前请先使用 Telegram 备用观看。"
+            : detail.unlocked
         ? "该内容已归属到你当前账户的有效权益。"
         : detail.accessType === "membership"
           ? "该内容通过会员主频道交付。"
           : detail.accessType === "package"
             ? "该内容通过所属内容包频道交付。"
             : "该内容为公开预览，可直接查看。") + '</div></div>' +
-      '<div class="status-badge' + (detail.unlocked ? "" : " status-warning") + '">' + escapeHtml(detail.unlocked ? "已解锁" : "未解锁") + "</div></div>" +
+      '<div class="status-badge' + ((playback && playback.action === "play_full") || detail.unlocked ? "" : " status-warning") + '">' +
+      escapeHtml((playback && playback.action === "play_full") || detail.unlocked ? "已解锁" : "未解锁") + "</div></div>" +
       (pendingOrder ? '<div class="stack-note">当前有待支付订单：' + escapeHtml(pendingOrder.orderNo) + '，可在「我的 > 我的订单」继续支付。</div>' : "") +
       '</div>' +
       (detail.accessType !== "public" ? '<div class="detail-purchase-list"></div>' : "") +
@@ -1109,8 +1441,7 @@
       setHashForTab(state.route.fromTab || "home");
     });
     attachDetailPlayer(detail);
-    // 试看流在详情页直接准备好：用户可点原生播放键开始观看，绝不自动播放或记录观看进度。
-    if (managedPreview && !detail.previewUrl) prepareManagedPlayback(detail, false);
+    void prefetchDetailPreview(detail);
   }
 
   function handleBannerAction(banner) {
@@ -1178,7 +1509,6 @@
     }
 
     state.session = session;
-    state.sessionReady = true;
     state.booting = false;
   }
 
@@ -1340,19 +1670,18 @@
     const activeContentId = state.player.contentId;
     if (activeVideo && activeContentId) {
       const eventName = reason || (activeVideo.ended ? "complete" : "leave");
-      writeWatchProgress(activeContentId, {
+      writePlayerProgress({ id: activeContentId }, {
         eventName: eventName,
         positionSec: activeVideo.ended ? activeVideo.duration || activeVideo.currentTime || 0 : activeVideo.currentTime || 0,
         durationSec: activeVideo.duration || null,
         quality: "auto",
       });
     }
+    clearManagedPlaybackState();
     state.player.video = null;
     state.player.contentId = "";
     state.player.lastProgressSecond = -1;
     state.player.started = false;
-    state.player.preparedContentId = "";
-    state.player.preparingPlayback = null;
   }
 
   function attachDetailPlayer(detail) {
@@ -1365,6 +1694,9 @@
     state.player.contentId = detail.id;
     state.player.lastProgressSecond = -1;
     state.player.started = false;
+    state.player.managed = false;
+    state.player.currentQuality = "auto";
+    state.player.bufferStartedAt = 0;
 
     video.addEventListener("loadedmetadata", function () {
       if (resumePosition > 0 && Number.isFinite(video.duration) && resumePosition < Math.max(video.duration - 1, 1)) {
@@ -1380,13 +1712,42 @@
     video.addEventListener("play", function () {
       if (!state.player.started) {
         state.player.started = true;
-        trackAnalytics("preview_started", { contentId: detail.id });
+        trackAnalytics(state.player.managed ? "playback_started" : "preview_started", {
+          contentId: detail.id,
+          deliveryVariant: state.player.deliveryVariant || "preview",
+        });
       }
-      writeWatchProgress(detail.id, {
+      writePlayerProgress(detail, {
         eventName: "start",
         positionSec: video.currentTime || 0,
         durationSec: video.duration || detail.durationSeconds || null,
-        quality: "auto",
+        quality: state.player.currentQuality || "auto",
+      });
+    });
+
+    video.addEventListener("playing", function () {
+      if (state.player.managed && state.player.playRequestedAt) {
+        trackManagedAnalytics(detail, "playback_first_frame", {
+          elapsedMs: Math.max(0, Date.now() - state.player.playRequestedAt),
+        });
+        state.player.playRequestedAt = 0;
+      }
+      if (state.player.managed && state.player.bufferStartedAt) {
+        trackManagedAnalytics(detail, "playback_buffer_end", {
+          bufferDurationMs: Math.max(0, Date.now() - state.player.bufferStartedAt),
+        });
+        state.player.bufferStartedAt = 0;
+      }
+      if (!state.player.managed && video.videoHeight) {
+        state.player.currentQuality = inferQualityLabelFromHeight(video.videoHeight);
+      }
+    });
+
+    video.addEventListener("waiting", function () {
+      if (!state.player.managed || state.player.bufferStartedAt) return;
+      state.player.bufferStartedAt = Date.now();
+      trackManagedAnalytics(detail, "playback_buffer_start", {
+        bufferDurationMs: 0,
       });
     });
 
@@ -1399,37 +1760,40 @@
       }
       if (current - state.player.lastProgressSecond < 15) return;
       state.player.lastProgressSecond = current;
-      writeWatchProgress(detail.id, {
+      writePlayerProgress(detail, {
         eventName: "progress",
         positionSec: current,
         durationSec: video.duration || detail.durationSeconds || null,
-        quality: "auto",
+        quality: state.player.currentQuality || "auto",
       });
     });
 
     video.addEventListener("pause", function () {
       if (video.ended) return;
-      writeWatchProgress(detail.id, {
+      writePlayerProgress(detail, {
         eventName: "pause",
         positionSec: video.currentTime || 0,
         durationSec: video.duration || detail.durationSeconds || null,
-        quality: "auto",
+        quality: state.player.currentQuality || "auto",
       });
     });
 
     video.addEventListener("ended", function () {
-      trackAnalytics("preview_completed", { contentId: detail.id });
-      writeWatchProgress(detail.id, {
+      trackAnalytics(state.player.managed ? "playback_completed" : "preview_completed", {
+        contentId: detail.id,
+        deliveryVariant: state.player.deliveryVariant || "preview",
+      });
+      writePlayerProgress(detail, {
         eventName: "complete",
         positionSec: video.duration || video.currentTime || detail.durationSeconds || 0,
         durationSec: video.duration || detail.durationSeconds || null,
-        quality: "auto",
+        quality: state.player.currentQuality || "auto",
       });
       if (!detail.unlocked && detail.product && (detail.accessType === "membership" || detail.accessType === "package")) {
         const gate = $("previewUpgradeGate");
         if (gate) {
           gate.classList.remove("is-hidden");
-          trackAnalytics("preview_upgrade_shown", { contentId: detail.id, accessType: detail.accessType });
+          trackAnalytics("paywall_shown", { contentId: detail.id, accessType: detail.accessType });
         }
       }
     });
@@ -1451,19 +1815,68 @@
     return /^[a-zA-Z0-9_-]{1,32}$/.test(value || "") ? value : undefined;
   }
 
+  function hasUsdtCheckout(product) {
+    if (!product) return false;
+    return product.usdtPriceMinor != null || String(product.currency || "").toUpperCase() === "USDT";
+  }
+
+  function choosePurchaseMethod(detail) {
+    return new Promise(function (resolve) {
+      const product = detail && detail.product ? detail.product : null;
+      const starsAvailable = isStarsProduct(product);
+      const usdtAvailable = hasUsdtCheckout(product);
+      if (state.env.isTelegram && tg && typeof tg.showPopup === "function" && starsAvailable && usdtAvailable) {
+        tg.showPopup({
+          title: "选择支付方式",
+          message: "Telegram 内默认优先推荐 Stars，同时也保留 USDT-TRC20。",
+          buttons: [
+            { id: "stars", type: "default", text: "Stars 支付" },
+            { id: "usdt", type: "default", text: "USDT-TRC20" },
+            { type: "cancel", id: "cancel" },
+          ],
+        }, function (buttonId) {
+          resolve(buttonId === "usdt" ? "usdt" : buttonId === "stars" ? "stars" : null);
+        });
+        return;
+      }
+      if (state.env.isTelegram && starsAvailable) return resolve("stars");
+      if (usdtAvailable) return resolve("usdt");
+      if (starsAvailable) return resolve("stars");
+      resolve(null);
+    });
+  }
+
   async function startPurchase(detail) {
     if (!detail || !detail.product) {
       showInlineMessage("当前内容没有可用商品。");
       return;
     }
-    trackAnalytics("unlock_clicked", { productId: detail.product.id, paymentMethod: state.env.isTelegram ? "telegram_stars" : "usdt_trc20" });
-    if (state.env.isTelegram && isStarsProduct(detail.product)) {
+    const paymentMethod = await choosePurchaseMethod(detail);
+    if (!paymentMethod) {
+      showInlineMessage("当前内容暂时没有可用的支付方式。");
+      return;
+    }
+    trackAnalytics("payment_method_selected", {
+      contentId: detail.id,
+      productId: detail.product.id,
+      paymentMethod: paymentMethod === "stars" ? "telegram_stars" : "usdt_trc20",
+    });
+    trackAnalytics("unlock_clicked", { productId: detail.product.id, paymentMethod: paymentMethod === "stars" ? "telegram_stars" : "usdt_trc20" });
+    if (paymentMethod === "stars") {
+      trackAnalytics("checkout_open", {
+        contentId: detail.id,
+        productId: detail.product.id,
+        paymentMethod: "telegram_stars",
+      });
       await createStarsOrderAndPay(detail);
       return;
     }
-    // Standalone H5 always uses USDT-TRC20. Inside Telegram, digital-content
-    // checkout remains Stars-only; do not expose an in-app USDT detour.
-    window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id));
+    trackAnalytics("checkout_open", {
+      contentId: detail.id,
+      productId: detail.product.id,
+      paymentMethod: "usdt_trc20",
+    });
+    window.location.assign("./h5-pay.html?productId=" + encodeURIComponent(detail.product.id) + "&paymentMethod=usdt");
   }
 
   async function createStarsOrderAndPay(detail) {
@@ -1514,6 +1927,7 @@
     const leavingDetail = state.route && state.route.view === "detail" && routeState.view !== "detail";
     if (leavingDetail) detachActivePlayer("leave");
     state.route = routeState;
+    if (routeState.categoryId) state.library.categoryId = routeState.categoryId;
     if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "history" ? "watch_history" : routeState.tab });
     const isDetail = routeState.view === "detail";
     const isHistory = routeState.view === "history";
@@ -1558,6 +1972,13 @@
     }
 
     if (!state.library.loaded && routeState.tab !== "home") loadLibrary();
+    if (routeState.tab === "membership" && routeState.packageId) {
+      const target = (state.library.items || []).find(function (item) { return item.packageId === routeState.packageId; });
+      if (target) {
+        openContentDetail(target.id, "membership", { autoplay: false, resumePositionSec: 0 });
+        return;
+      }
+    }
     if (routeState.tab === "membership") renderMembership();
     if (routeState.tab === "me") {
       loadOrders();
@@ -1571,6 +1992,7 @@
     if (state.booting) return;
     try {
       await bootstrapSession();
+      await resolveTrafficEntryAttribution();
       trackAnalytics("session_started", { entrySource: state.env.isTelegram ? "telegram_mini_app" : "h5_direct" });
       await loadHome();
       await loadLibrary();
@@ -1578,6 +2000,22 @@
       routeTo(parseHash());
     } catch (err) {
       showBootError("暂时无法建立会话", apiText(err));
+    }
+  }
+
+  async function resolveTrafficEntryAttribution() {
+    const code = new URLSearchParams(window.location.search).get("te");
+    if (!code) return;
+    try {
+      const payload = await apiCall("/api/traffic-entries/resolve?code=" + encodeURIComponent(code));
+      state.trafficEntry = payload && payload.entry ? payload.entry : null;
+      if (state.trafficEntry) {
+        trackAnalytics("traffic_entry_open", Object.assign({}, currentTrafficEntryPayload() || {}, {
+          contentId: state.trafficEntry.destinationType === "content" ? state.trafficEntry.destinationId : null,
+        }));
+      }
+    } catch (_) {
+      state.trafficEntry = null;
     }
   }
 
@@ -1646,7 +2084,7 @@
     });
     document.addEventListener("visibilitychange", function () {
       if (document.visibilityState === "hidden" && state.player.video && state.player.contentId) {
-        writeWatchProgress(state.player.contentId, {
+        writePlayerProgress({ id: state.player.contentId }, {
           eventName: "leave",
           positionSec: state.player.video.currentTime || 0,
           durationSec: state.player.video.duration || null,
@@ -1656,7 +2094,7 @@
     });
     window.addEventListener("pagehide", function () {
       if (state.player.video && state.player.contentId) {
-        writeWatchProgress(state.player.contentId, {
+        writePlayerProgress({ id: state.player.contentId }, {
           eventName: "leave",
           positionSec: state.player.video.currentTime || 0,
           durationSec: state.player.video.duration || null,
@@ -1686,6 +2124,7 @@
     $("meResumeCard").innerHTML = createSkeletonCards(1);
     $("meUnlockedList").innerHTML = createSkeletonCards(1);
     if (!window.location.hash) setHashForTab("home");
+    else routeTo(parseHash());
     bootstrapApp();
   });
 })();

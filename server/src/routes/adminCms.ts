@@ -13,6 +13,8 @@ import {
   maskChatIdSafe,
 } from "../services/telegramBot.js";
 import { resolveMembershipChannelRef } from "../services/membershipChannel.js";
+import type { PlaybackConfig } from "../services/playbackConfig.js";
+import { prewarmPlaybackCdnForContent } from "../services/playbackCdnPrewarm.js";
 import { emitSafetyEvent } from "../utils/structuredError.js";
 import {
   isValidFreeChannelCode,
@@ -762,11 +764,12 @@ async function queueTelegramPublishForContent(input: {
     };
   }
 
-  // 免费流量入口不是运营可取消的选项。无论前端提交什么，所有可交付内容
-  // 都先投放到全部启用入口；Telegram 当前只发封面推广图，试看留在 Web 内。
+  // 免费流量入口是视频发布的强制组成部分，而不是由后台复选框决定的可选项。
+  // 这样无论是首次自动发布，还是运营后续手动补发私密完整视频，都会同时补齐
+  // 全部已启用免费频道的封面推广任务。现有任务会在下方按目标幂等复用，不会重复发送。
   const kinds = Array.from(new Set([
-    ...(content.accessType === "single" ? [] : ["public_free_preview" as const]),
     ...input.channelKinds,
+    "public_free_preview" as TelegramPublishPlanKind,
   ]));
   const plans: Array<{
     mediaAssetId?: string | null;
@@ -945,6 +948,7 @@ async function queueTelegramPublishForContent(input: {
 
 export default async function adminCmsRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma as PrismaClient;
+  const playbackConfig = (fastify as any).playbackConfig as PlaybackConfig | undefined;
   const SENSITIVE_MASK = "******";
   const ZID = z.string().trim().min(1).max(64);
 
@@ -2660,10 +2664,6 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       if (!preCheck.ok) {
         return reply.status(preCheck.status).send({ error: preCheck.error, message: preCheck.message, details: preCheck.details });
       }
-      const trafficEntryCheck = await validateFreeTrafficEntryReady(prisma, id);
-      if (!trafficEntryCheck.ok) {
-        return reply.status(trafficEntryCheck.status).send({ error: trafficEntryCheck.error, message: trafficEntryCheck.message });
-      }
       await prisma.$transaction(async (tx: any) => {
         const after = await tx.content.update({
           where: { id },
@@ -2710,23 +2710,12 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         await writeAudit(tx, meta, "content.publish", "content", id, stripSensitiveFields(before), stripSensitiveFields(after), reason);
       });
 
-      // 所有可售内容默认向全部免费流量频道发送“封面图 + Bot 内容入口”；
-      // 60 秒试看在 Web 内播放，完整视频才进入相应私密频道。
+      // Telegram 私密频道是完整视频备用交付；所有内容仍必须同步创建免费流量入口
+      // 的封面推广任务，试看由 Web 播放链路承担。
       const automaticKinds: TelegramPublishPlanKind[] = [];
-      if (["public", "membership", "package"].includes(before.accessType)) automaticKinds.push("public_free_preview");
       if (before.accessType === "membership") automaticKinds.push("membership_full");
       if (before.accessType === "package") automaticKinds.push("package_full");
-      if (automaticKinds.length === 0) {
-        return reply.send({
-          ok: true,
-          status: "published",
-          telegramPublish: {
-            queued: false,
-            error: null,
-            message: "当前内容不需要自动创建 Telegram 备用交付任务。",
-          },
-        });
-      }
+      automaticKinds.push("public_free_preview");
       const telegramPublish = await queueTelegramPublishForContent({
         prisma,
         contentId: id,
@@ -2735,6 +2724,14 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         reason: `${reason || "管理员发布内容"}；自动创建频道投放任务`,
       });
       if (!telegramPublish.ok) {
+        if (playbackConfig) {
+          void prewarmPlaybackCdnForContent({
+            prisma,
+            playbackConfig,
+            signingKey: String(process.env.VIDEO_CDN_SIGNING_KEY || ""),
+            contentId: id,
+          });
+        }
         emitSafetyEvent({
           event: "content_publish_channel_queue_failed",
           errorClass: telegramPublish.error,
@@ -2744,12 +2741,22 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         return reply.status(202).send({
           ok: true,
           status: "published",
+          cdnPrewarm: { queued: !!playbackConfig?.configured },
           telegramPublish: { queued: false, error: telegramPublish.error, message: telegramPublish.message },
+        });
+      }
+      if (playbackConfig) {
+        void prewarmPlaybackCdnForContent({
+          prisma,
+          playbackConfig,
+          signingKey: String(process.env.VIDEO_CDN_SIGNING_KEY || ""),
+          contentId: id,
         });
       }
       return reply.send({
         ok: true,
         status: "published",
+        cdnPrewarm: { queued: !!playbackConfig?.configured },
         telegramPublish: {
           queued: true,
           jobs: telegramPublish.jobs.map((job: any) => ({ id: job.id, channelKind: job.channelKind, status: job.status })),

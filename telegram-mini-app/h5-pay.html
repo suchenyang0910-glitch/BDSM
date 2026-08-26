@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0e0c16" />
-    <title>同频 · USDT-TRC20 支付中心</title>
-    <link rel="stylesheet" href="./styles.css?v=20260823-3" />
+    <title>同频 · 统一支付中心</title>
+    <link rel="stylesheet" href="./styles.css?v=20260826-checkout-shell-1" />
     <style>
       html {
         touch-action: manipulation;
@@ -30,6 +30,9 @@
         min-height: 100vh;
       }
       .app-shell {
+        /* This page also imports the shared VOD stylesheet. Reset desktop
+           application-shell grid rules here so checkout stays centred and
+           readable instead of inheriting the full site desktop shell. */
         display: block;
         width: min(100%, 560px);
         max-width: 560px;
@@ -309,8 +312,8 @@
 
         <div class="card">
           <div class="eyebrow">Quick Action</div>
-          <h2>发起新的 USDT 支付</h2>
-          <p class="sub">如果你已经拿到商品 ID 或已有订单号，可直接粘贴下方：</p>
+          <h2>发起新的支付</h2>
+          <p class="sub">Telegram 内优先支持 Stars，同时保留 USDT-TRC20；站外 H5 默认使用 USDT-TRC20。</p>
           <div class="form-row">
             <label for="productId">商品 ID（必填，向运营获取）</label>
             <input id="productId" type="text" placeholder="如 prod-xxxxxx" autocomplete="off" />
@@ -321,7 +324,8 @@
           </div>
           <div class="btn-row">
             <button class="btn btn-ghost" id="btnGotoOrder">查询/继续支付</button>
-            <button class="btn btn-primary" id="btnCreateOrder">创建新支付订单</button>
+            <button class="btn btn-ghost" id="btnCreateStarsOrder">创建 Stars 订单</button>
+            <button class="btn btn-primary" id="btnCreateOrder">创建 USDT 订单</button>
           </div>
         </div>
       </div>
@@ -363,14 +367,15 @@
           <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">
             <div>
               <div class="eyebrow">Payment Detail</div>
-              <h2 style="margin-bottom:0">USDT 支付订单</h2>
+              <h2 id="payTitle" style="margin-bottom:0">支付订单</h2>
             </div>
             <span id="statusPill" class="status-pill pill-checking"><span class="dot"></span><span id="statusText">创建中</span></span>
           </div>
+          <p class="sub" id="paySubtitle">根据商品与支付方式展示对应的收银步骤。</p>
           <p class="sub" id="orderMeta">—</p>
         </div>
 
-        <div class="card" id="amountCard">
+        <div class="card" id="amountWrap">
           <div class="steps" id="paySteps">
             <div class="step active" data-step="1">待支付<small>生成地址</small></div>
             <div class="step" data-step="2">检测中<small>链上广播</small></div>
@@ -378,19 +383,19 @@
             <div class="step" data-step="4">已激活<small>权益发放</small></div>
           </div>
           <div class="amount-row">
-            <span class="amount-label">会员价格</span>
+            <span class="amount-label" id="listPriceLabel">会员价格</span>
             <span class="amount-value" id="listPrice">—</span>
           </div>
           <div class="amount-row">
-            <span class="amount-label">
-              实际应付（尾数唯一识别）
+            <span class="amount-label" id="payableLabel">
+              <span id="payableLabelText">实际应付（尾数唯一识别）</span>
               <span id="copyAmountBtn" style="color:#b470ff; cursor:pointer; margin-left:6px; font-weight:700;">[复制金额]</span>
             </span>
-            <span class="amount-big"><span class="currency">USDT</span><span id="payAmount">—</span></span>
+            <span class="amount-big"><span class="currency" id="payCurrency">USDT</span><span id="payAmount">—</span></span>
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" id="addressWrap">
           <div class="eyebrow">Receiving Address · TRC-20</div>
           <div class="address-card">
             <div class="qr-box" id="qrBox">
@@ -410,7 +415,12 @@
           </div>
         </div>
 
-        <div class="warn-list">
+        <div class="card" id="starsWrap" style="display:none">
+          <div class="eyebrow">Telegram Stars</div>
+          <div id="starsFallbackContent" class="sub">Stars 支付信息加载中…</div>
+        </div>
+
+        <div class="warn-list" id="pollingWrap">
           <strong>到账与权益激活流程</strong>
           <ol id="toFlow">
             <li>按上方 <strong>精确金额 + 唯一尾数</strong>，使用 TRON (TRC-20) 钱包向显示的地址转账。</li>
@@ -452,6 +462,7 @@
       <div class="t" data-tab="pay"><div class="ic">💳</div><div>支付详情</div></div>
     </div>
 
+    <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <script src="./h5-pay.js?v=20260824-channel-access-1"></script>
   </body>

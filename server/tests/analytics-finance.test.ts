@@ -6,6 +6,8 @@ import session from "@fastify/session";
 import adminRoutes from "../src/routes/admin.js";
 import analyticsAndPreferenceRoutes from "../src/routes/analyticsPreferences.js";
 import adminFinanceRoutes from "../src/routes/adminFinance.js";
+import trafficEntryRoutes from "../src/routes/trafficEntries.js";
+import campaignRoutes from "../src/routes/campaigns.js";
 import {
   computePaymentAddressIntegrityMac,
   verifyAndFreezePaymentAddressIntegrity,
@@ -52,6 +54,8 @@ async function createApp(prisma: any) {
   await app.register(adminRoutes, { prefix: "/api" });
   await app.register(analyticsAndPreferenceRoutes, { prefix: "/api" });
   await app.register(adminFinanceRoutes, { prefix: "/api" });
+  await app.register(trafficEntryRoutes, { prefix: "/api" });
+  await app.register(campaignRoutes, { prefix: "/api" });
   return app;
 }
 
@@ -146,6 +150,40 @@ test("analytics events enforce whitelist and store only HMAC-safe identifiers", 
               inviteLink: "https://t.me/+secret",
             },
           },
+          {
+            eventName: "checkout_open",
+            payload: {
+              platform: "telegram_mini_app",
+              contentId: TEST_KNOWN_IDS.contentMembership,
+              productId: TEST_KNOWN_IDS.membershipProductKey,
+              orderNo: "INT20260823000002",
+              paymentMethod: "telegram_stars",
+              invoiceLink: "https://t.me/invoice_should_not_be_kept",
+            },
+          },
+          {
+            eventName: "playback_first_frame",
+            payload: {
+              platform: "h5",
+              contentId: TEST_KNOWN_IDS.contentMembership,
+              sessionId: "playback-session-raw-id",
+              quality: "1080p",
+              elapsedMs: 1380,
+              manifestUrl: "https://video.example.com/private.m3u8",
+            },
+          },
+          {
+            eventName: "playback_prefetch_result",
+            payload: {
+              platform: "h5",
+              contentId: TEST_KNOWN_IDS.contentMembership,
+              sessionId: "playback-session-raw-id",
+              quality: "preview",
+              result: "hit",
+              source: "preview_prefetch",
+              segmentUrl: "https://video.example.com/seg-1.m4s",
+            },
+          },
         ],
       },
     });
@@ -164,6 +202,29 @@ test("analytics events enforce whitelist and store only HMAC-safe identifiers", 
     assert.equal("txHash" in properties, false);
     assert.equal("inviteLink" in properties, false);
     assert.notEqual(properties.orderNoHmac, "INT20260823000001");
+
+    const checkoutRow = await prisma.analyticsEvent.findFirst({
+      where: { eventName: "checkout_open", userId: user.id },
+      orderBy: { createdAt: "desc" },
+    });
+    assert.ok(checkoutRow);
+    const checkoutProps = (checkoutRow as any).propertiesJson as Record<string, unknown>;
+    assert.equal(checkoutProps.paymentMethod, "telegram_stars");
+    assert.equal(typeof checkoutProps.orderNoHmac, "string");
+    assert.equal(typeof checkoutProps.productIdHmac, "string");
+    assert.equal(typeof checkoutProps.contentIdHmac, "string");
+    assert.equal("invoiceLink" in checkoutProps, false);
+
+    const playbackRow = await prisma.analyticsEvent.findFirst({
+      where: { eventName: "playback_first_frame", userId: user.id },
+      orderBy: { createdAt: "desc" },
+    });
+    assert.ok(playbackRow);
+    const playbackProps = (playbackRow as any).propertiesJson as Record<string, unknown>;
+    assert.equal(playbackProps.quality, "1080p");
+    assert.equal(playbackProps.elapsedBucket, "1_2s");
+    assert.equal(typeof playbackProps.sessionIdHmac, "string");
+    assert.equal("manifestUrl" in playbackProps, false);
   } finally {
     await app.close();
   }
@@ -196,10 +257,332 @@ test("admin analytics overview exposes aggregate funnel only and enforces analyt
     const body = ok.json() as any;
     assert.equal(body.period.preset, "7d");
     assert.equal(Array.isArray(body.funnel), true);
-    assert.equal(body.funnel.length, 6);
+    assert.equal(body.funnel.length, 7);
+    assert.equal(typeof body.playback.prefetch.hitRate, "number");
+    assert.equal(Array.isArray(body.playback.qualityChanges), true);
     assert.equal(Array.isArray(body.preferences), true);
     assert.equal(JSON.stringify(body).includes("analytics user"), false, "overview must not expose user identity");
     assert.equal(JSON.stringify(body).includes("INT20260823000001"), false, "overview must not expose order identifiers");
+  } finally {
+    await app.close();
+  }
+});
+
+test("traffic entries support admin CRUD, public resolve, and aggregated attribution metrics", async () => {
+  const app = await createApp(prisma);
+  try {
+    const operatorCookie = await loginAdmin(app, "operator");
+    const supportCookie = await loginAdmin(app, "customerService");
+    const trafficCode = `tg_channel_q3_${Date.now().toString().slice(-6)}`;
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/traffic-entries",
+      headers: { cookie: operatorCookie, "Content-Type": "application/json" },
+      payload: {
+        name: "TG Channel Q3",
+        code: trafficCode,
+        entryType: "telegram_channel",
+        destinationType: "content",
+        destinationId: TEST_KNOWN_IDS.contentMembership,
+        status: "active",
+      },
+    });
+    assert.equal(created.statusCode, 200, created.body);
+    const createdBody = created.json() as any;
+    assert.equal(typeof createdBody.id, "string");
+
+    const forbidden = await app.inject({
+      method: "GET",
+      url: "/api/admin/traffic-entries?preset=7d",
+      headers: { cookie: supportCookie },
+    });
+    assert.equal(forbidden.statusCode, 403, forbidden.body);
+
+    const resolved = await app.inject({
+      method: "GET",
+      url: `/api/traffic-entries/resolve?code=${encodeURIComponent(trafficCode)}`,
+      headers: { host: "admin.invalid", "x-forwarded-proto": "http" },
+    });
+    assert.equal(resolved.statusCode, 200, resolved.body);
+    const resolvedBody = resolved.json() as any;
+    assert.equal(resolvedBody.entry.code, trafficCode);
+    assert.equal(resolvedBody.entry.destinationType, "content");
+    assert.equal(typeof resolvedBody.links.h5, "string");
+    assert.equal(resolvedBody.links.h5.includes(`te=${trafficCode}`), true);
+    assert.equal(resolvedBody.links.h5.includes("admin.invalid"), false, "H5 link must not inherit an admin Host header");
+    assert.equal(resolvedBody.links.miniApp.includes("admin.invalid"), false, "Mini App link must not inherit an admin Host header");
+    assert.match(resolvedBody.links.h5, /^https:\/\//);
+    assert.match(resolvedBody.links.miniApp, /^https:\/\//);
+
+    const user = await prisma.user.create({
+      data: {
+        telegramUserId: BigInt(`8${Date.now().toString().slice(-9)}`),
+        displayName: "traffic entry user",
+      },
+    });
+    const userCookie = await loginUser(app, user.id, user.telegramUserId?.toString());
+    const analyticsRes = await app.inject({
+      method: "POST",
+      url: "/api/analytics/events",
+      headers: { cookie: userCookie, "Content-Type": "application/json" },
+      payload: {
+        events: [
+          {
+            eventName: "session_started",
+            payload: {
+              platform: "h5",
+              entrySource: "h5_direct",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentMembership,
+            },
+          },
+          {
+            eventName: "traffic_entry_open",
+            payload: {
+              platform: "h5",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentMembership,
+              contentId: TEST_KNOWN_IDS.contentMembership,
+            },
+          },
+          {
+            eventName: "content_opened",
+            payload: {
+              platform: "h5",
+              contentId: TEST_KNOWN_IDS.contentMembership,
+              sourceModule: "home",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentMembership,
+            },
+          },
+          {
+            eventName: "checkout_open",
+            payload: {
+              platform: "h5",
+              contentId: TEST_KNOWN_IDS.contentMembership,
+              productId: TEST_KNOWN_IDS.membershipProductKey,
+              paymentMethod: "telegram_stars",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentMembership,
+            },
+          },
+          {
+            eventName: "payment_confirmed",
+            payload: {
+              platform: "h5",
+              orderNo: "INT_TRAFFIC_001",
+              productId: TEST_KNOWN_IDS.membershipProductKey,
+              paymentMethod: "telegram_stars",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentMembership,
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(analyticsRes.statusCode, 202, analyticsRes.body);
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/traffic-entries?preset=7d",
+      headers: { cookie: operatorCookie },
+    });
+    assert.equal(list.statusCode, 200, list.body);
+    const listBody = list.json() as any;
+    const row = listBody.items.find((item: any) => item.code === trafficCode);
+    assert.ok(row, list.body);
+    assert.equal(row.metrics.opens, 1);
+    assert.equal(row.metrics.contentOpened, 1);
+    assert.equal(row.metrics.checkoutOpen, 1);
+    assert.equal(row.metrics.paymentConfirmed, 1);
+    assert.equal(row.destinationLabel, "深度睡眠引导");
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/traffic-entries/${encodeURIComponent(createdBody.id)}`,
+      headers: { cookie: operatorCookie, "Content-Type": "application/json" },
+      payload: {
+        name: "TG Channel Q3 Disabled",
+        code: trafficCode,
+        entryType: "telegram_channel",
+        destinationType: "content",
+        destinationId: TEST_KNOWN_IDS.contentMembership,
+        status: "inactive",
+      },
+    });
+    assert.equal(updated.statusCode, 200, updated.body);
+
+    const resolveInactive = await app.inject({
+      method: "GET",
+      url: `/api/traffic-entries/resolve?code=${encodeURIComponent(trafficCode)}`,
+    });
+    assert.equal(resolveInactive.statusCode, 404, resolveInactive.body);
+  } finally {
+    await app.close();
+  }
+});
+
+test("campaigns support admin CRUD and aggregate linked traffic entry metrics", async () => {
+  const app = await createApp(prisma);
+  try {
+    const operatorCookie = await loginAdmin(app, "operator");
+    const auditorCookie = await loginAdmin(app, "auditor");
+    const trafficCode = `camp_tg_${Date.now().toString().slice(-6)}`;
+
+    const trafficCreate = await app.inject({
+      method: "POST",
+      url: "/api/admin/traffic-entries",
+      headers: { cookie: operatorCookie, "Content-Type": "application/json" },
+      payload: {
+        name: "Campaign Entry",
+        code: trafficCode,
+        entryType: "telegram_channel",
+        destinationType: "content",
+        destinationId: TEST_KNOWN_IDS.contentPublic,
+        status: "active",
+      },
+    });
+    assert.equal(trafficCreate.statusCode, 200, trafficCreate.body);
+    const trafficEntryId = (trafficCreate.json() as any).id;
+
+    const campaignCreate = await app.inject({
+      method: "POST",
+      url: "/api/admin/campaigns",
+      headers: { cookie: operatorCookie, "Content-Type": "application/json" },
+      payload: {
+        name: "Q3 Campaign",
+        code: `q3_campaign_${Date.now().toString().slice(-6)}`,
+        status: "active",
+        summary: "绑定 banner 与流量入口",
+        bannerIds: [TEST_KNOWN_IDS.bannerHomeTop1],
+        trafficEntryIds: [trafficEntryId],
+      },
+    });
+    assert.equal(campaignCreate.statusCode, 200, campaignCreate.body);
+    const campaignId = (campaignCreate.json() as any).id;
+
+    const campaignForbidden = await app.inject({
+      method: "POST",
+      url: "/api/admin/campaigns",
+      headers: { cookie: auditorCookie, "Content-Type": "application/json" },
+      payload: {
+        name: "forbidden",
+        code: "forbidden_campaign",
+        status: "draft",
+        bannerIds: [],
+        trafficEntryIds: [],
+      },
+    });
+    assert.equal(campaignForbidden.statusCode, 403, campaignForbidden.body);
+
+    const user = await prisma.user.create({
+      data: {
+        telegramUserId: BigInt(`9${Date.now().toString().slice(-9)}`),
+        displayName: "campaign user",
+      },
+    });
+    const userCookie = await loginUser(app, user.id, user.telegramUserId?.toString());
+    const analyticsRes = await app.inject({
+      method: "POST",
+      url: "/api/analytics/events",
+      headers: { cookie: userCookie, "Content-Type": "application/json" },
+      payload: {
+        events: [
+          {
+            eventName: "traffic_entry_open",
+            payload: {
+              platform: "h5",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentPublic,
+              contentId: TEST_KNOWN_IDS.contentPublic,
+            },
+          },
+          {
+            eventName: "content_opened",
+            payload: {
+              platform: "h5",
+              contentId: TEST_KNOWN_IDS.contentPublic,
+              sourceModule: "home",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentPublic,
+            },
+          },
+          {
+            eventName: "checkout_open",
+            payload: {
+              platform: "h5",
+              contentId: TEST_KNOWN_IDS.contentPublic,
+              productId: TEST_KNOWN_IDS.singleProductKey,
+              paymentMethod: "telegram_stars",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentPublic,
+            },
+          },
+          {
+            eventName: "payment_confirmed",
+            payload: {
+              platform: "h5",
+              orderNo: "INT_CAMPAIGN_001",
+              productId: TEST_KNOWN_IDS.singleProductKey,
+              paymentMethod: "telegram_stars",
+              trafficEntryCode: trafficCode,
+              entryType: "telegram_channel",
+              destinationType: "content",
+              destinationId: TEST_KNOWN_IDS.contentPublic,
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(analyticsRes.statusCode, 202, analyticsRes.body);
+
+    const campaignList = await app.inject({
+      method: "GET",
+      url: "/api/admin/campaigns",
+      headers: { cookie: operatorCookie },
+    });
+    assert.equal(campaignList.statusCode, 200, campaignList.body);
+    const campaignBody = campaignList.json() as any;
+    const row = campaignBody.items.find((item: any) => item.id === campaignId);
+    assert.ok(row, campaignList.body);
+    assert.equal(row.banners.length, 1);
+    assert.equal(row.trafficEntries.length, 1);
+    assert.equal(row.metrics.opens, 1);
+    assert.equal(row.metrics.contentOpened, 1);
+    assert.equal(row.metrics.checkoutOpen, 1);
+    assert.equal(row.metrics.paymentConfirmed, 1);
+
+    const campaignUpdate = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/campaigns/${encodeURIComponent(campaignId)}`,
+      headers: { cookie: operatorCookie, "Content-Type": "application/json" },
+      payload: {
+        name: "Q3 Campaign Archived",
+        code: row.code,
+        status: "archived",
+        summary: "活动归档",
+        bannerIds: [TEST_KNOWN_IDS.bannerHomeTop1],
+        trafficEntryIds: [trafficEntryId],
+      },
+    });
+    assert.equal(campaignUpdate.statusCode, 200, campaignUpdate.body);
   } finally {
     await app.close();
   }

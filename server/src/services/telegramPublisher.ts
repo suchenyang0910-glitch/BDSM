@@ -721,11 +721,10 @@ export async function initTelegramPublisher(fastify: FastifyInstance): Promise<P
 
   if (redisUrl && redisUrl.length >= 8) {
     try {
-      // 延迟动态 import：缺 bullmq 包不崩
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { Queue, Worker } = require("bullmq");
+      // 延迟动态 import：缺 bullmq 包不崩；服务端为 ESM，不能使用 require。
+      const { Queue, Worker } = await import("bullmq");
       bullQueue = new Queue(DEFAULT_QUEUE_NAME, {
-        connection: redisUrl,
+        connection: redisUrl as any,
         defaultJobOptions: {
           attempts: DEFAULT_MAX_ATTEMPTS,
           removeOnComplete: 1000,
@@ -744,7 +743,7 @@ export async function initTelegramPublisher(fastify: FastifyInstance): Promise<P
             emitSafetyEvent({ event: "tg_publish_bull_worker_crash", errorClass: "worker_crash", note: truncateNote(err instanceof Error ? err.message : String(err), 80) || undefined }, err);
           }
         },
-        { connection: redisUrl, concurrency: 2 }
+        { connection: redisUrl as any, concurrency: 2 }
       );
       bullWorker.on("failed", (_j: any, err: any) => {
         emitSafetyEvent({ event: "tg_publish_bull_job_failed", errorClass: "bullmq_failed", note: truncateNote(err instanceof Error ? err.message : String(err), 80) || undefined }, err);

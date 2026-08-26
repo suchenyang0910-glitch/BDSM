@@ -15,6 +15,10 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "entitlement:view",
     "dashboard:view",
     "analytics:view",
+    "traffic_entry:view",
+    "traffic_entry:edit",
+    "campaign:view",
+    "campaign:edit",
     "settings:view",
   ],
   finance: [
@@ -27,6 +31,8 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "entitlement:view",
     "dashboard:view",
     "analytics:view",
+    "traffic_entry:view",
+    "campaign:view",
     "settings:view",
   ],
   customer_service: [
@@ -55,6 +61,10 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "ticket:view",
     "dashboard:view",
     "analytics:view",
+    "traffic_entry:view",
+    "traffic_entry:edit",
+    "campaign:view",
+    "campaign:edit",
     "settings:view",
   ],
   auditor: [
@@ -67,6 +77,9 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "audit:view",
     "ticket:view",
     "dashboard:view",
+    "analytics:view",
+    "traffic_entry:view",
+    "campaign:view",
     "settings:view",
   ],
 };

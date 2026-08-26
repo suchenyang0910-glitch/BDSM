@@ -22,6 +22,8 @@ import adminDashboardRoutes from "./routes/adminDashboard.js";
 import authH5Routes from "./routes/authH5.js";
 import analyticsAndPreferenceRoutes from "./routes/analyticsPreferences.js";
 import adminFinanceRoutes from "./routes/adminFinance.js";
+import trafficEntryRoutes from "./routes/trafficEntries.js";
+import campaignRoutes from "./routes/campaigns.js";
 import watchProgressRoutes from "./routes/watchProgress.js";
 import playbackRoutes from "./routes/playback.js";
 import playbackMediaRoutes from "./routes/playbackMedia.js";
@@ -277,8 +279,9 @@ async function main() {
   });
   app.get("/h5", async (_req, reply) => reply.redirect("/h5/"));
 
-  // Serve HLS.js from the application origin so protected video playback does
-  // not rely on a third-party script CDN being available in the viewer's region.
+  // The managed HLS player must be served from our own origin. Depending on a
+  // third-party script CDN makes Chrome playback fail in restricted networks,
+  // even though the protected manifest itself is available.
   await app.register(fastifyStatic, {
     root: path.join(ROOT_DIR, "server", "node_modules", "hls.js", "dist"),
     prefix: "/api/vendor/hls/",
@@ -306,6 +309,8 @@ async function main() {
   await app.register(authH5Routes, { prefix: "/api" });
   await app.register(analyticsAndPreferenceRoutes, { prefix: "/api" });
   await app.register(adminFinanceRoutes, { prefix: "/api" });
+  await app.register(trafficEntryRoutes, { prefix: "/api" });
+  await app.register(campaignRoutes, { prefix: "/api" });
   await app.register(watchProgressRoutes, { prefix: "/api" });
   await app.register(playbackRoutes, { prefix: "/api" });
   await app.register(playbackMediaRoutes);

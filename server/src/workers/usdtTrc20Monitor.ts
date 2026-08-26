@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { loadUsdtMonitorConfig, nextMonitorDelayMs, runUsdtMonitorCycle } from "../services/usdtMonitor.js";
+import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -9,8 +10,15 @@ async function main() {
   let cfg;
   try {
     cfg = loadUsdtMonitorConfig(process.env);
-  } catch (err: any) {
-    console.error(`[usdt-monitor] startup aborted: ${err?.message || "invalid configuration"}`);
+  } catch (err: unknown) {
+    // Configuration and database libraries can embed addresses, connection
+    // strings, or schema details in their raw messages. Keep the supervisor
+    // log classifiable without ever relaying that text.
+    emitSafetyEvent({
+      event: "usdt_monitor_startup_aborted",
+      errorClass: "business",
+      note: "invalid_monitor_configuration",
+    }, err);
     process.exit(1);
   }
 
@@ -20,7 +28,12 @@ async function main() {
 
   try {
     await prisma.$connect();
-    console.log(`[usdt-monitor] started worker=${cfg.workerName} poll=${cfg.pollIntervalMs}ms`);
+    emitStructuredLog({
+      event: "usdt_monitor_started",
+      errorClass: "business",
+      note: "monitor_ready",
+      counts: { pollIntervalMs: cfg.pollIntervalMs },
+    });
 
     while (true) {
       const result = await runUsdtMonitorCycle(prisma, cfg, fetch, new Date());
@@ -34,7 +47,11 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(`[usdt-monitor] fatal: ${err?.message || "unknown_error"}`);
+main().catch((err: unknown) => {
+  emitSafetyEvent({
+    event: "usdt_monitor_fatal",
+    errorClass: "unknown",
+    note: "monitor_stopped_unexpectedly",
+  }, err);
   process.exit(1);
 });

@@ -13,6 +13,17 @@ import {
 import { processPlaybackRevokeOutboxBatch } from "../services/playbackRevocation.js";
 
 const heartbeatSchema = z.object({
+  eventName: z.enum(["start", "progress", "pause", "complete"]).default("progress"),
+  positionSec: z.coerce.number().min(0).max(86_400),
+  durationSec: z.coerce.number().min(0).max(86_400).optional().nullable(),
+  quality: z.string().trim().max(32).optional().nullable(),
+});
+
+const sessionCreateSchema = z.object({
+  purpose: z.enum(["play", "prefetch"]).optional().default("play"),
+});
+
+const legacyHeartbeatSchema = z.object({
   eventName: z.enum(["progress", "pause", "complete"]).default("progress"),
   positionSec: z.coerce.number().min(0).max(86_400),
   durationSec: z.coerce.number().min(0).max(86_400).optional().nullable(),
@@ -118,9 +129,13 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
     await processPlaybackRevokeOutboxBatch(prisma, { signer, limit: 20 });
     const { contentId } = (req.params || {}) as { contentId: string };
     const userId = (req as any).userId as string;
+    const body = sessionCreateSchema.parse(req.body || {});
     const access = await resolvePlaybackCreateAccess(prisma, playbackConfig, { contentId, userId });
     if (!access.ok) {
       return reply.status(errorHttpStatus(access.error)).send({ error: access.error });
+    }
+    if (body.purpose === "prefetch" && access.deliveryVariant !== "preview") {
+      return reply.status(409).send({ error: "prefetch_not_allowed" });
     }
 
     const deviceHash = derivePlaybackDeviceHash({
@@ -199,24 +214,27 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
       },
     });
     reply.header("set-cookie", issued.responseHeaders["set-cookie"]);
-    await writePlaybackProgress({
-      prisma,
-      userId,
-      contentId,
-      sessionId: session.id,
-      eventName: "playback_start",
-      occurredAt: now,
-      positionSec: 0,
-      durationSec: access.content.durationSeconds ?? null,
-      quality: null,
-      completed: false,
-    });
+    if (body.purpose !== "prefetch") {
+      await writePlaybackProgress({
+        prisma,
+        userId,
+        contentId,
+        sessionId: session.id,
+        eventName: "playback_start",
+        occurredAt: now,
+        positionSec: 0,
+        durationSec: access.content.durationSeconds ?? null,
+        quality: null,
+        completed: false,
+      });
+    }
     return reply.send({
       ok: true,
       sessionId: session.id,
       expiresAt: expiresAt.toISOString(),
       heartbeatIntervalSeconds: playbackConfig.heartbeatIntervalSeconds,
       deliveryVariant: access.deliveryVariant,
+      purpose: body.purpose,
       manifestUrl: issued.manifestUrl,
     });
   });
@@ -225,7 +243,9 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
     await processPlaybackRevokeOutboxBatch(prisma, { signer, limit: 20 });
     const userId = (req as any).userId as string;
     const { sessionId } = (req.params || {}) as { sessionId: string };
-    const body = heartbeatSchema.parse(req.body as any);
+    const body = heartbeatSchema.safeParse(req.body as any).success
+      ? heartbeatSchema.parse(req.body as any)
+      : legacyHeartbeatSchema.parse(req.body as any);
     const session = await prisma.playbackSession.findUnique({
       where: { id: sessionId },
     });
@@ -243,7 +263,7 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
     const normalized = applyPlaybackProgress({
       positionSec: body.positionSec,
       durationSec: body.durationSec ?? null,
-      eventName: body.eventName,
+      eventName: body.eventName === "start" ? "progress" : body.eventName,
     });
     const now = new Date();
     const expiresAt = new Date(now.getTime() + playbackConfig.sessionTtlSeconds * 1000);
@@ -259,7 +279,14 @@ export default async function playbackRoutes(fastify: FastifyInstance) {
       userId,
       contentId: session.contentId,
       sessionId: session.id,
-      eventName: body.eventName === "pause" ? "playback_pause" : body.eventName === "complete" ? "playback_complete" : "playback_progress",
+      eventName:
+        body.eventName === "start"
+          ? "playback_start"
+          : body.eventName === "pause"
+            ? "playback_pause"
+            : body.eventName === "complete"
+              ? "playback_complete"
+              : "playback_progress",
       occurredAt: now,
       positionSec: normalized.positionSec,
       durationSec: normalized.durationSec,
