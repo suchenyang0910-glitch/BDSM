@@ -1992,6 +1992,10 @@
     if (state.booting) return;
     try {
       await bootstrapSession();
+      // Deep links may render before Telegram/H5 session verification has
+      // completed. Drop that anonymous detail response so the second route
+      // pass receives the viewer's actual playback eligibility.
+      state.detailCache = {};
       await resolveTrafficEntryAttribution();
       trackAnalytics("session_started", { entrySource: state.env.isTelegram ? "telegram_mini_app" : "h5_direct" });
       await loadHome();

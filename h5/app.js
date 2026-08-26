@@ -2182,6 +2182,12 @@
     if (state.booting) return;
     try {
       await bootstrapSession();
+      // A deep link renders its detail shell before the asynchronous automatic
+      // login finishes. That first request has no user session and therefore
+      // carries an unauthorised playback status. Never retain it after the
+      // session becomes available, otherwise a valid viewer sees only the
+      // cover and never gets the 60-second player.
+      state.detailCache = {};
       await resolveTrafficEntryAttribution();
       trackAnalytics("session_started", { entrySource: state.env.isTelegram ? "telegram_mini_app" : "h5_direct" });
       await loadHome();
