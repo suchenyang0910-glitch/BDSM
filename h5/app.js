@@ -353,6 +353,136 @@
     return "上次看到 " + formatSecondsClock(item.positionSec || 0);
   }
 
+  function uniqueById(items, pickId) {
+    const seen = new Set();
+    return (items || []).filter(function (item) {
+      const id = pickId ? pickId(item) : (item && item.id);
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }
+
+  function getMembershipSummary() {
+    return state.entitlements.data && state.entitlements.data.summary
+      ? state.entitlements.data.summary.membership
+      : { status: "none", expiresAt: null };
+  }
+
+  function resolveMembershipState(summary) {
+    const safe = summary || { status: "none", expiresAt: null };
+    const expiresMs = safe.expiresAt ? new Date(safe.expiresAt).getTime() : 0;
+    if (safe.status === "active" && (!safe.expiresAt || expiresMs >= Date.now())) {
+      return {
+        state: "active",
+        badgeText: safe.expiresAt ? "有效至 " + formatDateShort(safe.expiresAt) : "会员有效",
+        badgeClass: "status-badge",
+        title: "会员已开通",
+        copy: safe.expiresAt
+          ? "当前权益有效至 " + formatDateShort(safe.expiresAt) + "，续费会从旧到期日顺延。"
+          : "当前会员权益有效，续费会在原有效期后顺延。",
+        actionText: "立即续费",
+      };
+    }
+    if (safe.status === "active" && safe.expiresAt && expiresMs < Date.now()) {
+      return {
+        state: "grace",
+        badgeText: "宽限期中",
+        badgeClass: "status-badge status-warning",
+        title: "会员进入宽限期",
+        copy: "会员已于 " + formatDateShort(safe.expiresAt) + " 到期，完成续费即可恢复完整权益。",
+        actionText: "续费恢复权益",
+      };
+    }
+    if (safe.status && safe.status !== "none") {
+      return {
+        state: "expired",
+        badgeText: "已到期",
+        badgeClass: "status-badge status-warning",
+        title: "会员已到期",
+        copy: safe.expiresAt
+          ? "会员已于 " + formatDateShort(safe.expiresAt) + " 到期，续费后将恢复权益。"
+          : "会员权益已到期，续费后将恢复权益。",
+        actionText: "续费恢复权益",
+      };
+    }
+    return {
+      state: "none",
+      badgeText: "未开通",
+      badgeClass: "status-badge status-warning",
+      title: "开通会员",
+      copy: "开通后可观看会员主频道内容，并在到期前随时续费。",
+      actionText: "立即开通",
+    };
+  }
+
+  function getPendingOrders() {
+    return (state.orders.items || []).filter(function (item) { return item.status === "pending"; });
+  }
+
+  function getHomeFeaturedItems() {
+    const featured = state.home && state.home.featuredContent ? [state.home.featuredContent] : [];
+    const fallbacks = state.home && state.home.latestContents ? state.home.latestContents : [];
+    return uniqueById(featured.concat(fallbacks), function (item) { return item && item.id; }).slice(0, 4);
+  }
+
+  function getDetailSidebarData(detail) {
+    const currentCategoryId = detail && detail.categories && detail.categories[0] ? detail.categories[0].id : "";
+    const resumeItems = (state.watch.history || [])
+      .filter(function (item) { return item.contentId !== detail.id; })
+      .slice(0, 3);
+    const relatedPool = []
+      .concat(state.library.items || [])
+      .concat(state.home && state.home.latestContents ? state.home.latestContents : [])
+      .filter(function (item) {
+        if (!item || item.id === detail.id) return false;
+        if (currentCategoryId && item.categoryId === currentCategoryId) return true;
+        return !!(item.isRecommended || item.isFeatured || item.isNewArrival);
+      });
+    const relatedItems = uniqueById(relatedPool, function (item) { return item && item.id; }).slice(0, 6);
+    return { resumeItems: resumeItems, relatedItems: relatedItems };
+  }
+
+  function renderDetailSidebarList(hostId, items, mode) {
+    const host = $(hostId);
+    if (!host) return;
+    host.innerHTML = "";
+    if (!items.length) {
+      host.innerHTML = '<div class="inline-state">当前还没有可展示的内容。</div>';
+      return;
+    }
+    items.forEach(function (item) {
+      const button = document.createElement("button");
+      const isResume = mode === "resume";
+      const contentId = isResume ? item.contentId : item.id;
+      const subtitle = isResume
+        ? getLastPlayedSubtitle(item)
+        : [item.duration || "—", item.categoryName || getAccessLabel(item)].join(" · ");
+      const meta = isResume
+        ? (item.lastPlayedAt ? "上次播放 " + formatDateShort(item.lastPlayedAt) : "继续观看")
+        : (item.tags && item.tags.length ? item.tags.join(" · ") : "相关推荐");
+      button.type = "button";
+      button.className = "detail-side-card";
+      button.innerHTML =
+        '<span class="detail-side-cover">' +
+          imageTag(item.coverUrl, "", item.title || "内容封面", false) +
+          '<span class="cover-duration">' + escapeHtml(item.duration || "—") + '</span>' +
+        '</span>' +
+        '<span class="detail-side-copy">' +
+          '<strong>' + escapeHtml(item.title || "未命名内容") + '</strong>' +
+          '<span>' + escapeHtml(subtitle) + '</span>' +
+          '<small>' + escapeHtml(meta) + '</small>' +
+        '</span>';
+      button.addEventListener("click", function () {
+        openContentDetail(contentId, state.route.fromTab || "home", {
+          autoplay: isResume,
+          resumePositionSec: isResume ? (item.resumePositionSec || 0) : 0,
+        });
+      });
+      host.appendChild(button);
+    });
+  }
+
   function applyWatchProgressItem(item, options) {
     if (!item || !item.contentId) return;
     const opts = options || {};
@@ -369,6 +499,7 @@
     if (!opts.skipRender) {
       renderHomeResume();
       renderMeResume();
+      renderDesktopRail();
       if (state.route.view === "history") renderWatchHistory();
     }
   }
@@ -381,6 +512,7 @@
     state.watch.pagination.totalPages = Math.max(1, Math.ceil(nextTotal / (state.watch.pagination.pageSize || 20)));
     renderHomeResume();
     renderMeResume();
+    renderDesktopRail();
     if (state.route.view === "history") renderWatchHistory();
   }
 
@@ -390,6 +522,7 @@
     state.watch.pagination = { page: 1, pageSize: 20, total: 0, totalPages: 1 };
     renderHomeResume();
     renderMeResume();
+    renderDesktopRail();
     if (state.route.view === "history") renderWatchHistory();
   }
 
@@ -433,7 +566,7 @@
       host.innerHTML = '<div class="inline-state">当前没有 Banner 配置。</div>';
       return;
     }
-    home.banners.forEach(function (banner) {
+    home.banners.slice(0, 1).forEach(function (banner) {
       const card = document.createElement("article");
       card.className = "banner-card" + (banner.imageUrl ? " has-image" : "");
       card.innerHTML =
@@ -449,13 +582,13 @@
 
   function renderFeaturedCard() {
     const host = $("homeFeaturedCard");
-    const featured = state.home && state.home.featuredContent ? state.home.featuredContent : null;
-    if (!featured) {
+    const featuredItems = getHomeFeaturedItems();
+    if (!featuredItems.length) {
       host.innerHTML = '<div class="inline-state">当前还没有配置今日精选。</div>';
       return;
     }
     host.innerHTML = "";
-    renderContentCards("homeFeaturedCard", [featured], "home");
+    renderContentCards("homeFeaturedCard", featuredItems, "home");
   }
 
   function renderHomeResume() {
@@ -493,22 +626,28 @@
   function renderDesktopRail() {
     const host = $("desktopRailContent");
     if (!host) return;
+    const tab = state.route && state.route.view === "tab" ? state.route.tab : "";
+    if (tab !== "home" && tab !== "me") {
+      host.innerHTML = "";
+      return;
+    }
     const recent = state.watch.recent;
-    const membership = state.entitlements.data && state.entitlements.data.summary
-      ? state.entitlements.data.summary.membership
-      : { status: "none", expiresAt: null };
-    const featured = state.home && state.home.featuredContent ? state.home.featuredContent : null;
+    const membershipState = resolveMembershipState(getMembershipSummary());
+    const membershipEntry = findMembershipEntry();
+    const pendingOrders = getPendingOrders().slice(0, 3);
     const profileName = state.session && state.session.displayName ? state.session.displayName : "同频成员";
-    const membershipActive = membership.status === "active";
 
     host.innerHTML =
       '<section class="desktop-rail-card desktop-profile-card">' +
-        '<p class="eyebrow">MY ACCOUNT</p>' +
+        '<div class="desktop-rail-head"><div><p class="eyebrow">MEMBERSHIP</p><h3>' + escapeHtml(membershipState.title) + '</h3></div><div class="' + membershipState.badgeClass + '">' + escapeHtml(membershipState.badgeText) + '</div></div>' +
         '<strong>' + escapeHtml(profileName) + '</strong>' +
-        '<span class="desktop-rail-muted">' + escapeHtml(membershipActive
-          ? (membership.expiresAt ? "会员有效至 " + formatDateShort(membership.expiresAt) : "会员已开通")
-          : "尚未开通会员") + '</span>' +
-        '<button id="desktopMembershipButton" class="ghost-button" type="button">' + (membershipActive ? "管理权益" : "查看会员") + '</button>' +
+        '<span class="desktop-rail-muted">' + escapeHtml(membershipState.copy) + '</span>' +
+        '<div class="channel-actions">' +
+          '<button id="desktopMembershipButton" class="ghost-button" type="button">查看会员</button>' +
+          (membershipEntry && membershipEntry.product
+            ? '<button id="desktopRenewButton" class="primary-button" type="button">' + escapeHtml(membershipState.actionText) + '</button>'
+            : "") +
+        '</div>' +
       '</section>' +
       '<section class="desktop-rail-card">' +
         '<div class="desktop-rail-head"><div><p class="eyebrow">CONTINUE</p><h3>上次播放</h3></div></div>' +
@@ -519,25 +658,34 @@
             '</button>'
           : '<p class="desktop-rail-empty">打开一条内容后，可在这里继续观看。</p>') +
       '</section>' +
-      (featured
-        ? '<section class="desktop-rail-card desktop-featured-rail">' +
-            '<div class="desktop-rail-head"><div><p class="eyebrow">CURATED</p><h3>今日精选</h3></div></div>' +
-            '<button id="desktopFeaturedButton" class="desktop-featured-button" type="button">' +
-              '<span class="desktop-featured-cover">' + imageTag(featured.coverUrl, "desktop-featured-image", featured.title || "今日精选封面", true) + '</span>' +
-              '<span>' + escapeHtml(featured.title || "查看今日精选") + '</span>' +
-            '</button>' +
-          '</section>'
-        : "");
+      '<section class="desktop-rail-card">' +
+        '<div class="desktop-rail-head"><div><p class="eyebrow">PENDING</p><h3>待支付订单</h3></div></div>' +
+        (pendingOrders.length
+          ? pendingOrders.map(function (order) {
+              return '<button class="desktop-featured-button desktop-order-button" data-order-no="' + escapeHtml(order.orderNo) + '" type="button">' +
+                '<span>' + escapeHtml(order.product && order.product.title ? order.product.title : order.orderNo) + '</span>' +
+                '<small class="desktop-rail-muted">订单号 ' + escapeHtml(order.orderNo) + " · " + escapeHtml(order.status) + '</small>' +
+              '</button>';
+            }).join("")
+          : '<p class="desktop-rail-empty">当前没有待支付订单。</p>') +
+      '</section>';
 
     const membershipButton = $("desktopMembershipButton");
     if (membershipButton) membershipButton.addEventListener("click", function () { setHashForTab("membership"); });
+    const renewButton = $("desktopRenewButton");
+    if (renewButton && membershipEntry) renewButton.addEventListener("click", function () { startPurchase(membershipEntry); });
     const resumeButton = $("desktopResumeButton");
     if (resumeButton && recent) resumeButton.addEventListener("click", function () {
       openContentDetail(recent.contentId, "home", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
     });
-    const featuredButton = $("desktopFeaturedButton");
-    if (featuredButton && featured) featuredButton.addEventListener("click", function () {
-      openContentDetail(featured.id, "home", { autoplay: false, resumePositionSec: 0 });
+    host.querySelectorAll(".desktop-order-button").forEach(function (button) {
+      button.addEventListener("click", function () {
+        setHashForTab("me");
+        window.setTimeout(function () {
+          const section = $("meOrdersSection");
+          if (section && typeof section.scrollIntoView === "function") section.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 50);
+      });
     });
   }
 
@@ -573,7 +721,7 @@
   function renderHome() {
     if (!state.home) {
       $("homeBannerList").innerHTML = createSkeletonCards(1);
-      $("homeFeaturedCard").innerHTML = createSkeletonCards(1);
+      $("homeFeaturedCard").innerHTML = createSkeletonCards(4);
       $("homeLatestGrid").innerHTML = createSkeletonCards(4);
       return;
     }
@@ -612,15 +760,38 @@
       $("libraryGrid").innerHTML = createSkeletonCards(6);
       return;
     }
+    const keyword = String(state.library.search || "").trim();
     const items = state.library.items.filter(function (item) {
-      const keyword = String(state.library.search || "").trim().toLowerCase();
+      const loweredKeyword = keyword.toLowerCase();
       return !keyword
-        || String(item.title || "").toLowerCase().includes(keyword)
-        || String(item.description || "").toLowerCase().includes(keyword);
+        || String(item.title || "").toLowerCase().includes(loweredKeyword)
+        || String(item.description || "").toLowerCase().includes(loweredKeyword);
     });
+    const hasFilters = !!keyword || (state.library.categoryId && state.library.categoryId !== "all") || state.library.sort !== "newest";
+    const filterSummary = [];
+    if (keyword) filterSummary.push('搜索“' + keyword + '”');
+    if (state.library.categoryId && state.library.categoryId !== "all") {
+      const activeCategory = ((state.home && state.home.categories) || []).find(function (item) { return item.id === state.library.categoryId; });
+      if (activeCategory) filterSummary.push(activeCategory.name);
+    }
+    if (state.library.sort !== "newest") filterSummary.push(state.library.sort === "popular" ? "最受欢迎" : "精选");
+    $("libraryFilterSummary").textContent = filterSummary.length ? ("当前筛选：" + filterSummary.join(" / ")) : "当前显示全部内容";
+    $("libraryClearFiltersButton").classList.toggle("is-hidden", !hasFilters);
     $("libraryState").textContent = items.length ? "共 " + items.length + " 条内容" : "没有匹配结果。";
     if (!items.length) {
-      $("libraryGrid").innerHTML = '<div class="inline-state">当前没有匹配内容。</div>';
+      $("libraryGrid").innerHTML =
+        '<div class="inline-state">当前没有匹配内容。<br /><button id="libraryEmptyResetButton" class="ghost-button" type="button" style="margin-top:12px;">清空筛选</button></div>';
+      $("libraryEmptyResetButton").addEventListener("click", function () {
+        state.library.search = "";
+        state.library.categoryId = "all";
+        state.library.sort = "newest";
+        $("desktopSearchInput").value = "";
+        $("librarySearchInput").value = "";
+        $("librarySortSegment").querySelectorAll(".segment-button").forEach(function (node) {
+          node.classList.toggle("is-active", node.getAttribute("data-sort") === "newest");
+        });
+        loadLibrary();
+      });
       return;
     }
     renderContentCards("libraryGrid", items, "library");
@@ -654,39 +825,29 @@
     return items.find(function (item) { return item.accessType === "membership"; }) || null;
   }
 
-  function appendMembershipRenewal(host, membershipEntry, summary) {
-    if (!membershipEntry || !membershipEntry.product || summary.status === "none") return;
-    const active = summary.status === "active";
+  function appendMembershipRenewal(host, membershipEntry, membershipState) {
+    if (!membershipEntry || !membershipEntry.product) return;
     const card = document.createElement("article");
     card.className = "stack-card";
     card.innerHTML =
-      '<div class="stack-head"><div><div class="stack-title">' + (active ? "续费会员" : "恢复会员权益") + '</div>' +
-      '<div class="stack-subtitle">' + escapeHtml(active && summary.expiresAt
-        ? "当前有效至 " + formatDateShort(summary.expiresAt) + "；续费会在到期后顺延。"
-        : "完成续费后即可恢复会员频道与会员内容访问。") + '</div></div></div>' +
-      '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + (active ? "立即续费" : "立即续费恢复") + "</button></div>";
+      '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(membershipState.title) + '</div>' +
+      '<div class="stack-subtitle">' + escapeHtml(membershipState.copy) + '</div></div><div class="' + membershipState.badgeClass + '">' + escapeHtml(membershipState.badgeText) + '</div></div>' +
+      '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + escapeHtml(membershipState.actionText) + "</button></div>";
     card.querySelector("button").addEventListener("click", function () { startPurchase(membershipEntry); });
     host.appendChild(card);
   }
 
   function renderMembership() {
-    const summary = state.entitlements.data && state.entitlements.data.summary
-      ? state.entitlements.data.summary.membership
-      : { status: "none", expiresAt: null };
+    const membershipState = resolveMembershipState(getMembershipSummary());
     const badge = $("membershipStatusBadge");
-    if (summary.status === "active") {
-      badge.textContent = summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已开通";
-      badge.className = "status-badge";
-      $("membershipHeadline").textContent = "会员主频道与内容包";
-      $("membershipCopy").textContent = "支付成功后，只会进入你实际拥有权益对应的频道。";
-    } else {
-      badge.textContent = "未开通";
-      badge.className = "status-badge status-warning";
-      $("membershipHeadline").textContent = "理解权益，再决定购买方式";
-      $("membershipCopy").textContent = state.env.isTelegram
+    badge.textContent = membershipState.badgeText;
+    badge.className = membershipState.badgeClass;
+    $("membershipHeadline").textContent = membershipState.title;
+    $("membershipCopy").textContent = membershipState.state === "none"
+      ? (state.env.isTelegram
         ? "Telegram 内默认优先使用 Stars，同时提供 USDT。"
-        : "H5 默认使用 USDT；若需 Stars，请在 Telegram 内打开。";
-    }
+        : "H5 默认使用 USDT；若需 Stars，请在 Telegram 内打开。")
+      : membershipState.copy;
 
     const membershipEntry = findMembershipEntry();
     const membershipHost = $("membershipPrimaryCard");
@@ -695,7 +856,7 @@
     } else {
       membershipHost.innerHTML = "";
       renderContentCards("membershipPrimaryCard", [membershipEntry], "membership");
-      appendMembershipRenewal(membershipHost, membershipEntry, summary);
+      appendMembershipRenewal(membershipHost, membershipEntry, membershipState);
     }
 
     const packageHost = $("membershipPackagesList");
@@ -912,22 +1073,16 @@
   function renderMe() {
     const session = state.session;
     const isTelegram = session && session.identity === "telegram";
+    const membershipState = resolveMembershipState(getMembershipSummary());
     $("profileTitle").textContent = isTelegram
       ? "我的昵称 · " + (session.displayName || "同频成员")
       : (session.displayName || "同频成员");
     $("profileSubtitle").textContent = isTelegram
       ? "已连接 Telegram，可跨设备恢复订单与权益。"
-      : "已自动登录；绑定 Telegram 后可跨设备恢复订单与权益。";
+      : "已自动生成随机昵称；绑定 Telegram 后可跨设备恢复订单与权益。";
 
-    const membershipSummary = state.entitlements.data && state.entitlements.data.summary
-      ? state.entitlements.data.summary.membership
-      : { status: "none", expiresAt: null };
-    $("meMembershipText").textContent = membershipSummary.status === "active"
-      ? (membershipSummary.expiresAt ? "已开通至 " + formatDateShort(membershipSummary.expiresAt) : "已开通")
-      : "未开通";
-    $("meMembershipHint").textContent = membershipSummary.status === "active"
-      ? "会员内容会在详情页直接展示频道入口。"
-      : "会员与内容包购买入口在「会员」页。";
+    $("meMembershipText").textContent = membershipState.badgeText;
+    $("meMembershipHint").textContent = membershipState.copy;
     $("meOrdersText").textContent = state.orders.items.length ? "共 " + state.orders.items.length + " 条" : "暂无订单";
     $("meOrdersHint").textContent = state.orders.items.some(function (item) { return item.status === "pending"; })
       ? "你有待支付订单，通知入口会直接带你回到这里。"
@@ -938,6 +1093,7 @@
     renderChannelCards();
     renderOrdersList();
     renderPreferenceCards();
+    renderDesktopRail();
   }
 
   function pendingOrderForProduct(productId) {
@@ -1069,6 +1225,7 @@
 
     const primaryAction = getPrimaryDetailAction(detail);
     const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;
+    const sidebarData = getDetailSidebarData(detail);
     // 详情页只保留一个 16:9 媒体位：有试看直接播放试看；无试看才展示封面。
     // 这样不会把同一张封面和同一段视频上下重复展示，首屏也更聚焦。
     const previewUpgradeEnabled = !detail.unlocked && !!detail.product &&
@@ -1095,6 +1252,7 @@
         imageTag(detail.coverUrl, "detail-image", detail.title || "内容封面", true) +
         '</div>';
     $("detailContent").innerHTML =
+      '<div class="detail-main">' +
       mediaSlot +
       '<div class="detail-copy">' +
       '<p class="eyebrow">' + escapeHtml((detail.tags || []).join(" · ") || getAccessLabel(detail)) + '</p>' +
@@ -1115,7 +1273,14 @@
       '</div>' +
       (detail.accessType !== "public" ? '<div class="detail-purchase-list"></div>' : "") +
       '<div class="sticky-action-bar"><button id="detailPrimaryButton" class="primary-button" type="button">' + escapeHtml(primaryAction.text) + '</button><button id="detailBackButton" class="ghost-button" type="button">返回</button></div>' +
-      "</div>";
+      '</div>' +
+      '</div>' +
+      '<aside class="detail-sidebar">' +
+        (sidebarData.resumeItems.length
+          ? '<section class="detail-side-section"><div class="detail-side-head"><h3>接着看</h3></div><div id="detailResumeList" class="detail-side-list"></div></section>'
+          : "") +
+        '<section class="detail-side-section"><div class="detail-side-head"><h3>相关推荐</h3></div><div id="detailRelatedList" class="detail-side-list"></div></section>' +
+      '</aside>';
 
     const purchaseHost = $("detailContent").querySelector(".detail-purchase-list");
     if (purchaseHost) {
@@ -1139,6 +1304,8 @@
     $("detailBackButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
     });
+    if (sidebarData.resumeItems.length) renderDetailSidebarList("detailResumeList", sidebarData.resumeItems, "resume");
+    renderDetailSidebarList("detailRelatedList", sidebarData.relatedItems, "related");
     attachDetailPlayer(detail);
     // 试看流在详情页直接准备好：用户可点原生播放键开始观看，绝不自动播放或记录观看进度。
     if (managedPreview && !detail.previewUrl) prepareManagedPlayback(detail, false);
@@ -1313,6 +1480,7 @@
       state.watch.loading = false;
       renderHomeResume();
       renderMeResume();
+      renderDesktopRail();
       if (state.route.view === "history") renderWatchHistory();
     }
   }
@@ -1549,33 +1717,34 @@
     const isDetail = routeState.view === "detail";
     const isHistory = routeState.view === "history";
     const titleMap = {
-      home: ["同频", ""],
+      home: ["Samewave", "真实表达，在理解与边界中被看见"],
       library: ["片库", "搜索、分类与筛选"],
       membership: ["会员", "会员主频道与内容包"],
-      me: ["我的", "资产、订单、频道入口与绑定"],
+      me: ["我的", "账号、订单与观看记录"],
     };
     const isHome = !isDetail && !isHistory && routeState.tab === "home";
 
     $("backButton").hidden = !(isDetail || isHistory);
-    $("bottomNav").classList.toggle("is-hidden", isDetail || isHistory);
     $("appHeader").classList.toggle("is-home", isHome);
-    $("headerTitle").textContent = isDetail ? "视频详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]);
+    $("headerEyebrow").hidden = false;
+    $("headerEyebrow").textContent = "同频";
+    $("headerTitle").textContent = "Samewave";
     $("headerSubtitle").textContent = isDetail
-      ? "查看权益与购买方式"
+      ? "视频详情、试看与相关推荐"
       : isHistory
-        ? "按最近播放时间排序，可删除单条或清空记录"
-      : (isHome ? "真实表达，在理解与边界中被看见" : titleMap[routeState.tab][1]);
+        ? "最近播放记录与继续观看"
+      : titleMap[routeState.tab][1];
     $("headerSubtitle").hidden = false;
-    $("headerEyebrow").hidden = isHome;
 
     ["home", "library", "membership", "me"].forEach(function (tab) {
       $(tab + "View").classList.toggle("is-hidden", isDetail || isHistory || routeState.tab !== tab);
     });
     $("detailView").classList.toggle("is-hidden", !isDetail);
     $("watchHistoryView").classList.toggle("is-hidden", !isHistory);
-    $("desktopRail").classList.toggle("is-hidden", isDetail || isHistory);
+    const showRail = !isDetail && !isHistory && (routeState.tab === "home" || routeState.tab === "me");
+    $("desktopRail").classList.toggle("is-hidden", !showRail);
     document.querySelector(".app-shell").classList.toggle("is-wide-view", isDetail || isHistory);
-    if (!isDetail && !isHistory) renderDesktopRail();
+    if (showRail) renderDesktopRail();
 
     document.querySelectorAll(".nav-item").forEach(function (button) {
       button.classList.toggle("is-active", !isDetail && !isHistory && button.getAttribute("data-tab") === routeState.tab);
@@ -1648,8 +1817,22 @@
         if (section && typeof section.scrollIntoView === "function") section.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 50);
     });
+    $("profileButton").addEventListener("click", function () {
+      setHashForTab("me");
+    });
     $("jumpLibraryButton").addEventListener("click", function () {
       setHashForTab("library");
+    });
+    $("libraryClearFiltersButton").addEventListener("click", function () {
+      state.library.search = "";
+      state.library.categoryId = "all";
+      state.library.sort = "newest";
+      $("desktopSearchInput").value = "";
+      $("librarySearchInput").value = "";
+      $("librarySortSegment").querySelectorAll(".segment-button").forEach(function (node) {
+        node.classList.toggle("is-active", node.getAttribute("data-sort") === "newest");
+      });
+      loadLibrary();
     });
     $("meWatchHistoryButton").addEventListener("click", function () {
       setHashForHistory("me");
@@ -1689,6 +1872,21 @@
       button.addEventListener("click", function () {
         setHashForTab(button.getAttribute("data-tab"));
       });
+    });
+    $("navRulesButton").addEventListener("click", function () {
+      setHashForTab("me");
+      window.setTimeout(function () {
+        const section = $("mePreferenceList");
+        if (section && typeof section.scrollIntoView === "function") section.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
+    });
+    $("navFeedbackButton").addEventListener("click", function () {
+      setHashForTab("me");
+      window.setTimeout(function () {
+        const section = $("mePreferenceList");
+        if (section && typeof section.scrollIntoView === "function") section.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
+      showInlineMessage("反馈入口已整理到「我的 > 偏好与帮助」，可先从这里继续。");
     });
     window.addEventListener("hashchange", function () {
       routeTo(parseHash());

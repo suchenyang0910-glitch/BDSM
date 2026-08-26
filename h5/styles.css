@@ -57,6 +57,7 @@ body {
 
 body {
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 button,
@@ -93,6 +94,7 @@ h3 {
 
 .app-shell {
   width: min(100%, 680px);
+  max-width: 100%;
   min-height: 100vh;
   margin: 0 auto;
   padding:
@@ -169,10 +171,28 @@ h3 {
 
 .header-actions {
   flex: 0 0 auto;
+  align-items: center;
 }
 
 .desktop-global-search {
   display: none;
+}
+
+.header-pill-button {
+  min-height: 44px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+}
+
+.header-pill-button span {
+  display: none;
+  font-weight: 700;
 }
 
 .eyebrow {
@@ -225,6 +245,7 @@ h3 {
 }
 
 .icon-button svg,
+.header-pill-button svg,
 .nav-item svg,
 .search-box svg {
   width: 20px;
@@ -327,6 +348,21 @@ h3 {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 14px;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+.toolbar-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .primary-button,
@@ -857,6 +893,10 @@ h3 {
   padding-bottom: 24px;
 }
 
+.detail-main {
+  min-width: 0;
+}
+
 .detail-copy {
   margin-top: 16px;
 }
@@ -982,6 +1022,94 @@ h3 {
   padding: 14px;
 }
 
+.detail-sidebar {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.detail-side-section {
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow);
+}
+
+.detail-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.detail-side-head h3 {
+  font-size: 16px;
+}
+
+.detail-side-list {
+  display: grid;
+  gap: 12px;
+}
+
+.detail-side-card {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.detail-side-cover {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(166, 107, 255, 0.28), rgba(38, 34, 54, 0.72)),
+    var(--bg-elevated);
+}
+
+.detail-side-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.detail-side-copy {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+}
+
+.detail-side-copy strong,
+.detail-side-copy span,
+.detail-side-copy small {
+  display: block;
+}
+
+.detail-side-copy strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.detail-side-copy span,
+.detail-side-copy small {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .detail-purchase-list {
   display: grid;
   gap: 10px;
@@ -1058,6 +1186,20 @@ h3 {
   backdrop-filter: blur(18px);
 }
 
+.nav-footer {
+  display: none;
+}
+
+.nav-footer-button {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  text-align: left;
+}
+
 .nav-item {
   position: relative;
   min-height: 64px;
@@ -1101,6 +1243,11 @@ h3 {
     width: min(100%, 960px);
   }
 
+  .desktop-rail {
+    display: block;
+    margin-top: 24px;
+  }
+
   .content-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1131,13 +1278,34 @@ h3 {
 
   .app-header {
     display: grid;
-    grid-template-columns: minmax(160px, 1fr) minmax(320px, 540px) auto;
+    grid-template-columns: minmax(180px, 240px) minmax(420px, 1fr) auto;
     align-items: center;
     column-gap: 24px;
   }
 
   .app-header .header-main {
     min-width: 0;
+  }
+
+  #backButton,
+  #searchButton {
+    display: none !important;
+  }
+
+  .header-copy {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .header-copy .eyebrow,
+  .header-copy .header-subtitle {
+    display: none;
+  }
+
+  .header-copy h1 {
+    font-size: 24px;
+    white-space: nowrap;
   }
 
   .desktop-global-search {
@@ -1175,14 +1343,19 @@ h3 {
     color: var(--text-primary);
   }
 
+  .header-pill-button span {
+    display: inline;
+  }
+
   .bottom-nav {
     left: max(32px, calc((100vw - 1440px) / 2 + 32px));
     top: 32px;
     bottom: 32px;
     transform: none;
     width: 240px;
-    grid-template-columns: 1fr;
-    align-content: start;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     gap: 8px;
     padding: 16px 14px;
     border: 1px solid var(--border);
@@ -1194,6 +1367,7 @@ h3 {
   }
 
   .nav-item {
+    width: 100%;
     min-height: 52px;
     flex-direction: row;
     justify-content: flex-start;
@@ -1212,6 +1386,14 @@ h3 {
     width: 3px;
     height: 24px;
     transform: translateY(-50%);
+  }
+
+  .nav-footer {
+    display: grid;
+    gap: 8px;
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
   }
 
   .banner-rail {
@@ -1236,14 +1418,8 @@ h3 {
 
   .detail-shell {
     display: grid;
-    grid-template-columns: minmax(0, 66fr) minmax(320px, 34fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 24px;
-    align-items: start;
-  }
-
-  .detail-copy {
-    position: sticky;
-    top: 120px;
   }
 
   .sticky-action-bar {
@@ -1378,19 +1554,20 @@ h3 {
   }
 
   .app-shell.is-wide-view .detail-shell {
-    grid-template-columns: minmax(0, 1fr) minmax(360px, 420px);
+    grid-template-columns: minmax(0, 1fr) 360px;
     gap: 28px;
   }
 
-  .app-shell.is-wide-view .detail-copy {
+  .app-shell.is-wide-view .detail-sidebar {
     position: sticky;
     top: 120px;
+    margin-top: 0;
   }
 }
 
 @media (min-width: 1440px) {
-  .content-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+  #libraryGrid.content-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   #homeFeaturedCard .content-card,
