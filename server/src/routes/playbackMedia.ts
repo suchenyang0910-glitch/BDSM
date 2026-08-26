@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { createPrivatePresignedReadUrl } from "../services/objectStorage.js";
+import {
+  createPrivatePresignedReadUrl,
+  requireObjectStorageEnv,
+  streamObjectForRead,
+} from "../services/objectStorage.js";
 import type { PlaybackConfig } from "../services/playbackConfig.js";
 import { resolvePlaybackEntitlement } from "../services/playbackSessions.js";
 import { verifyPlaybackToken } from "../services/playbackDelivery.js";
@@ -67,7 +71,20 @@ export default async function playbackMediaRoutes(fastify: FastifyInstance) {
         return reply.header("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8").header("Cache-Control", "private, no-store").send(body);
       } catch { return reply.status(503).send({ error: "media_unavailable" }); }
     }
-    try { const signed = await createPrivatePresignedReadUrl(objectKey, 30); return reply.header("Cache-Control", "private, no-store").redirect(signed.downloadUrl, 302); }
-    catch { return reply.status(503).send({ error: "media_unavailable" }); }
+    try {
+      // HLS.js requests fragments through XHR/fetch. Redirecting to Spaces turns
+      // this into a cross-origin request and exposes a signed object URL. Keep
+      // the media bytes behind the same-origin, cookie-gated playback gateway.
+      const storage = requireObjectStorageEnv();
+      const upstream = streamObjectForRead(storage.bucket, objectKey);
+      const result: any = await upstream.client.send(upstream.command);
+      if (!result?.Body || typeof result.Body.pipe !== "function") return reply.status(404).send({ error: "media_not_found" });
+      const contentType = typeof result.ContentType === "string" && result.ContentType
+        ? result.ContentType
+        : relative.endsWith(".mp4") ? "video/mp4" : "video/iso.segment";
+      reply.header("Content-Type", contentType).header("Cache-Control", "private, no-store").header("Accept-Ranges", "bytes");
+      if (typeof result.ContentLength === "number" && result.ContentLength >= 0) reply.header("Content-Length", String(result.ContentLength));
+      return reply.send(result.Body);
+    } catch { return reply.status(503).send({ error: "media_unavailable" }); }
   });
 }
