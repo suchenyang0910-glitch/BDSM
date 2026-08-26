@@ -7,6 +7,9 @@ export const ANALYTICS_EVENT_NAMES = [
   "page_viewed",
   "content_impression",
   "content_opened",
+  "preview_started",
+  "preview_completed",
+  "preview_upgrade_shown",
   "unlock_clicked",
   "order_created",
   "payment_confirmed",
@@ -154,6 +157,24 @@ export function sanitizeAnalyticsEvent(input: {
         },
       };
     }
+    case "preview_started":
+    case "preview_completed":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+        },
+      };
+    case "preview_upgrade_shown":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          accessType: normalizeEnumValue(payload.accessType, ["membership", "package"]) ?? "membership",
+        },
+      };
     case "unlock_clicked":
       return {
         eventName: input.eventName,

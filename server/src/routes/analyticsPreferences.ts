@@ -38,7 +38,7 @@ const FORMAT_KEYS = ["curated_on_demand", "creator_interview", "community_discus
 const DISCOVERY_KEYS = ["latest_first", "featured_first", "following_first"] as const;
 const PERSONALIZATION_KEY = "personalized_ranking";
 const ANALYTICS_ADMIN_QUERY = z.object({ preset: z.enum(["7d", "30d"]).optional().default("7d") }).strict();
-const FUNNEL_EVENTS = ["session_started", "content_opened", "unlock_clicked", "order_created", "payment_confirmed"] as const;
+const FUNNEL_EVENTS = ["session_started", "content_opened", "preview_upgrade_shown", "unlock_clicked", "order_created", "payment_confirmed"] as const;
 
 function analyticsRange(preset: "7d" | "30d") {
   const to = new Date();

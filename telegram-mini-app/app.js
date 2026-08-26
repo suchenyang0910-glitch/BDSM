@@ -915,6 +915,9 @@
     const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;
     // 详情页只保留一个 16:9 媒体位：有试看直接播放试看；无试看才展示封面。
     // 这样不会把同一张封面和同一段视频上下重复展示，首屏也更聚焦。
+    const previewUpgradeEnabled = !detail.unlocked && !!detail.product &&
+      (detail.accessType === "membership" || detail.accessType === "package");
+    const previewUpgradeText = detail.accessType === "membership" ? "开通会员" : "解锁内容包";
     const mediaSlot = detail.previewUrl
       ? '<section class="detail-media detail-media-preview" aria-label="免费试看">' +
         '<video class="detail-preview-video" controls playsinline preload="metadata" src="' + escapeHtml(detail.previewUrl) + '"' +
@@ -922,6 +925,12 @@
           '当前浏览器不支持视频在线播放。' +
         '</video>' +
         '<div class="detail-media-label"><strong>免费试看</strong><span>试看不需要开通会员</span></div>' +
+        (previewUpgradeEnabled
+          ? '<div id="previewUpgradeGate" class="detail-preview-gate is-hidden" role="status" aria-live="polite">' +
+            '<div class="detail-preview-gate-copy"><span>试看结束</span><strong>开通后继续观看完整内容</strong>' +
+            '<button id="previewUpgradeButton" class="primary-button" type="button">' + escapeHtml(previewUpgradeText) + '</button></div>' +
+            '</div>'
+          : '') +
         '</section>'
       : '<div class="detail-cover' + (detail.coverUrl ? ' has-image' : '') + '">' +
         imageTag(detail.coverUrl, "detail-image", detail.title || "内容封面", true) +
@@ -966,6 +975,8 @@
     }
 
     $("detailPrimaryButton").addEventListener("click", primaryAction.handler);
+    const previewUpgradeButton = $("previewUpgradeButton");
+    if (previewUpgradeButton) previewUpgradeButton.addEventListener("click", function () { startPurchase(detail); });
     $("detailBackButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
     });
@@ -1236,7 +1247,7 @@
     video.addEventListener("play", function () {
       if (!state.player.started) {
         state.player.started = true;
-        trackAnalytics("preview_start", { contentId: detail.id, seconds: Math.floor(video.currentTime || 0) });
+        trackAnalytics("preview_started", { contentId: detail.id });
       }
       writeWatchProgress(detail.id, {
         eventName: "start",
@@ -1274,13 +1285,20 @@
     });
 
     video.addEventListener("ended", function () {
-      trackAnalytics("preview_complete", { contentId: detail.id, seconds: Math.floor(video.duration || detail.durationSeconds || 0) });
+      trackAnalytics("preview_completed", { contentId: detail.id });
       writeWatchProgress(detail.id, {
         eventName: "complete",
         positionSec: video.duration || video.currentTime || detail.durationSeconds || 0,
         durationSec: video.duration || detail.durationSeconds || null,
         quality: "auto",
       });
+      if (!detail.unlocked && detail.product && (detail.accessType === "membership" || detail.accessType === "package")) {
+        const gate = $("previewUpgradeGate");
+        if (gate) {
+          gate.classList.remove("is-hidden");
+          trackAnalytics("preview_upgrade_shown", { contentId: detail.id, accessType: detail.accessType });
+        }
+      }
     });
   }
 

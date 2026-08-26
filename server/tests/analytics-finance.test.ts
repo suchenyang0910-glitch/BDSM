@@ -196,7 +196,7 @@ test("admin analytics overview exposes aggregate funnel only and enforces analyt
     const body = ok.json() as any;
     assert.equal(body.period.preset, "7d");
     assert.equal(Array.isArray(body.funnel), true);
-    assert.equal(body.funnel.length, 5);
+    assert.equal(body.funnel.length, 6);
     assert.equal(Array.isArray(body.preferences), true);
     assert.equal(JSON.stringify(body).includes("analytics user"), false, "overview must not expose user identity");
     assert.equal(JSON.stringify(body).includes("INT20260823000001"), false, "overview must not expose order identifiers");
