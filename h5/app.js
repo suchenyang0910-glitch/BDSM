@@ -1574,6 +1574,7 @@
     $("detailView").classList.toggle("is-hidden", !isDetail);
     $("watchHistoryView").classList.toggle("is-hidden", !isHistory);
     $("desktopRail").classList.toggle("is-hidden", isDetail || isHistory);
+    document.querySelector(".app-shell").classList.toggle("is-wide-view", isDetail || isHistory);
     if (!isDetail && !isHistory) renderDesktopRail();
 
     document.querySelectorAll(".nav-item").forEach(function (button) {
@@ -1624,6 +1625,21 @@
       window.setTimeout(function () {
         $("librarySearchInput").focus();
       }, 50);
+    });
+    $("desktopSearchForm").addEventListener("submit", function (event) {
+      event.preventDefault();
+      const query = $("desktopSearchInput").value || "";
+      state.library.search = query;
+      $("librarySearchInput").value = query;
+      setHashForTab("library");
+      renderLibrary();
+    });
+    $("desktopSearchInput").addEventListener("input", function (event) {
+      const query = event.target.value || "";
+      state.library.search = query;
+      $("librarySearchInput").value = query;
+      if (state.route.view !== "tab" || state.route.tab !== "library") setHashForTab("library");
+      renderLibrary();
     });
     $("notifyButton").addEventListener("click", function () {
       setHashForTab("me");
