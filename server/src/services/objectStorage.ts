@@ -215,6 +215,14 @@ export function isAllowedPrivateObjectKey(objectKey: string): boolean {
   return /^(covers|previews|originals)\/[0-9a-z-]+\/[0-9a-z-]+\/[a-z0-9._-]+$/i.test(objectKey);
 }
 
+// Transcode output is server-generated and is never accepted from an upload
+// request. Keep it out of the upload-key allowlist, while permitting the
+// authenticated playback gateway to create a short-lived read URL for it.
+function isAllowedControlledReadObjectKey(objectKey: string): boolean {
+  return isAllowedPrivateObjectKey(objectKey) ||
+    /^hls\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/[A-Za-z0-9._/-]+$/i.test(objectKey);
+}
+
 export function objectStorageBackend(): MediaAssetStorageBackend {
   // 当前仅支持 S3 兼容；local_disk 为 Staging 低规格预留，不在 P0 开放。
   return "s3_compatible";
@@ -365,7 +373,7 @@ export async function createPrivatePresignedReadUrl(
 ): Promise<PrivateObjectStorageReadResult> {
   const env = requireObjectStorageEnv();
   const s3 = getS3Client();
-  if (!isAllowedPrivateObjectKey(objectKey)) {
+  if (!isAllowedControlledReadObjectKey(objectKey)) {
     throw new Error("OBJECT_STORAGE_KEY_INVALID");
   }
   const ttl = Math.min(Math.max(Math.floor(expiresSeconds), 30), 15 * 60);
