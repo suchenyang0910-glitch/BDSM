@@ -421,6 +421,29 @@ async function listFreePreviewDistributionTargets(prisma: PrismaClient): Promise
   return listConfiguredPublicFreeChannelOptions();
 }
 
+/**
+ * 免费流量入口是所有可发布内容的强制前置：至少一张已校验封面 + 至少一个
+ * 已启用入口。当前入口为 Telegram 公开频道；以后 Facebook 等平台只需实现
+ * 同一入口适配器，不得改变内容发布主流程。
+ */
+async function validateFreeTrafficEntryReady(prisma: PrismaClient, contentId: string) {
+  const [cover, targets] = await Promise.all([
+    (prisma as any).videoAsset.findFirst({
+      where: { contentId, kind: "cover", status: "verified", deletedAt: null },
+      select: { id: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    listFreePreviewDistributionTargets(prisma),
+  ]);
+  if (!cover) {
+    return { ok: false as const, status: 409, error: "free_traffic_cover_required", message: "发布前必须上传并校验一张封面图，用于免费流量入口推广。" };
+  }
+  if (targets.length === 0) {
+    return { ok: false as const, status: 409, error: "free_traffic_entry_required", message: "发布前必须配置至少一个免费流量入口。" };
+  }
+  return { ok: true as const };
+}
+
 interface ContentAccessValidationContext {
   prisma: PrismaClient;
   targetContentId?: string | null;
@@ -739,7 +762,12 @@ async function queueTelegramPublishForContent(input: {
     };
   }
 
-  const kinds = Array.from(new Set(input.channelKinds));
+  // 免费流量入口不是运营可取消的选项。无论前端提交什么，所有可交付内容
+  // 都先投放到全部启用入口；Telegram 当前只发封面推广图，试看留在 Web 内。
+  const kinds = Array.from(new Set([
+    ...(content.accessType === "single" ? [] : ["public_free_preview" as const]),
+    ...input.channelKinds,
+  ]));
   const plans: Array<{
     mediaAssetId?: string | null;
     videoAssetId?: string | null;
@@ -2631,6 +2659,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const preCheck = await validatePublishReady(prisma, id);
       if (!preCheck.ok) {
         return reply.status(preCheck.status).send({ error: preCheck.error, message: preCheck.message, details: preCheck.details });
+      }
+      const trafficEntryCheck = await validateFreeTrafficEntryReady(prisma, id);
+      if (!trafficEntryCheck.ok) {
+        return reply.status(trafficEntryCheck.status).send({ error: trafficEntryCheck.error, message: trafficEntryCheck.message });
       }
       await prisma.$transaction(async (tx: any) => {
         const after = await tx.content.update({

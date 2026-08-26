@@ -187,6 +187,11 @@ test("平台 SEO 设置遵循读写权限：operator 可读，auditor 可读，e
 });
 
 test("start-telegram-publish 优先使用内容关键词，并在内容未配置时继承平台关键词", async () => {
+  const mainKey = "TELEGRAM_FREE_CHANNEL_PREVIEW_MAIN_CHAT_ID";
+  const tutorialKey = "TELEGRAM_FREE_CHANNEL_TUTORIAL_BASICS_CHAT_ID";
+  const before = [process.env[mainKey], process.env[tutorialKey]];
+  process.env[mainKey] = "-1000000000001";
+  process.env[tutorialKey] = "-1000000000002";
   const app = await createApp(prisma);
   try {
     const editorCookie = await loginAdmin(app, "editor");
@@ -207,6 +212,9 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
       id: crypto.randomUUID(),
       contentId,
       filename: "membership-full.mp4",
+    });
+    await seedReadyVideoAsset(prisma, {
+      id: crypto.randomUUID(), contentId, filename: "membership-cover.jpg", kind: "cover",
     });
     await prisma.content.update({
       where: { id: contentId },
@@ -265,6 +273,9 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
       contentId: fallbackContentId,
       filename: "fallback-membership-full.mp4",
     });
+    await seedReadyVideoAsset(prisma, {
+      id: crypto.randomUUID(), contentId: fallbackContentId, filename: "fallback-cover.jpg", kind: "cover",
+    });
     await prisma.content.update({
       where: { id: fallbackContentId },
       data: {
@@ -282,6 +293,8 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
     assert.deepEqual((fallbackResp.json() as any).normalizedTelegramTags, ["#平台关键词", "#平台主题"]);
   } finally {
     await app.close();
+    if (before[0] === undefined) delete process.env[mainKey]; else process.env[mainKey] = before[0];
+    if (before[1] === undefined) delete process.env[tutorialKey]; else process.env[tutorialKey] = before[1];
   }
 });
 
@@ -365,7 +378,7 @@ test("免费频道自动投放封面推广入口，试看仍由 Web HLS 承担",
       method: "POST",
       url: `/api/admin/contents/${membershipContentId}/start-telegram-publish`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { channelKinds: ["public_free_preview", "membership_full"], reason: "会员视频投放免费入口与完整交付" },
+      payload: { channelKinds: ["membership_full"], reason: "会员视频自动投放免费入口与完整交付" },
     });
     assert.equal(membershipResponse.statusCode, 201, membershipResponse.body);
     const membershipJobs = (membershipResponse.json() as any).jobs;
@@ -377,7 +390,7 @@ test("免费频道自动投放封面推广入口，试看仍由 Web HLS 承担",
       method: "POST",
       url: `/api/admin/contents/${membershipContentId}/start-telegram-publish`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { channelKinds: ["public_free_preview", "membership_full"], reason: "重复点击不得重复发片" },
+      payload: { channelKinds: ["membership_full"], reason: "重复点击不得重复发片" },
     });
     assert.equal(repeatedMembershipResponse.statusCode, 201, repeatedMembershipResponse.body);
     const repeatedJobs = (repeatedMembershipResponse.json() as any).jobs;
