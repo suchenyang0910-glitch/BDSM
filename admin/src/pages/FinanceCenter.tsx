@@ -63,8 +63,23 @@ const RECON_REASON_LABEL: Record<FinanceReconciliationReasonCode, string> = {
 };
 
 function formatMethodAmount(amount: string, method: FinancePaymentMethod) {
-  const unit = method === "telegram_stars" ? "XTR" : method === "usdt_trc20" ? "USDT" : "manual";
-  return `${amount} ${unit}`;
+  try {
+    const raw = BigInt(amount || "0");
+    if (method === "telegram_stars") {
+      const stars = raw > 0n && raw >= 1_000_000n && raw % 1_000_000n === 0n ? raw / 1_000_000n : raw;
+      return `${stars.toString()} Stars`;
+    }
+    if (method === "usdt_trc20") {
+      const sign = raw < 0n ? "-" : "";
+      const absolute = raw < 0n ? -raw : raw;
+      const whole = absolute / 1_000_000n;
+      const fraction = (absolute % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
+      return `${sign}${whole.toString()}${fraction ? `.${fraction}` : ""} USDT`;
+    }
+    return `${raw.toString()} 人工补单`;
+  } catch {
+    return "—";
+  }
 }
 
 function formatDuration(ms: number | null | undefined) {
@@ -161,7 +176,7 @@ const FinanceCenterPage: React.FC = () => {
           ))}
         </Row>
         <Row gutter={[16, 16]}>
-          <Col xs={24} lg={8}><Card><Statistic title="待确认 USDT 金额" value={metrics.pendingUsdtAmount} suffix="USDT" /></Card></Col>
+          <Col xs={24} lg={8}><Card><Statistic title="待确认 USDT 金额" value={formatMethodAmount(metrics.pendingUsdtAmount, "usdt_trc20")} /></Card></Col>
           <Col xs={24} lg={8}><Card><Statistic title="USDT 平均确认耗时" value={formatDuration(metrics.usdtAverageConfirmMs)} /></Card></Col>
           <Col xs={24} lg={8}><Card><Statistic title="Stars 平均成功耗时" value={formatDuration(metrics.starsAverageSuccessMs)} /></Card></Col>
         </Row>
@@ -269,7 +284,11 @@ const FinanceCenterPage: React.FC = () => {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
                   <Text type="secondary">涉及金额</Text>
-                  <Text strong>{reconciliation.differences[key].amount}</Text>
+                  <Space direction="vertical" size={0} align="end">
+                    {(["telegram_stars", "usdt_trc20", "manual"] as FinancePaymentMethod[]).map((method) => (
+                      <Text key={method}>{formatMethodAmount(reconciliation.differences[key].amount[method], method)}</Text>
+                    ))}
+                  </Space>
                 </div>
               </Card>
             </Col>
@@ -285,7 +304,7 @@ const FinanceCenterPage: React.FC = () => {
             { title: "订单号", dataIndex: "orderNoMasked", width: 120 },
             { title: "支付方式", dataIndex: "paymentMethod", width: 120, render: (value: string) => METHOD_LABEL[value] || value },
             { title: "状态", dataIndex: "orderStatus", width: 100 },
-            { title: "金额", dataIndex: "orderAmountMinor", width: 120, render: (value: string, row: FinanceReconciliationResp["rows"][number]) => `${value} ${row.currency}` },
+            { title: "金额", dataIndex: "orderAmountMinor", width: 140, render: (value: string, row: FinanceReconciliationResp["rows"][number]) => formatMethodAmount(value, row.paymentMethod) },
             { title: "确认时间", dataIndex: "confirmedAt", width: 140, render: (value: string | null) => value ? dayjs(value).format("MM-DD HH:mm") : "—" },
             { title: "确认耗时", dataIndex: "confirmDurationMs", width: 100, render: (value: number | null) => formatDuration(value) },
             { title: "地址", dataIndex: "addressMasked", width: 150, render: (value: string | null) => value ? <Text code>{value}</Text> : "—" },

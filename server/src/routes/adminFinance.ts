@@ -332,41 +332,44 @@ export default async function adminFinanceRoutes(fastify: FastifyInstance) {
 
   fastify.get("/admin/finance/reconciliation", { preHandler: [requireAdmin("finance.view")] }, async (req, reply) => {
     const { from, to, orders } = await loadFinanceData(req.query);
+    // 金额绝不能跨 Stars / USDT / 人工补单相加。对账差异也按支付方式分桶，
+    // 由前端分别展示，避免“异常金额”产生错误的财务口径。
     const reasons = {
-      paid_without_confirmed_tx: { count: 0, amount: "0" },
-      confirmed_tx_without_paid_order: { count: 0, amount: "0" },
-      paid_without_active_entitlement: { count: 0, amount: "0" },
-      refunded_without_refunded_tx: { count: 0, amount: "0" },
+      paid_without_confirmed_tx: { count: 0, amount: amountBucket() },
+      confirmed_tx_without_paid_order: { count: 0, amount: amountBucket() },
+      paid_without_active_entitlement: { count: 0, amount: amountBucket() },
+      refunded_without_refunded_tx: { count: 0, amount: amountBucket() },
     };
 
     let confirmedTxCount = 0;
-    let confirmedTxAmount = 0n;
+    const confirmedTxAmount = amountBucket();
     let activeEntitlementCount = 0;
 
     for (const order of orders) {
       const amount = BigInt(order.amountMinor.toString());
+      const method = normalizeMethod(order.paymentMethod);
       const confirmedTx = order.paymentTransactions.filter((tx: any) => tx.status === "confirmed");
       const refundedTx = order.paymentTransactions.filter((tx: any) => tx.status === "refunded");
       const activeEntitlements = order.entitlements.filter((row: any) => row.status === "active");
       confirmedTxCount += confirmedTx.length;
-      if (confirmedTx.length > 0) confirmedTxAmount += amount;
+      if (confirmedTx.length > 0) confirmedTxAmount[method] = addAmount(confirmedTxAmount[method], amount);
       activeEntitlementCount += activeEntitlements.length;
 
       if (order.status === "paid" && confirmedTx.length === 0) {
         reasons.paid_without_confirmed_tx.count += 1;
-        reasons.paid_without_confirmed_tx.amount = addAmount(reasons.paid_without_confirmed_tx.amount, amount);
+        reasons.paid_without_confirmed_tx.amount[method] = addAmount(reasons.paid_without_confirmed_tx.amount[method], amount);
       }
       if (order.status !== "paid" && confirmedTx.length > 0) {
         reasons.confirmed_tx_without_paid_order.count += 1;
-        reasons.confirmed_tx_without_paid_order.amount = addAmount(reasons.confirmed_tx_without_paid_order.amount, amount);
+        reasons.confirmed_tx_without_paid_order.amount[method] = addAmount(reasons.confirmed_tx_without_paid_order.amount[method], amount);
       }
       if (order.status === "paid" && activeEntitlements.length === 0) {
         reasons.paid_without_active_entitlement.count += 1;
-        reasons.paid_without_active_entitlement.amount = addAmount(reasons.paid_without_active_entitlement.amount, amount);
+        reasons.paid_without_active_entitlement.amount[method] = addAmount(reasons.paid_without_active_entitlement.amount[method], amount);
       }
       if (order.status === "refunded" && refundedTx.length === 0) {
         reasons.refunded_without_refunded_tx.count += 1;
-        reasons.refunded_without_refunded_tx.amount = addAmount(reasons.refunded_without_refunded_tx.amount, amount);
+        reasons.refunded_without_refunded_tx.amount[method] = addAmount(reasons.refunded_without_refunded_tx.amount[method], amount);
       }
     }
 
@@ -378,7 +381,7 @@ export default async function adminFinanceRoutes(fastify: FastifyInstance) {
         orderCount: orders.length,
         paidOrderCount: orders.filter((order: any) => order.status === "paid").length,
         confirmedTransactionCount: confirmedTxCount,
-        confirmedTransactionAmount: confirmedTxAmount.toString(),
+        confirmedTransactionAmount: confirmedTxAmount,
         activeEntitlementCount,
       },
       differences: reasons,

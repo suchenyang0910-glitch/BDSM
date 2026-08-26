@@ -702,10 +702,10 @@ export type FinanceReconciliationResp = {
     orderCount: number;
     paidOrderCount: number;
     confirmedTransactionCount: number;
-    confirmedTransactionAmount: string;
+    confirmedTransactionAmount: FinanceAmountBucket;
     activeEntitlementCount: number;
   };
-  differences: Record<FinanceReconciliationReasonCode, { count: number; amount: string }>;
+  differences: Record<FinanceReconciliationReasonCode, { count: number; amount: FinanceAmountBucket }>;
   rows: Array<{
     orderNoMasked: string;
     paymentMethod: FinancePaymentMethod;

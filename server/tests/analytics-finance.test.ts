@@ -677,6 +677,18 @@ test("finance routes enforce role checks and keep address pool masked", async ()
     assert.equal("averageOrderValue" in metrics, false, "不得生成跨币种平均客单价");
     assert.equal(typeof metrics.averageOrderValueByMethod.telegram_stars, "string");
     assert.equal(typeof metrics.averageOrderValueByMethod.usdt_trc20, "string");
+
+    const reconciliation = await app.inject({
+      method: "GET",
+      url: "/api/admin/finance/reconciliation",
+      headers: { cookie: financeCookie },
+    });
+    assert.equal(reconciliation.statusCode, 200, reconciliation.body);
+    const reconciliationBody = reconciliation.json() as any;
+    assert.equal(typeof reconciliationBody.totals.confirmedTransactionAmount.usdt_trc20, "string");
+    assert.equal(typeof reconciliationBody.totals.confirmedTransactionAmount.telegram_stars, "string");
+    assert.equal(typeof reconciliationBody.differences.paid_without_confirmed_tx.amount.usdt_trc20, "string");
+    assert.equal(Object.hasOwn(reconciliationBody.totals.confirmedTransactionAmount, "toString"), false, "对账金额必须按币种分桶，不能返回跨币种 BigInt 汇总");
   } finally {
     await app.close();
   }
