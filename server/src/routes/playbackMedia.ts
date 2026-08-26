@@ -27,7 +27,7 @@ export default async function playbackMediaRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
   const cfg = (fastify as any).playbackConfig as PlaybackConfig;
   const signingKey = String(process.env.VIDEO_CDN_SIGNING_KEY || "");
-  const cookieName = cfg?.signingMode === "edge_token" ? "__Host-intune_edge" : "__Host-intune_playback";
+  const cookieName = cfg?.signingMode === "edge_token" ? "__Secure-intune_edge" : "__Secure-intune_playback";
   fastify.get("/playback/:contentId/:variant/*", async (req: any, reply) => {
     const params = routeParams.safeParse(req.params || {});
     if (!params.success || !isSafeRelativeMediaPath(params.data["*"])) return reply.status(404).send({ error: "not_found" });

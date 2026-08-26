@@ -73,7 +73,10 @@ export function createPlaybackDeliverySigner(
       const signature = signPayload(cfg.signingKey, tokenBody);
       const token = `v1.${tokenBody}.${signature}`;
       const ttlSeconds = Math.max(1, Math.floor((input.expiresAt.getTime() - Date.now()) / 1000));
-      const cookieName = cfg.signingMode === "edge_token" ? "__Host-intune_edge" : "__Host-intune_playback";
+      // __Host- cookies are required by browsers to use Path=/ and therefore
+      // cannot be scoped to one content path. Keep the narrow Path scope and
+      // use the __Secure- prefix, which still requires HTTPS.
+      const cookieName = cfg.signingMode === "edge_token" ? "__Secure-intune_edge" : "__Secure-intune_playback";
       const cookie = [
         `${cookieName}=${token}`,
         `Max-Age=${ttlSeconds}`,

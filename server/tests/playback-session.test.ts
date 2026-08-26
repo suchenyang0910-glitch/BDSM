@@ -233,7 +233,7 @@ test("playback session issues preview manifest for unpaid user and full manifest
     assert.equal(body.deliveryVariant, "full");
     assert.match(body.manifestUrl, /^https:\/\/video\.example\.com\/playback\/.*\/full\/master\.m3u8$/);
     assert.ok(body.sessionId);
-    assert.ok(String(res.headers["set-cookie"] || "").includes("__Host-intune_playback="));
+    assert.ok(String(res.headers["set-cookie"] || "").includes("__Secure-intune_playback="));
 
     const session = await prisma.playbackSession.findUnique({ where: { id: body.sessionId } });
     assert.ok(session);
