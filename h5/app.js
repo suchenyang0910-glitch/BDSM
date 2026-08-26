@@ -101,6 +101,18 @@
       (eager ? ' loading="eager" decoding="async"' : ' loading="lazy" decoding="async"') + " />";
   }
 
+  // A legacy catalog row can refer to a cover that has since been removed
+  // from storage. Keep the card geometry stable rather than showing a broken
+  // image icon or a black block; the API never falls back to a durable media
+  // URL for this case.
+  document.addEventListener("error", function (event) {
+    const image = event.target;
+    if (!(image instanceof HTMLImageElement) || image.dataset.fallbackApplied === "1") return;
+    image.dataset.fallbackApplied = "1";
+    image.removeAttribute("src");
+    image.classList.add("is-image-unavailable");
+  }, true);
+
   function apiText(err) {
     const payload = err && err.payload ? err.payload : {};
     const code = payload.userError || payload.error || payload.errorClass || "";

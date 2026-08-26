@@ -101,6 +101,16 @@
       (eager ? ' loading="eager" decoding="async"' : ' loading="lazy" decoding="async"') + " />";
   }
 
+  // Keep a failed legacy cover from collapsing the card or rendering a broken
+  // image glyph. The original object URL is never exposed as a fallback.
+  document.addEventListener("error", function (event) {
+    const image = event.target;
+    if (!(image instanceof HTMLImageElement) || image.dataset.fallbackApplied === "1") return;
+    image.dataset.fallbackApplied = "1";
+    image.removeAttribute("src");
+    image.classList.add("is-image-unavailable");
+  }, true);
+
   function apiText(err) {
     const payload = err && err.payload ? err.payload : {};
     const code = payload.userError || payload.error || payload.errorClass || "";

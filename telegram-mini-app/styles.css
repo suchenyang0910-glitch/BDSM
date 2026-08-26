@@ -392,6 +392,12 @@ h3 {
   object-position: center;
 }
 
+img.is-image-unavailable {
+  background:
+    radial-gradient(circle at 72% 18%, rgba(185, 114, 255, 0.34), transparent 42%),
+    linear-gradient(145deg, #4a356f, #211d30 72%);
+}
+
 .banner-card h3 {
   position: relative;
   z-index: 1;

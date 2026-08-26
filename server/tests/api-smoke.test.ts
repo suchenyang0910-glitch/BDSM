@@ -107,6 +107,39 @@ test("published VOD cover is exposed through a controlled public content route",
   }
 });
 
+test("legacy MediaAsset covers use the controlled route and never leak a durable storage URL", async () => {
+  const app = await createTestApp(prisma);
+  const assetId = "legacy-cover-control-test";
+  try {
+    await prisma.mediaAsset.create({
+      data: {
+        id: assetId,
+        kind: "cover_image",
+        status: "ready",
+        storageBucket: "test-bucket",
+        storageKey: "20260826/cover_image/legacy-cover.jpg",
+        storagePublicUrl: "https://storage.invalid/durable-cover.jpg",
+      },
+    });
+    await prisma.content.update({
+      where: { id: TEST_KNOWN_IDS.contentPublic },
+      data: { coverAssetId: assetId, coverUrl: "https://storage.invalid/durable-cover.jpg" },
+    });
+
+    const list = await app.inject({ method: "GET", url: "/api/contents?pageSize=20" });
+    const listed = (list.json() as any).items.find((item: any) => item.id === TEST_KNOWN_IDS.contentPublic);
+    assert.equal(listed?.coverUrl, `/api/contents/${TEST_KNOWN_IDS.contentPublic}/cover`);
+    assert.doesNotMatch(String(listed?.coverUrl || ""), /storage\.invalid/);
+
+    const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentPublic}` });
+    assert.equal((detail.json() as any).coverUrl, `/api/contents/${TEST_KNOWN_IDS.contentPublic}/cover`);
+  } finally {
+    await prisma.content.update({ where: { id: TEST_KNOWN_IDS.contentPublic }, data: { coverAssetId: null, coverUrl: null } });
+    await prisma.mediaAsset.deleteMany({ where: { id: assetId } });
+    await app.close();
+  }
+});
+
 test("access-link routes enforce POST and authenticated session", async () => {
   const app = await createTestApp(prisma);
   try {

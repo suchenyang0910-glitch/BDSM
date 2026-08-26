@@ -40,9 +40,14 @@ export default async function contentRoutes(fastify: FastifyInstance) {
 
   function resolvePublishedCoverUrl(content: any) {
     const cover = Array.isArray(content.videoAssets) ? content.videoAssets[0] : null;
-    // Covers created by the VOD pipeline live in VideoAsset. Return only a
-    // controlled application URL so object keys and durable storage URLs stay private.
-    return cover ? `/api/contents/${encodeURIComponent(content.id)}/cover` : content.coverUrl || null;
+    // Both the Phase-B VOD asset and the legacy MediaAsset cover are served
+    // through the controlled application route. Never return a durable Spaces
+    // / CDN address to the catalog: legacy public URLs are often stale and
+    // also bypass the site's image and privacy controls.
+    const legacyCover = content.coverAsset?.kind === "cover_image" &&
+      content.coverAsset?.status === "ready" &&
+      !!content.coverAsset?.storageKey;
+    return cover || legacyCover ? `/api/contents/${encodeURIComponent(content.id)}/cover` : null;
   }
 
   fastify.get("/contents", async (req) => {
@@ -80,6 +85,9 @@ export default async function contentRoutes(fastify: FastifyInstance) {
             orderBy: { createdAt: "desc" },
             take: 1,
             select: { id: true },
+          },
+          coverAsset: {
+            select: { id: true, kind: true, status: true, storageKey: true },
           },
         },
       }),
@@ -183,14 +191,21 @@ export default async function contentRoutes(fastify: FastifyInstance) {
           take: 1,
           select: { objectKey: true },
         },
+        coverAsset: {
+          select: { kind: true, status: true, storageKey: true },
+        },
       },
     });
-    const cover = content?.videoAssets?.[0];
-    if (!content || content.status !== "published" || !cover) {
+    const videoAsset = content?.videoAssets?.[0];
+    const mediaAsset = content?.coverAsset;
+    const objectKey = videoAsset?.objectKey || (
+      mediaAsset?.kind === "cover_image" && mediaAsset.status === "ready" ? mediaAsset.storageKey : null
+    );
+    if (!content || content.status !== "published" || !objectKey) {
       return reply.status(404).send({ error: "not_found" });
     }
     try {
-      const signed = await createPrivatePresignedReadUrl(cover.objectKey, 5 * 60);
+      const signed = await createPrivatePresignedReadUrl(objectKey, 5 * 60);
       return reply.redirect(signed.downloadUrl);
     } catch {
       return reply.status(503).send({ error: "cover_unavailable" });
@@ -214,6 +229,9 @@ export default async function contentRoutes(fastify: FastifyInstance) {
             orderBy: { createdAt: "desc" },
             take: 1,
             select: { id: true },
+          },
+          coverAsset: {
+            select: { id: true, kind: true, status: true, storageKey: true },
           },
         },
       }),

@@ -44,7 +44,9 @@ function buildWatchProgressPayload(row: any) {
   return {
     contentId: row.contentId,
     title: row.content?.title || "未命名内容",
-    coverUrl: row.content?.coverUrl || null,
+    coverUrl: row.content && (row.content.coverAsset || row.content.videoAssets?.[0])
+      ? `/api/contents/${encodeURIComponent(row.contentId)}/cover`
+      : null,
     accessType: row.content?.accessType || "public",
     durationSeconds: durationSeconds || null,
     duration: formatDuration(durationSeconds || undefined),
@@ -102,6 +104,8 @@ export default async function watchProgressRoutes(fastify: FastifyInstance) {
                 id: true,
                 title: true,
                 coverUrl: true,
+                coverAsset: { select: { id: true } },
+                videoAssets: { where: { kind: "cover", status: "verified", deletedAt: null }, take: 1, select: { id: true } },
                 accessType: true,
                 durationSeconds: true,
                 publishedAt: true,
@@ -118,6 +122,8 @@ export default async function watchProgressRoutes(fastify: FastifyInstance) {
                 id: true,
                 title: true,
                 coverUrl: true,
+                coverAsset: { select: { id: true } },
+                videoAssets: { where: { kind: "cover", status: "verified", deletedAt: null }, take: 1, select: { id: true } },
                 accessType: true,
                 durationSeconds: true,
                 publishedAt: true,
@@ -150,7 +156,7 @@ export default async function watchProgressRoutes(fastify: FastifyInstance) {
 
       const content = await prisma.content.findUnique({
         where: { id: contentId },
-        select: { id: true, status: true, durationSeconds: true, title: true, coverUrl: true, accessType: true, publishedAt: true },
+      select: { id: true, status: true, durationSeconds: true, title: true, coverUrl: true, accessType: true, publishedAt: true, coverAsset: { select: { id: true } }, videoAssets: { where: { kind: "cover", status: "verified", deletedAt: null }, take: 1, select: { id: true } } },
       });
       if (!content) {
         return reply.status(404).send({ error: "not_found", message: "内容不存在" });
@@ -199,6 +205,8 @@ export default async function watchProgressRoutes(fastify: FastifyInstance) {
                 id: true,
                 title: true,
                 coverUrl: true,
+                coverAsset: { select: { id: true } },
+                videoAssets: { where: { kind: "cover", status: "verified", deletedAt: null }, take: 1, select: { id: true } },
                 accessType: true,
                 durationSeconds: true,
                 publishedAt: true,

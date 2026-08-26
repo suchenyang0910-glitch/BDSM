@@ -19,6 +19,7 @@ type RawContentRow = {
   productId: string | null;
   packageId: string | null;
   videoAssets?: Array<{ id: string }>;
+  coverAsset?: { id: string; kind: string; status: string; storageKey: string | null } | null;
   seoTitle?: string | null;
   seoDescription?: string | null;
   seoKeywords?: string[];
@@ -32,9 +33,12 @@ export default async function homeRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
 
   function resolvePublishedCoverUrl(row: RawContentRow) {
-    return row.videoAssets?.[0]
+    const legacyCover = row.coverAsset?.kind === "cover_image" &&
+      row.coverAsset?.status === "ready" &&
+      !!row.coverAsset?.storageKey;
+    return row.videoAssets?.[0] || legacyCover
       ? `/api/contents/${encodeURIComponent(row.id)}/cover`
-      : row.coverUrl || null;
+      : null;
   }
 
   async function tryGetPlatformMetadata() {
@@ -150,6 +154,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
                 take: 1,
                 select: { id: true },
               },
+              coverAsset: { select: { id: true, kind: true, status: true, storageKey: true } },
             },
           })
         : Promise.resolve([] as RawContentRow[]),
@@ -188,6 +193,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
             take: 1,
             select: { id: true },
           },
+          coverAsset: { select: { id: true, kind: true, status: true, storageKey: true } },
         },
       }),
       prisma.content.findMany({
@@ -204,6 +210,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
             take: 1,
             select: { id: true },
           },
+          coverAsset: { select: { id: true, kind: true, status: true, storageKey: true } },
         },
       }),
       tryGetPlatformMetadata(),

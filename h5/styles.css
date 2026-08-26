@@ -396,6 +396,12 @@ h3 {
   object-position: center;
 }
 
+img.is-image-unavailable {
+  background:
+    radial-gradient(circle at 72% 18%, rgba(185, 114, 255, 0.34), transparent 42%),
+    linear-gradient(145deg, #4a356f, #211d30 72%);
+}
+
 .banner-card h3 {
   position: relative;
   z-index: 1;
@@ -1162,6 +1168,13 @@ h3 {
   .banner-card {
     flex: 0 0 100%;
     max-width: 100%;
+  }
+
+  .banner-card:not(:first-child) {
+    /* The desktop homepage intentionally presents one hero. Extra configured
+       banners remain available on mobile's swipe rail, but must never leak a
+       clipped second image on the right of a desktop viewport. */
+    display: none;
   }
 
   .content-grid {
