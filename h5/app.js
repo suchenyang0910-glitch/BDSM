@@ -1628,6 +1628,10 @@
         const gate = $("previewUpgradeGate");
         if (gate) {
           gate.classList.remove("is-hidden");
+          const primaryButton = $("detailPrimaryButton");
+          if (primaryButton) {
+            primaryButton.textContent = detail.accessType === "membership" ? "开通会员" : "解锁内容包";
+          }
           trackAnalytics("preview_upgrade_shown", { contentId: detail.id, accessType: detail.accessType });
         }
       }
