@@ -862,7 +862,14 @@
       tg.showPopup({ title: "提示", message: message, buttons: [{ type: "ok" }] }).catch(function () {});
       return;
     }
-    window.alert(message);
+    const toast = $("inlineToast");
+    if (!toast) return;
+    toast.textContent = String(message || "请稍后重试。");
+    toast.classList.remove("is-hidden");
+    if (state.inlineToastTimer) window.clearTimeout(state.inlineToastTimer);
+    state.inlineToastTimer = window.setTimeout(function () {
+      toast.classList.add("is-hidden");
+    }, 5000);
   }
 
   function createSkeletonCards(count) {

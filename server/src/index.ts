@@ -340,20 +340,18 @@ async function main() {
       }
     } else if (botStatus.ok) {
       console.log(
-        `[intune-server:bot] ✅ Real Bot OK: @${botStatus.botInfo?.username || TELEGRAM_CONFIG.botUsername} ` +
-          `(id=${botStatus.botInfo?.id}) — member_limit=1 / 1h invites enabled.`,
+        "[intune-server:bot] configured=yes invite_delivery=enabled member_limit=1 ttl_hours=1",
       );
     } else {
       console.error(
-        `[intune-server:bot] ❌ Token present but Telegram API unreachable: ${botStatus.error}. ` +
-          `Check network, token, and @InTune_bdsm_bot status in BotFather.`,
+        "[intune-server:bot] telegram_api_unreachable; verify the server-side Bot configuration and network path.",
       );
       if (IS_PRODUCTION) {
         throw new Error("Telegram bot getMe failed in production; refusing to start.");
       }
     }
     console.log(
-      `[intune-server:public-channel] ${TELEGRAM_CONFIG.publicChannelUrl} (use in Banners as external link target)`,
+      `[intune-server:public-channel] configured=${TELEGRAM_CONFIG.publicChannelUrl ? "yes" : "no"}`,
     );
     await app.listen({ port: PORT, host: "0.0.0.0" });
     console.log(`[intune-server] listening on :${PORT}`);

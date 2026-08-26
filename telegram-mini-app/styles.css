@@ -392,6 +392,22 @@ h3 {
   object-position: center;
 }
 
+.inline-toast {
+  position: fixed;
+  z-index: 90;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(84px, calc(env(safe-area-inset-bottom) + 68px));
+  width: min(360px, calc(100vw - 28px));
+  padding: 12px 14px;
+  border: 1px solid rgba(190, 135, 255, 0.55);
+  border-radius: 12px;
+  background: rgba(35, 30, 50, 0.97);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 img.is-image-unavailable {
   background:
     radial-gradient(circle at 72% 18%, rgba(185, 114, 255, 0.34), transparent 42%),
