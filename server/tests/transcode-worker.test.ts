@@ -437,6 +437,8 @@ test("Phase B: preview-disabled content only produces full HLS renditions", asyn
       runner: defaultMockTranscodeRunner(),
     });
     assert.equal(result.ok, true);
+    const content = await prisma.content.findUnique({ where: { id: claimed!.contentId }, select: { durationSeconds: true } });
+    assert.equal(content?.durationSeconds, 120, "source probe duration must be visible to user-facing content cards");
     const renditions = await prisma.videoRendition.findMany({ where: { assetId: claimed!.assetId }, orderBy: [{ kind: "asc" }] });
     assert.deepEqual(sortKinds(renditions.map((item) => item.kind)), sortKinds(["hls_1080", "hls_480", "hls_720"]));
     assert.equal(Array.from(store.keys()).some((item) => item.includes("/preview/")), false);

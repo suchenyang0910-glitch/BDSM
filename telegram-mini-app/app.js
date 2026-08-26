@@ -65,6 +65,8 @@
       video: null,
       lastProgressSecond: -1,
       started: false,
+      preparedContentId: "",
+      preparingPlayback: null,
     },
     resumeIntent: null,
     route: {
@@ -599,6 +601,21 @@
     return items.find(function (item) { return item.accessType === "membership"; }) || null;
   }
 
+  function appendMembershipRenewal(host, membershipEntry, summary) {
+    if (!membershipEntry || !membershipEntry.product || summary.status === "none") return;
+    const active = summary.status === "active";
+    const card = document.createElement("article");
+    card.className = "stack-card";
+    card.innerHTML =
+      '<div class="stack-head"><div><div class="stack-title">' + (active ? "续费会员" : "恢复会员权益") + '</div>' +
+      '<div class="stack-subtitle">' + escapeHtml(active && summary.expiresAt
+        ? "当前有效至 " + formatDateShort(summary.expiresAt) + "；续费会在到期后顺延。"
+        : "完成续费后即可恢复会员频道与会员内容访问。") + '</div></div></div>' +
+      '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + (active ? "立即续费" : "立即续费恢复") + "</button></div>";
+    card.querySelector("button").addEventListener("click", function () { startPurchase(membershipEntry); });
+    host.appendChild(card);
+  }
+
   function renderMembership() {
     const summary = state.entitlements.data && state.entitlements.data.summary
       ? state.entitlements.data.summary.membership
@@ -625,6 +642,7 @@
     } else {
       membershipHost.innerHTML = "";
       renderContentCards("membershipPrimaryCard", [membershipEntry], "membership");
+      appendMembershipRenewal(membershipHost, membershipEntry, summary);
     }
 
     const packageHost = $("membershipPackagesList");
@@ -899,13 +917,24 @@
     return !!(video && video.canPlayType && /maybe|probably/i.test(video.canPlayType("application/vnd.apple.mpegurl")));
   }
 
-  async function startManagedPlayback(detail) {
+  async function prepareManagedPlayback(detail, autoplay) {
     const video = $("detailContent").querySelector(".detail-preview-video");
     if (!video) return;
     try {
-      const session = await apiCall("/api/contents/" + encodeURIComponent(detail.id) + "/playback-session", {
-        method: "POST", body: JSON.stringify({}),
-      });
+      let session;
+      if (state.player.preparedContentId === detail.id && video.currentSrc) {
+        if (autoplay) video.play().catch(function () {});
+        return;
+      } else if (state.player.preparingPlayback && state.player.preparingPlayback.contentId === detail.id) {
+        session = await state.player.preparingPlayback.promise;
+      } else {
+        const promise = apiCall("/api/contents/" + encodeURIComponent(detail.id) + "/playback-session", {
+          method: "POST", body: JSON.stringify({}),
+        });
+        state.player.preparingPlayback = { contentId: detail.id, promise: promise };
+        session = await promise;
+        state.player.preparingPlayback = null;
+      }
       if (!session || !session.manifestUrl) throw new Error("playback_session_missing");
       if (canPlayNativeHls(video)) {
         video.src = session.manifestUrl;
@@ -917,12 +946,18 @@
       } else {
         throw new Error("hls_not_supported");
       }
-      video.play().catch(function () {});
+      state.player.preparedContentId = detail.id;
+      if (autoplay) video.play().catch(function () {});
       const button = $("detailPrimaryButton");
       if (button && session.deliveryVariant === "preview") button.textContent = "正在试看";
     } catch (_) {
-      showInlineMessage("试看暂时不可用，请稍后重试。");
+      state.player.preparingPlayback = null;
+      if (autoplay) showInlineMessage("试看暂时不可用，请稍后重试。");
     }
+  }
+
+  function startManagedPlayback(detail) {
+    return prepareManagedPlayback(detail, true);
   }
 
   async function renderDetail(id) {
@@ -1020,6 +1055,8 @@
       setHashForTab(state.route.fromTab || "home");
     });
     attachDetailPlayer(detail);
+    // 试看流在详情页直接准备好：用户可点原生播放键开始观看，绝不自动播放或记录观看进度。
+    if (managedPreview && !detail.previewUrl) prepareManagedPlayback(detail, false);
   }
 
   function handleBannerAction(banner) {
@@ -1259,6 +1296,8 @@
     state.player.contentId = "";
     state.player.lastProgressSecond = -1;
     state.player.started = false;
+    state.player.preparedContentId = "";
+    state.player.preparingPlayback = null;
   }
 
   function attachDetailPlayer(detail) {

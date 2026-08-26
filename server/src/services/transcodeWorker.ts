@@ -919,6 +919,11 @@ export async function processClaimedTranscodeJob(
 
     await heartbeatTranscodeJob(prisma, { jobId: job.id, workerId: cfg.workerId, leaseSeconds: cfg.leaseSeconds, progressPercent: 15 });
     const probe = await runner.probe({ inputPath: sourcePath, timeoutMs: cfg.ffprobeTimeoutMs });
+    // 转码探测出的时长是源视频的权威元数据。回填 Content，避免用户端显示 “--:--”。
+    await (prisma as any).content.update({
+      where: { id: job.contentId },
+      data: { durationSeconds: probe.durationSeconds },
+    });
     const contentSettings = await (prisma as any).content.findUnique({
       where: { id: job.contentId },
       select: { previewEnabled: true, previewDurationSeconds: true },
