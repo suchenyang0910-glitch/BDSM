@@ -1566,6 +1566,9 @@ h3 {
 }
 
 @media (min-width: 1440px) {
+  /* Desktop catalogue is intentionally fixed at four cards per row.  A wider
+     viewport creates more breathing room; it must not create a fifth, narrow
+     card that makes covers and titles harder to scan. */
   #libraryGrid.content-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
