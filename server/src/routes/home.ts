@@ -18,6 +18,7 @@ type RawContentRow = {
   publishedAt: Date | null;
   productId: string | null;
   packageId: string | null;
+  videoAssets?: Array<{ id: string }>;
   seoTitle?: string | null;
   seoDescription?: string | null;
   seoKeywords?: string[];
@@ -29,6 +30,12 @@ type RawContentRow = {
 
 export default async function homeRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
+
+  function resolvePublishedCoverUrl(row: RawContentRow) {
+    return row.videoAssets?.[0]
+      ? `/api/contents/${encodeURIComponent(row.id)}/cover`
+      : row.coverUrl || null;
+  }
 
   async function tryGetPlatformMetadata() {
     try {
@@ -65,7 +72,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
     return {
       id: row.id,
       title: row.title,
-      coverUrl: row.coverUrl,
+      coverUrl: resolvePublishedCoverUrl(row),
       description: row.description || row.summary || "",
       previewUrl: row.previewUrl || null,
       duration: formatDuration(row.durationSeconds ?? undefined),
@@ -137,6 +144,12 @@ export default async function homeRoutes(fastify: FastifyInstance) {
               categories: { select: { category: { select: { id: true, name: true } } } },
               product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
               package: { select: { id: true, title: true } },
+              videoAssets: {
+                where: { kind: "cover", status: "verified", deletedAt: null },
+                orderBy: { createdAt: "desc" },
+                take: 1,
+                select: { id: true },
+              },
             },
           })
         : Promise.resolve([] as RawContentRow[]),
@@ -169,6 +182,12 @@ export default async function homeRoutes(fastify: FastifyInstance) {
           categories: { select: { category: { select: { id: true, name: true } } } },
           product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
           package: { select: { id: true, title: true } },
+          videoAssets: {
+            where: { kind: "cover", status: "verified", deletedAt: null },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: { id: true },
+          },
         },
       }),
       prisma.content.findMany({
@@ -179,6 +198,12 @@ export default async function homeRoutes(fastify: FastifyInstance) {
           categories: { select: { category: { select: { id: true, name: true } } } },
           product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
           package: { select: { id: true, title: true } },
+          videoAssets: {
+            where: { kind: "cover", status: "verified", deletedAt: null },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: { id: true },
+          },
         },
       }),
       tryGetPlatformMetadata(),

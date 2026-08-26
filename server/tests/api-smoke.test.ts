@@ -94,6 +94,11 @@ test("published VOD cover is exposed through a controlled public content route",
     const listItem = (list.json() as any).items.find((item: any) => item.id === TEST_KNOWN_IDS.contentMembership);
     assert.equal(listItem?.coverUrl, `/api/contents/${TEST_KNOWN_IDS.contentMembership}/cover`);
 
+    const home = await app.inject({ method: "GET", url: "/api/home" });
+    assert.equal(home.statusCode, 200, home.body);
+    const homeItem = (home.json() as any).contents.find((item: any) => item.id === TEST_KNOWN_IDS.contentMembership);
+    assert.equal(homeItem?.coverUrl, `/api/contents/${TEST_KNOWN_IDS.contentMembership}/cover`);
+
     const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentMembership}` });
     assert.equal(detail.statusCode, 200, detail.body);
     assert.equal((detail.json() as any).coverUrl, `/api/contents/${TEST_KNOWN_IDS.contentMembership}/cover`);
