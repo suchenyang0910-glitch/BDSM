@@ -12,12 +12,43 @@ export type PlaybackDeliverySigner = {
   revoke?(input: { sessionId: string; contentId: string }): Promise<void>;
 };
 
+export type VerifiedPlaybackToken = {
+  sessionId: string;
+  contentId: string;
+  variant: "preview" | "full";
+  expiresAt: Date;
+};
+
 function base64UrlEncode(input: string): string {
   return Buffer.from(input, "utf8").toString("base64url");
 }
 
 function signPayload(secret: string, payload: string): string {
   return crypto.createHmac("sha256", Buffer.from(secret, "utf8")).update(payload).digest("base64url");
+}
+
+function safeEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left, "utf8");
+  const b = Buffer.from(right, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+export function verifyPlaybackToken(input: { token: string | undefined; signingKey: string; now?: Date }): VerifiedPlaybackToken | null {
+  const token = String(input.token || "");
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts[0] !== "v1" || !parts[1] || !parts[2]) return null;
+  if (!safeEqual(signPayload(input.signingKey, parts[1]), parts[2])) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    const sessionId = typeof payload.sid === "string" ? payload.sid : "";
+    const contentId = typeof payload.cid === "string" ? payload.cid : "";
+    const variant = payload.var === "preview" || payload.var === "full" ? payload.var : null;
+    const expiresAt = new Date(String(payload.exp || ""));
+    if (!sessionId || !contentId || !variant || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= (input.now || new Date()).getTime()) return null;
+    return { sessionId, contentId, variant, expiresAt };
+  } catch {
+    return null;
+  }
 }
 
 function fingerprintToken(secret: string, token: string): string {

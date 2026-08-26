@@ -7,6 +7,7 @@ import session from "@fastify/session";
 
 import playbackRoutes from "../src/routes/playback.js";
 import { loadPlaybackConfig } from "../src/services/playbackConfig.js";
+import { createPlaybackDeliverySigner, verifyPlaybackToken } from "../src/services/playbackDelivery.js";
 import {
   setupTestHarness,
   teardownTestHarness,
@@ -15,6 +16,19 @@ import {
 } from "./_testHarness.js";
 
 process.env.VIDEO_CDN_SIGNING_KEY ||= "playback-signing-key-with-sufficient-length";
+
+test("playback delivery token is signed, scoped and expires fail-closed", async () => {
+  const key = "playback-signing-key-with-sufficient-length";
+  const signer = createPlaybackDeliverySigner({ cdnBaseUrl: "https://video.example.com", signingMode: "signed_cookie", sessionTtlSeconds: 120, signingKey: key });
+  const issued = await signer.issue({ sessionId: "session-token-test", contentId: TEST_KNOWN_IDS.contentMembership, variant: "preview", expiresAt: new Date(Date.now() + 60_000) });
+  const token = issued.responseHeaders["set-cookie"].split(";")[0].split("=")[1];
+  const verified = verifyPlaybackToken({ token, signingKey: key });
+  assert.equal(verified?.sessionId, "session-token-test");
+  assert.equal(verified?.contentId, TEST_KNOWN_IDS.contentMembership);
+  assert.equal(verified?.variant, "preview");
+  assert.equal(verifyPlaybackToken({ token: `${token}tampered`, signingKey: key }), null);
+  assert.equal(verifyPlaybackToken({ token, signingKey: key, now: new Date(Date.now() + 120_000) }), null);
+});
 
 function cookieFromResponse(res: { headers: Record<string, unknown> }): string {
   const setCookie = res.headers["set-cookie"];

@@ -7,7 +7,9 @@ bdsm.linkx.club {
 
     # Fastify 必须优先，绝不能 fallback 到静态 SPA
     # 这里的端口必须与 server/.env 中 SERVER_PORT 保持一致。
-    @backend path /api/* /healthz /healthz/*
+    # HLS is delivered through the same-origin, cookie-gated API gateway.
+    # Never expose the private object bucket directly at /playback.
+    @backend path /api/* /healthz /healthz/* /playback/*
     handle @backend {
         reverse_proxy 127.0.0.1:3001
     }

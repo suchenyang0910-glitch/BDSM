@@ -24,6 +24,7 @@ import analyticsAndPreferenceRoutes from "./routes/analyticsPreferences.js";
 import adminFinanceRoutes from "./routes/adminFinance.js";
 import watchProgressRoutes from "./routes/watchProgress.js";
 import playbackRoutes from "./routes/playback.js";
+import playbackMediaRoutes from "./routes/playbackMedia.js";
 import publicSeoRoutes from "./routes/publicSeo.js";
 import { botSelfTest, TELEGRAM_CONFIG } from "./services/telegramBot.js";
 import { startEntitlementsCron } from "./services/entitlementsCron.js";
@@ -297,6 +298,7 @@ async function main() {
   await app.register(adminFinanceRoutes, { prefix: "/api" });
   await app.register(watchProgressRoutes, { prefix: "/api" });
   await app.register(playbackRoutes, { prefix: "/api" });
+  await app.register(playbackMediaRoutes);
   await app.register(publicSeoRoutes, { prefix: "" });
 
   try {
