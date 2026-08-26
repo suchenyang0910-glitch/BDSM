@@ -217,6 +217,10 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     }
     try {
       const signed = await createPrivatePresignedReadUrl(objectKey, 5 * 60);
+      // The redirect target is a short-lived signed URL.  Caching this 302 can
+      // leave resume/history cards pointing at an expired image even though the
+      // card itself is still valid.
+      reply.header("Cache-Control", "private, no-store, max-age=0");
       return reply.redirect(signed.downloadUrl);
     } catch {
       return reply.status(503).send({ error: "cover_unavailable" });

@@ -89,6 +89,18 @@ test("watch progress history reads from WatchProgress and orders by lastPlayedAt
   });
   const cookieHeader = await loginAsUser(app, user.id);
   try {
+    const coverAsset = await prisma.videoAsset.create({
+      data: {
+        contentId: TEST_KNOWN_IDS.contentMembership,
+        kind: "cover",
+        objectKey: `covers/${TEST_KNOWN_IDS.contentMembership}/watch-progress-cover.jpg`,
+        mimeType: "image/jpeg",
+        byteSize: 1024n,
+        sha256: "b".repeat(64),
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
     await prisma.watchProgress.createMany({
       data: [
         {
@@ -131,6 +143,11 @@ test("watch progress history reads from WatchProgress and orders by lastPlayedAt
     assert.equal(body.items[0].contentId, TEST_KNOWN_IDS.contentMembership);
     assert.equal(body.items[0].resumePositionSec, 210);
     assert.equal(body.items[0].progressPercent, 18);
+    assert.match(
+      body.items[0].coverUrl,
+      new RegExp(`^/api/contents/${TEST_KNOWN_IDS.contentMembership}/cover\\?v=${coverAsset.id}$`),
+      "观看记录封面必须携带素材版本，避免复用过期的受控图片跳转",
+    );
   } finally {
     await app.close();
   }

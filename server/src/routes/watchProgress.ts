@@ -41,12 +41,18 @@ function buildWatchProgressPayload(row: any) {
     ? Math.max(0, Math.min(100, Math.round((Math.max(0, Math.min(positionSec, durationSeconds)) / durationSeconds) * 100)))
     : 0;
 
+  // Cover redirects use a short-lived signed object URL.  Keep the rendered
+  // image URL versioned by the actual cover asset so a browser/CDN never
+  // reuses a stale redirect after an editor replaces a cover.
+  const coverAssetId = row.content?.coverAsset?.id || row.content?.videoAssets?.[0]?.id || null;
+  const coverUrl = coverAssetId
+    ? `/api/contents/${encodeURIComponent(row.contentId)}/cover?v=${encodeURIComponent(coverAssetId)}`
+    : null;
+
   return {
     contentId: row.contentId,
     title: row.content?.title || "未命名内容",
-    coverUrl: row.content && (row.content.coverAsset || row.content.videoAssets?.[0])
-      ? `/api/contents/${encodeURIComponent(row.contentId)}/cover`
-      : null,
+    coverUrl,
     accessType: row.content?.accessType || "public",
     durationSeconds: durationSeconds || null,
     duration: formatDuration(durationSeconds || undefined),
