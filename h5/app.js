@@ -974,7 +974,11 @@
     if (!video) return;
     try {
       let session;
-      if (state.player.preparedContentId === detail.id && video.currentSrc) {
+      // HLS.js attaches through MediaSource asynchronously; currentSrc can stay
+      // empty briefly even though the already-created session is valid. Do not
+      // create a second session on the user's first click, or the device-limit
+      // guard will reject the click as a concurrent playback attempt.
+      if (state.player.preparedContentId === detail.id) {
         if (autoplay) video.play().catch(function () {});
         return;
       } else if (state.player.preparingPlayback && state.player.preparingPlayback.contentId === detail.id) {
