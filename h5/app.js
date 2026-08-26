@@ -1721,7 +1721,7 @@
     const isDetail = routeState.view === "detail";
     const isHistory = routeState.view === "history";
     const titleMap = {
-      home: ["Samewave", "真实表达，在理解与边界中被看见"],
+      home: ["同频", "真实表达，在理解与边界中被看见"],
       library: ["片库", "搜索、分类与筛选"],
       membership: ["会员", "会员主频道与内容包"],
       me: ["我的", "账号、订单与观看记录"],
@@ -1732,7 +1732,7 @@
     $("appHeader").classList.toggle("is-home", isHome);
     $("headerEyebrow").hidden = false;
     $("headerEyebrow").textContent = "同频";
-    $("headerTitle").textContent = "Samewave";
+    $("headerTitle").textContent = "同频";
     $("headerSubtitle").textContent = isDetail
       ? "视频详情、试看与相关推荐"
       : isHistory
