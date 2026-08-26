@@ -779,19 +779,7 @@
     $("libraryClearFiltersButton").classList.toggle("is-hidden", !hasFilters);
     $("libraryState").textContent = items.length ? "共 " + items.length + " 条内容" : "没有匹配结果。";
     if (!items.length) {
-      $("libraryGrid").innerHTML =
-        '<div class="inline-state">当前没有匹配内容。<br /><button id="libraryEmptyResetButton" class="ghost-button" type="button" style="margin-top:12px;">清空筛选</button></div>';
-      $("libraryEmptyResetButton").addEventListener("click", function () {
-        state.library.search = "";
-        state.library.categoryId = "all";
-        state.library.sort = "newest";
-        $("desktopSearchInput").value = "";
-        $("librarySearchInput").value = "";
-        $("librarySortSegment").querySelectorAll(".segment-button").forEach(function (node) {
-          node.classList.toggle("is-active", node.getAttribute("data-sort") === "newest");
-        });
-        loadLibrary();
-      });
+      $("libraryGrid").innerHTML = '<div class="inline-state">当前没有匹配内容。可使用上方“清空筛选”返回全部内容。</div>';
       return;
     }
     renderContentCards("libraryGrid", items, "library");
