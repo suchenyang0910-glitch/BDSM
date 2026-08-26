@@ -23,6 +23,8 @@ import authH5Routes from "./routes/authH5.js";
 import analyticsAndPreferenceRoutes from "./routes/analyticsPreferences.js";
 import adminFinanceRoutes from "./routes/adminFinance.js";
 import watchProgressRoutes from "./routes/watchProgress.js";
+import playbackRoutes from "./routes/playback.js";
+import publicSeoRoutes from "./routes/publicSeo.js";
 import { botSelfTest, TELEGRAM_CONFIG } from "./services/telegramBot.js";
 import { startEntitlementsCron } from "./services/entitlementsCron.js";
 import { startUploadSessionCleanupCron } from "./services/uploadSessionCleanup.js";
@@ -33,6 +35,7 @@ import {
 } from "./utils/crypto.js";
 import { emitSafetyEvent, emitStructuredLog } from "./utils/structuredError.js";
 import { assertObjectStorageConfiguredOnStartup } from "./services/objectStorage.js";
+import { loadPlaybackConfig } from "./services/playbackConfig.js";
 
 /**
  * 【P0-B 红线】Prisma 自带的默认 log 模式会把原始 SQL/Pxxxx clientVersion 写到 stderr/stdout。
@@ -159,6 +162,7 @@ async function main() {
     logger: process.env.NODE_ENV !== "production",
     trustProxy: true,
   });
+  const playbackConfig = loadPlaybackConfig(process.env);
 
   await app.register(cors, {
     // 空值代表同源部署；跨域时必须明确配置 HTTPS 来源，不能使用 * + Cookie。
@@ -179,6 +183,7 @@ async function main() {
   });
 
   app.decorate("prisma", prisma);
+  app.decorate("playbackConfig", playbackConfig as any);
   (app as any).prisma = prisma; // 给 webhook 路由使用 (fastify as any).prisma 模式
   app.decorateRequest("userId", null);
   app.decorateRequest("telegramUserId", null);
@@ -291,10 +296,15 @@ async function main() {
   await app.register(analyticsAndPreferenceRoutes, { prefix: "/api" });
   await app.register(adminFinanceRoutes, { prefix: "/api" });
   await app.register(watchProgressRoutes, { prefix: "/api" });
+  await app.register(playbackRoutes, { prefix: "/api" });
+  await app.register(publicSeoRoutes, { prefix: "" });
 
   try {
     await prisma.$connect();
     await selfCheckDefaultAdminPasswords(prisma);
+    console.log(
+      `[playback-config] mode=${playbackConfig.mode} configured=${playbackConfig.configured ? "yes" : "no"} missing=${playbackConfig.missingKeys.length}`,
+    );
     const botStatus = await botSelfTest();
     if (botStatus.stub) {
       console.error(

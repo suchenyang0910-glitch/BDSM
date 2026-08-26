@@ -63,9 +63,9 @@
 
           <section id="homeRecentSection" class="section-block is-hidden">
             <div class="section-head">
-              <h3>继续浏览</h3>
+              <h3>上次播放</h3>
             </div>
-            <div id="homeRecentList" class="stack-list"></div>
+            <div id="homeRecentCard"></div>
           </section>
 
           <section class="section-block">
@@ -145,6 +145,17 @@
             </div>
           </div>
 
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">LAST PLAYED</p>
+                <h3>上次播放</h3>
+              </div>
+              <button id="meWatchHistoryButton" class="text-button" type="button">观看历史</button>
+            </div>
+            <div id="meResumeCard"></div>
+          </section>
+
           <div class="info-grid">
             <article class="info-card">
               <p class="info-label">会员状态</p>
@@ -201,6 +212,21 @@
 
         <section id="detailView" class="tab-view is-hidden">
           <article id="detailContent" class="detail-shell"></article>
+        </section>
+
+        <section id="watchHistoryView" class="tab-view is-hidden">
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">WATCH HISTORY</p>
+                <h3>观看历史</h3>
+              </div>
+              <button id="watchHistoryClearButton" class="ghost-button" type="button">清空记录</button>
+            </div>
+            <div id="watchHistoryEmpty" class="empty-state is-hidden">还没有观看历史，去首页或片库打开一条内容后再回来查看。</div>
+            <div id="watchHistoryList" class="stack-list"></div>
+            <button id="watchHistoryLoadMore" class="ghost-button is-hidden" type="button" style="margin-top:12px;">加载更多</button>
+          </section>
         </section>
       </main>
 

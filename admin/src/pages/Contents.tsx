@@ -88,8 +88,22 @@ export type MediaAssetItem = {
   lastErrorClass?: string | null;
   lastVerifiedAt?: string | null;
   createdAt?: string;
+  transcodeJobId?: string | null;
   transcodeStatus?: string | null;
+  transcodeProgressPercent?: number;
   transcodeErrorClass?: string | null;
+  renditions?: Array<{
+    kind: "preview" | "hls_1080" | "hls_720" | "hls_480" | string;
+    status: "pending" | "processing" | "ready" | "failed" | "deleted" | string;
+    width?: number | null;
+    height?: number | null;
+    bitrateKbps?: number | null;
+    durationSeconds?: number | null;
+    segmentCount?: number | null;
+    byteSize?: string | null;
+    errorClass?: string | null;
+    readyAt?: string | null;
+  }>;
 };
 
 export type TelegramPublishJobStatus =
@@ -187,6 +201,7 @@ type UploadSessionSummary = {
 type CompleteMediaUploadReq = { uploadSessionId: string; proof?: { etag?: string | null } };
 type CompleteMediaUploadResp = { ok: boolean; asset: any };
 type ContentMediaResp = { contentStatus: string; items: any[]; uploadSessions?: UploadSessionSummary[] };
+type TranscodeJobActionResp = { ok: true; job: any; asset: any };
 type StartTelegramPublishReq = { channelKinds: Array<"public_free_preview" | "membership_full" | "package_full">; telegramTags?: string[]; reason?: string };
 type StartTelegramPublishResp = { ok: true; jobs: Array<{ id: string; channelKind: string; status: string; jobToken: string; mediaAssetId: string | null; videoAssetId: string | null; targetFreeChannelCode: string | null; createdAt: string }>; normalizedTelegramTags?: string[] };
 
@@ -449,9 +464,48 @@ function normalizeMediaAsset(raw: any): MediaAssetItem {
     lastErrorClass: raw?.errorClass || raw?.transcode?.errorClass || null,
     lastVerifiedAt: raw?.verifiedAt || null,
     createdAt: raw?.createdAt || null,
+    transcodeJobId: raw?.transcode?.id || null,
     transcodeStatus: raw?.transcode?.status || null,
+    transcodeProgressPercent: typeof raw?.transcode?.progressPercent === "number" ? raw.transcode.progressPercent : 0,
     transcodeErrorClass: raw?.transcode?.errorClass || null,
+    renditions: Array.isArray(raw?.renditions) ? raw.renditions : [],
   };
+}
+
+function humanizeTranscodeStatus(asset: MediaAssetItem): string {
+  if (asset.transcodeStatus === "ready") return "可发布";
+  if (asset.transcodeStatus === "processing") return `转码中 ${asset.transcodeProgressPercent || 0}%`;
+  if (asset.transcodeStatus === "failed") return "转码失败";
+  if (asset.transcodeStatus === "queued") return "等待转码";
+  return asset.status === "ready" ? "等待转码" : "未开始";
+}
+
+function transcodeStatusTagColor(asset: MediaAssetItem): string {
+  if (asset.transcodeStatus === "ready") return "green";
+  if (asset.transcodeStatus === "processing") return "processing";
+  if (asset.transcodeStatus === "failed") return "red";
+  if (asset.transcodeStatus === "queued") return "gold";
+  return "default";
+}
+
+function humanizeRenditionKind(kind: string): string {
+  switch (kind) {
+    case "preview": return "试看";
+    case "hls_1080": return "1080p";
+    case "hls_720": return "720p";
+    case "hls_480": return "480p";
+    default: return kind;
+  }
+}
+
+function humanizeRenditionStatus(status: string): string {
+  switch (status) {
+    case "ready": return "就绪";
+    case "processing": return "转码中";
+    case "failed": return "失败";
+    case "deleted": return "已删除";
+    default: return "等待中";
+  }
 }
 export async function completeMediaUpload(contentId: string, req: CompleteMediaUploadReq): Promise<CompleteMediaUploadResp> {
   const res = await http.post(`/admin/contents/${encodeURIComponent(contentId)}/assets/complete`, req, { timeout: 30_000 });
@@ -463,6 +517,14 @@ export async function listContentMedia(contentId: string): Promise<ContentMediaR
 }
 export async function deleteContentMedia(contentId: string, assetId: string): Promise<{ ok: true; asset: any }> {
   const res = await http.delete(`/admin/contents/${encodeURIComponent(contentId)}/assets/${encodeURIComponent(assetId)}`);
+  return res.data;
+}
+export async function retryTranscodeJob(jobId: string): Promise<TranscodeJobActionResp> {
+  const res = await http.post(`/admin/transcode-jobs/${encodeURIComponent(jobId)}/retry`, {});
+  return res.data;
+}
+export async function cancelTranscodeJob(jobId: string): Promise<TranscodeJobActionResp> {
+  const res = await http.post(`/admin/transcode-jobs/${encodeURIComponent(jobId)}/cancel`, {});
   return res.data;
 }
 export async function startTelegramPublish(contentId: string, req: StartTelegramPublishReq): Promise<StartTelegramPublishResp> {
@@ -891,6 +953,8 @@ const ContentsPage: React.FC = () => {
       geoKeywords: [],
       telegramTags: [],
       categoryIds: [],
+      previewEnabled: true,
+      previewDurationSeconds: 60,
     });
     setDrawerOpen(true);
   };
@@ -904,17 +968,8 @@ const ContentsPage: React.FC = () => {
     setChannelMessages([]);
     // 默认勾选与 accessType 匹配的 channel kinds
     const defaultKinds: Array<TelegramPublishJobItem["channelKind"]> = [];
-    const rawAny = row as any;
-    const hasPreviewAsset = Boolean(rawAny.previewAssetId || rawAny.preview_asset_id);
-    if (row.accessType === "public") defaultKinds.push("public_free_preview");
-    if (row.accessType === "membership") {
-      if (hasPreviewAsset) defaultKinds.push("public_free_preview");
-      defaultKinds.push("membership_full");
-    }
-    if (row.accessType === "package") {
-      if (hasPreviewAsset) defaultKinds.push("public_free_preview");
-      defaultKinds.push("package_full");
-    }
+    if (row.accessType === "membership") defaultKinds.push("membership_full");
+    if (row.accessType === "package") defaultKinds.push("package_full");
     setChannelKinds(defaultKinds);
     form.setFieldsValue({
       title: row.title,
@@ -925,7 +980,8 @@ const ContentsPage: React.FC = () => {
       geoKeywords: row.geoKeywords || [],
       coverUrl: row.coverUrl,
       thumbnailUrl: row.thumbnailUrl,
-      previewUrl: row.previewUrl,
+      previewEnabled: row.previewEnabled !== false,
+      previewDurationSeconds: row.previewDurationSeconds || 60,
       durationSeconds: row.durationSeconds,
       accessType: row.accessType as AccessTypeForSelect,
       sortOrder: row.sortOrder,
@@ -942,7 +998,6 @@ const ContentsPage: React.FC = () => {
       packageId: row.packageId,
       telegramTags: [],
     });
-    void rawAny;
     void refreshContentMedia(row.id);
     setDrawerOpen(true);
   };
@@ -1444,7 +1499,6 @@ const ContentsPage: React.FC = () => {
         seoKeywords: values.seoKeywords || [],
         geoKeywords: values.geoKeywords || [],
         coverAssetId,
-        previewAssetId,
         fullVideoAssetId: fullVideoAssetId ?? null,
         fullVideoAssetIds: fullVideoSegments.map((asset) => asset.id),
         categoryIds: values.categoryIds || [],
@@ -1841,8 +1895,8 @@ const ContentsPage: React.FC = () => {
         message="内容交付说明（阶段一）"
         description={
           <Space direction="vertical" size={4}>
-            <span>· 点击“发布”后，系统会自动创建 Bot 发送任务；会员内容发往会员私密频道，内容包内容发往对应内容包私密频道。</span>
-            <span>· 若上传了 30–60 秒试看并选择免费试看频道，系统会同时投放预览并附带 Mini App 跳转入口。</span>
+            <span>· 每条内容只上传一份完整源视频；系统会自动生成独立私有试看 HLS，未付费不会拿到完整版播放资产。</span>
+            <span>· Web 平台播放为主，Telegram 私密频道仍保留为备用完整交付链路。</span>
             <span>· 单条售卖（single）首期关闭，避免共享频道造成权益越界。</span>
           </Space>
         }
@@ -1943,8 +1997,8 @@ const ContentsPage: React.FC = () => {
                   <Alert
                     type="info"
                     showIcon
-                    message="只需三步：填写标题与类型 → 上传素材 → 发布到频道"
-                    description="首期默认发布到会员频道。SEO、排序、运营标签等不影响首次上传，可在保存后再补充。"
+                    message="只需三步：填写标题与试看策略 → 上传完整源视频 → 选择交付方式"
+                    description="每条内容只上传一份完整源视频；系统会自动生成独立私有试看 HLS。SEO、排序、运营标签等不影响首次上传，可在保存后再补充。"
                     style={{ marginBottom: 16 }}
                   />
                   <Form.Item name="title" label="标题" rules={[{ required: true, message: "请输入标题" }]}>
@@ -2014,12 +2068,38 @@ const ContentsPage: React.FC = () => {
                         icon={<InfoCircleOutlined />}
                         message={
                           accessTypeValue === "public"
-                            ? "公开试看会自动同步至所有已启用免费流量频道；无需选择频道或填写频道 ID。"
-                            : "上传试看视频后，可在发布页一键同步至所有免费流量频道；完整视频仍只发送到私密频道。"
+                            ? "公开内容会基于完整源视频自动生成试看 HLS；未付费用户不会拿到完整版播放会话。"
+                            : "完整视频上传并转码后，未付费用户只会获得试看播放会话；已购/会员用户才会获得完整版会话。"
                         }
                       />
                     </Space>
                   )}
+
+                  <Card
+                    size="small"
+                    title="试看策略"
+                    style={{ marginBottom: 24 }}
+                  >
+                    <Space size={16} style={{ width: "100%" }} align="start">
+                      <Form.Item name="previewEnabled" label="启用试看" valuePropName="checked" style={{ marginBottom: 0 }}>
+                        <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+                      </Form.Item>
+                      <Form.Item name="previewDurationSeconds" label="试看时长" style={{ flex: 1, marginBottom: 0 }}>
+                        <Select>
+                          <Option value={30}>30 秒</Option>
+                          <Option value={60}>60 秒</Option>
+                          <Option value={90}>90 秒</Option>
+                        </Select>
+                      </Form.Item>
+                    </Space>
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginTop: 12 }}
+                      message="系统会从完整源视频起点自动生成独立私有试看 HLS"
+                      description="源片短于设定时长时会自动取全长。试看限制完全在服务端产物层实现，不依赖前端播放器裁剪完整版。"
+                    />
+                  </Card>
 
                   {accessTypeValue === "package" && (
                     <Space direction="vertical" size={12} style={{ width: "100%", marginBottom: 12 }}>
@@ -2101,9 +2181,6 @@ const ContentsPage: React.FC = () => {
                       <DatePicker showTime style={{ width: "100%" }} />
                     </Form.Item>
                   </Space>
-                  <Form.Item name="previewUrl" label="试听/预览 URL（旧字段，可留空）">
-                    <Input placeholder="https://...（推荐在「素材上传」Tab 传试看视频，系统自动回填此字段）" />
-                  </Form.Item>
                   <Space size={16} style={{ width: "100%" }}>
                     {accessTypeValue === "package" ? (
                       <Form.Item
@@ -2220,15 +2297,15 @@ const ContentsPage: React.FC = () => {
             // ==================== Tab 2：Phase A 私有媒体基础设施 ====================
             {
               key: "media",
-              label: <Space><span>② 上传素材</span>{coverAssetId && previewAssetId ? <Badge count={2} /> : null}</Space>,
+              label: <Space><span>② 上传素材</span>{coverAssetId && fullVideoAssetId ? <Badge count={2} /> : null}</Space>,
               children: (
                 <Space direction="vertical" size={20} style={{ width: "100%" }}>
                   <Alert
                     type="info"
                     showIcon
                     icon={<InfoCircleOutlined />}
-                    message="Phase A 只完成私有媒体入库：直传对象存储、服务端校验、转码排队占位。"
-                    description="当前阶段不会提供完整视频播放，也不会返回对象 Key、Bucket、签名下载地址或完整私有媒体 URL。"
+                    message="后台只上传封面和完整源视频。"
+                    description="试看 HLS 由 Worker 从完整源视频自动生成，后台不会提供单独的试看视频上传入口，也不会返回对象 Key、Bucket、签名下载地址或完整私有媒体 URL。"
                   />
                   <Card
                     size="small"
@@ -2281,46 +2358,7 @@ const ContentsPage: React.FC = () => {
                     size="small"
                     title={
                       <Space>
-                        <span>② 试看源视频</span>
-                        {previewAsset?.status === "ready" ? <CheckCircleTwoTone twoToneColor="#52c41a" /> : previewAsset?.status === "failed" ? <ExclamationCircleTwoTone twoToneColor="#ff4d4f" /> : <ClockCircleOutlined style={{ color: "#888" }} />}
-                      </Space>
-                    }
-                    extra={<Tag color="geekblue">≤ 1GB</Tag>}
-                  >
-                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                      <Upload
-                        multiple={false}
-                        maxCount={1}
-                        accept="video/*"
-                        disabled={!canEdit || previewUploading}
-                        showUploadList={false}
-                        beforeUpload={(f) => doDirectUpload(f as File, "preview_video", {
-                          setAssetId: setPreviewAssetId, setAsset: setPreviewAsset,
-                          setProgress: setPreviewProgress, setUploading: setPreviewUploading,
-                        }, 800 * 1024 * 1024)}
-                      >
-                        <Button icon={<UploadOutlined />} loading={previewUploading} disabled={!canEdit}>
-                          {previewAssetId ? (previewAsset?.status === "ready" ? "重新上传试看" : "重新上传（上次未完成）") : "上传试看视频（30–60 秒 · 必须带水印）"}
-                        </Button>
-                      </Upload>
-                      <Progress percent={previewProgress} status={previewAsset?.status === "failed" ? "exception" : previewProgress === 100 ? "success" : previewUploading ? "active" : undefined} />
-                      {previewAsset && (
-                        <Space direction="vertical" size={4} style={{ fontSize: 12 }}>
-                          <span>文件名：{previewAsset.originalFilename}</span>
-                          <span>大小：{(previewAsset.contentLength / 1024 / 1024).toFixed(2)} MB</span>
-                          <span>状态：<Tag color={previewAsset.status === "ready" ? "green" : previewAsset.status === "failed" ? "red" : "default"}>{previewAsset.status === "ready" ? "已校验" : previewAsset.status === "failed" ? "失败" : "上传中"}</Tag></span>
-                          <span>转码：<Tag color={previewAsset.transcodeStatus === "queued" ? "gold" : previewAsset.transcodeStatus === "failed" ? "red" : "default"}>{previewAsset.transcodeStatus === "queued" ? "等待转码" : previewAsset.transcodeStatus === "failed" ? "转码失败" : "未入队"}</Tag></span>
-                          {previewAsset.lastErrorClass && <span style={{ color: "#ff4d4f" }}>错误类别：{previewAsset.lastErrorClass}</span>}
-                          <Button size="small" danger onClick={() => onDeleteMediaAsset(previewAsset)}>删除</Button>
-                        </Space>
-                      )}
-                    </Space>
-                  </Card>
-                  <Card
-                    size="small"
-                    title={
-                      <Space>
-                        <span>③ 完整源视频</span>
+                        <span>② 完整源视频</span>
                         {fullVideoSegments.length > 0 && fullVideoSegments.every((asset) => asset.status === "ready")
                           ? <CheckCircleTwoTone twoToneColor="#52c41a" />
                           : fullVideoUploadError
@@ -2335,7 +2373,7 @@ const ContentsPage: React.FC = () => {
                         type="info"
                         showIcon
                         message="完整源视频必须走 Multipart Upload：默认 32MiB 分片、最多 3 并发、失败自动重试、刷新后可继续。"
-                        description="前端不会拿到永久 Bucket 地址、对象 Key 或完整视频公开 URL；取消上传会调用 abort，旧会话不可恢复。"
+                        description={`转码完成后系统会自动生成${form.getFieldValue("previewEnabled") === false ? "完整版 HLS" : `${form.getFieldValue("previewDurationSeconds") || 60} 秒试看 HLS + 完整版 HLS`}；前端不会拿到永久 Bucket 地址、对象 Key 或完整视频公开 URL；取消上传会调用 abort，旧会话不可恢复。`}
                       />
                       {(fullVideoSession || fullVideoResumeRecord) && (
                         <Alert
@@ -2434,13 +2472,71 @@ const ContentsPage: React.FC = () => {
                       </Space>
                       {fullVideoSegments.map((asset, index) => (
                         <Card key={asset.id} size="small" style={{ background: "#fafafa" }}>
-                          <Space wrap size={8}>
-                            <Tag color="purple">源文件 {index + 1}</Tag>
-                            <span>{asset.originalFilename || "未命名视频"}</span>
-                            <span>{(asset.contentLength / 1024 / 1024 / 1024).toFixed(3)} GB</span>
-                            <Tag color={asset.status === "ready" ? "green" : asset.status === "failed" ? "red" : "default"}>{asset.status === "ready" ? "已校验" : asset.status === "failed" ? "失败" : "上传中"}</Tag>
-                            <Tag color={asset.transcodeStatus === "queued" ? "gold" : asset.transcodeStatus === "failed" ? "red" : "default"}>{asset.transcodeStatus === "queued" ? "等待转码" : asset.transcodeStatus === "failed" ? "转码失败" : "未入队"}</Tag>
-                            <Button size="small" danger disabled={fullVideoUploading} onClick={() => onDeleteMediaAsset(asset)}>删除</Button>
+                          <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                            <Space wrap size={8}>
+                              <Tag color="purple">源文件 {index + 1}</Tag>
+                              <span>{asset.originalFilename || "未命名视频"}</span>
+                              <span>{(asset.contentLength / 1024 / 1024 / 1024).toFixed(3)} GB</span>
+                              <Tag color={asset.status === "ready" ? "green" : asset.status === "failed" ? "red" : "default"}>{asset.status === "ready" ? "已校验" : asset.status === "failed" ? "失败" : "上传中"}</Tag>
+                              <Tag color={transcodeStatusTagColor(asset)}>{humanizeTranscodeStatus(asset)}</Tag>
+                              <Button size="small" danger disabled={fullVideoUploading} onClick={() => onDeleteMediaAsset(asset)}>删除</Button>
+                              {!!asset.transcodeStatus && asset.transcodeStatus === "failed" && (
+                                <Button
+                                  size="small"
+                                  icon={<ReloadOutlined />}
+                                  disabled={!canPublish || !asset.transcodeJobId}
+                                  onClick={async () => {
+                                    try {
+                                      if (!asset.transcodeJobId) {
+                                        message.warning("当前没有可重试的转码任务");
+                                        return;
+                                      }
+                                      await retryTranscodeJob(asset.transcodeJobId);
+                                      message.success("已重新入队转码任务");
+                                      await refreshContentMedia(editing!.id);
+                                    } catch (e) {
+                                      message.error(errMsg(e, "重新入队失败"));
+                                    }
+                                  }}
+                                >
+                                  重试转码
+                                </Button>
+                              )}
+                              {!!asset.transcodeStatus && ["queued", "processing"].includes(asset.transcodeStatus) && (
+                                <Button
+                                  size="small"
+                                  icon={<CloseCircleOutlined />}
+                                  disabled={!canPublish || !asset.transcodeJobId}
+                                  onClick={async () => {
+                                    try {
+                                      if (!asset.transcodeJobId) {
+                                        message.warning("当前没有可取消的转码任务");
+                                        return;
+                                      }
+                                      await cancelTranscodeJob(asset.transcodeJobId);
+                                      message.success("已取消转码任务");
+                                      await refreshContentMedia(editing!.id);
+                                    } catch (e) {
+                                      message.error(errMsg(e, "取消转码失败"));
+                                    }
+                                  }}
+                                >
+                                  取消转码
+                                </Button>
+                              )}
+                            </Space>
+                            {!!asset.transcodeErrorClass && (
+                              <Text type="danger" style={{ fontSize: 12 }}>
+                                失败说明：{asset.transcodeErrorClass === "source_invalid_media" ? "视频文件无法读取，请更换源文件" : asset.transcodeErrorClass}
+                              </Text>
+                            )}
+                            <Space wrap size={8}>
+                              {(asset.renditions || []).map((rendition) => (
+                                <Tag key={`${asset.id}-${rendition.kind}`} color={rendition.status === "ready" ? "green" : rendition.status === "failed" ? "red" : rendition.status === "processing" ? "processing" : "default"}>
+                                  {humanizeRenditionKind(rendition.kind)} · {humanizeRenditionStatus(rendition.status)}
+                                </Tag>
+                              ))}
+                            </Space>
                           </Space>
                         </Card>
                       ))}
@@ -2465,7 +2561,7 @@ const ContentsPage: React.FC = () => {
                             type="info"
                             showIcon
                             icon={<InfoCircleOutlined />}
-                            message="频道 chatId 完全由服务端控制，前端仅能选择「渠道类型」；运营绝对不能直接提交 chatId，也无法在 UI 看到明文 chatId。"
+                            message="频道 chatId 完全由服务端控制，前端仅能选择备用完整交付渠道；运营绝对不能直接提交 chatId，也无法在 UI 看到明文 chatId。"
                           />
                           <Form.Item
                             name="telegramTags"
@@ -2481,24 +2577,6 @@ const ContentsPage: React.FC = () => {
                             style={{ width: "100%" }}
                           >
                             <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                              <Checkbox
-                                value="public_free_preview"
-                                disabled={
-                                  !canPublish ||
-                                  accessTypeValue === "single" ||
-                                  !!previewAssetId === false ||
-                                  previewAsset?.status !== "ready"
-                                }
-                              >
-                                <Space>
-                                  <Tag color={CHANNEL_KIND_LABEL.public_free_preview.color}>{CHANNEL_KIND_LABEL.public_free_preview.label}</Tag>
-                                  <span style={{ color: "#666", fontSize: 12 }}>
-                                    {!previewAssetId || previewAsset?.status !== "ready"
-                                      ? "（未满足：先在「素材上传」Tab 成功上传试看视频）"
-                                      : `✅ 试看素材已就绪；将自动同步至全部 ${freeChannels.length} 个已启用免费频道，并附带站外 H5 收银台链接`}
-                                  </span>
-                                </Space>
-                              </Checkbox>
                               <Checkbox
                                 value="membership_full"
                                 disabled={
@@ -2551,16 +2629,6 @@ const ContentsPage: React.FC = () => {
                               </Checkbox>
                             </Space>
                           </Checkbox.Group>
-                          {channelKinds.includes("public_free_preview") && (
-                            <Alert
-                              type={freeChannels.length > 0 ? "info" : "warning"}
-                              showIcon
-                              message="免费流量频道（自动分发）"
-                              description={freeChannels.length > 0
-                                ? `本次试看将同步到全部 ${freeChannels.length} 个已启用免费频道；频道池由服务端统一管理，内容里无需选择。`
-                                : "服务端尚未启用免费频道，暂时不能创建试看分发任务。"}
-                            />
-                          )}
                           <Space wrap>
                             <Button
                               type="primary"
@@ -2603,7 +2671,7 @@ const ContentsPage: React.FC = () => {
                             message="发布模式说明"
                             description={
                               <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-                                <span>· 上传试看并勾选“免费频道试看”后，系统会自动为全部已启用免费频道创建预览任务；完整视频仍只发送到对应私密频道。</span>
+                                <span>· 当前主链路是 Web 平台播放；Telegram 仅作为完整版备用交付，不再依赖单独试看视频上传。</span>
                                 <span>· 此处用于查看状态、按需补发或取消。Bot 发送为异步：大视频可能需要较长时间，请查看下表状态与重试次数。</span>
                                 <span>· 最大重试 3 次，指数退避（5s / 10s / 20s），重试耗尽后可手动点击「重试」按钮重新入队。</span>
                               </Space>

@@ -213,6 +213,8 @@ model User {
   contentPreferences UserContentPreference[]
   watchEvents     WatchEvent[]
   watchProgresses WatchProgress[]
+  playbackSessions PlaybackSession[]
+  playbackRevokeOutboxes PlaybackRevokeOutbox[]
   mergedFromUsers User[]    @relation("UserMergeTarget")
   mergedTargetUser User?    @relation("UserMergeTarget", fields: [mergedIntoUserId], references: [id], onDelete: SetNull)
 
@@ -363,6 +365,9 @@ model Content {
   coverAssetId       String?          @map("cover_asset_id") @db.VarChar(64)
   previewAssetId     String?          @map("preview_asset_id") @db.VarChar(64)
   fullVideoAssetId   String?          @map("full_video_asset_id") @db.VarChar(64)
+  previewEnabled     Boolean          @default(true) @map("preview_enabled")
+  previewDurationSeconds Int          @default(60) @map("preview_duration_seconds")
+  platformPlaybackEnabled Boolean     @default(false) @map("platform_playback_enabled")
   publishedAt        DateTime?      @map("published_at")
   telegramMessageId  BigInt?          @map("telegram_message_id")
   telegramSentAt     DateTime?        @map("telegram_sent_at")
@@ -383,10 +388,14 @@ model Content {
   publishJobs        TelegramPublishJob[]
   linkedChannelMessages TelegramChannelMessage[]
   videoAssets        VideoAsset[]
+  videoRenditions    VideoRendition[]
   uploadSessions     UploadSession[]
   transcodeJobs      TranscodeJob[]
   watchEvents        WatchEvent[]
   watchProgresses    WatchProgress[]
+  playbackSessions   PlaybackSession[]
+  playbackGrants     PlaybackGrant[]
+  playbackRevokeOutboxes PlaybackRevokeOutbox[]
 
   @@index([status, accessType])
   @@index([isFeatured, featuredSort])
@@ -522,6 +531,7 @@ model Order {
   entitlements          Entitlement[]
   supportTickets        SupportTicket[]
   paymentTransactions   PaymentTransaction[]
+  playbackRevokeOutboxes PlaybackRevokeOutbox[]
   usdtPaymentAddress    PaymentAddress? @relation(fields: [usdtPaymentAddressId], references: [id])
   usdtPaymentAddressId  String?         @map("usdt_payment_address_id")
 
@@ -662,6 +672,8 @@ model Entitlement {
   sourceOrder    Order?            @relation(fields: [sourceOrderId], references: [id], onDelete: SetNull)
   telegramInvites TelegramInvite[]
   supportTickets SupportTicket[]
+  playbackSessions PlaybackSession[]
+  playbackRevokeOutboxes PlaybackRevokeOutbox[]
 
   @@index([userId, status])
   @@index([resourceType, resourceId])
@@ -714,6 +726,7 @@ model AdminUser {
   channelDiscoveryRequests AdminChannelDiscoveryRequest[] @relation("ChannelDiscoverySubmitAdmin")
   linkedChannelMessages TelegramChannelMessage[] @relation("ChannelMessageLinkAdmin")
   createdUploadSessions UploadSession[] @relation("UploadSessionCreator")
+  requestedPlaybackRevokes PlaybackRevokeOutbox[]
 
   @@map("admin_users")
 }
@@ -998,6 +1011,48 @@ enum TranscodeJobStatus {
   cancelled
 }
 
+enum VideoRenditionKind {
+  preview
+  hls_1080
+  hls_720
+  hls_480
+}
+
+enum VideoRenditionStatus {
+  pending
+  processing
+  ready
+  failed
+  deleted
+}
+
+enum PlaybackSessionStatus {
+  active
+  revoked
+  expired
+}
+
+enum PlaybackDeliveryMode {
+  poc
+  enabled
+}
+
+enum PlaybackRevokeReason {
+  refund
+  entitlement_revoked
+  entitlement_expired
+  content_unpublished
+  user_suspended
+  manual_admin
+}
+
+enum PlaybackRevokeOutboxStatus {
+  queued
+  processing
+  applied
+  failed
+}
+
 enum UploadSessionStatus {
   initiated
   uploading
@@ -1091,6 +1146,7 @@ model VideoAsset {
   usedByFullVideoSegments ContentFullVideoSegment[]
   publishJobs       TelegramPublishJob[]
   transcodeJobs     TranscodeJob[]
+  renditions        VideoRendition[]
 
   @@index([contentId, kind, createdAt])
   @@index([contentId, status])
@@ -1155,6 +1211,10 @@ model TranscodeJob {
   status            TranscodeJobStatus @default(queued) @map("status")
   attemptCount      Int               @default(0) @map("attempt_count")
   errorClass        String?           @map("error_class") @db.VarChar(64)
+  workerId          String?           @map("worker_id") @db.VarChar(64)
+  leaseUntil        DateTime?         @map("lease_until")
+  lastHeartbeatAt   DateTime?         @map("last_heartbeat_at")
+  progressPercent   Int               @default(0) @map("progress_percent")
   queuedAt          DateTime          @default(now()) @map("queued_at")
   startedAt         DateTime?         @map("started_at")
   finishedAt        DateTime?         @map("finished_at")
@@ -1164,22 +1224,138 @@ model TranscodeJob {
 
   @@index([contentId, status, queuedAt])
   @@index([status, queuedAt])
+  @@index([status, leaseUntil])
+  @@index([workerId, status])
   @@map("transcode_jobs_v2")
+}
+
+model VideoRendition {
+  id                String               @id @default(uuid())
+  contentId         String               @map("content_id")
+  assetId           String               @map("asset_id")
+  kind              VideoRenditionKind   @map("kind")
+  status            VideoRenditionStatus @default(pending) @map("status")
+  manifestKey       String?              @map("manifest_key") @db.VarChar(1024)
+  prefixKey         String?              @map("prefix_key") @db.VarChar(1024)
+  width             Int?                 @map("width")
+  height            Int?                 @map("height")
+  bitrateKbps       Int?                 @map("bitrate_kbps")
+  durationSeconds   Int?                 @map("duration_seconds")
+  segmentCount      Int?                 @map("segment_count")
+  byteSize          BigInt?              @map("byte_size")
+  errorClass        String?              @map("error_class") @db.VarChar(64)
+  readyAt           DateTime?            @map("ready_at")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @updatedAt @map("updated_at")
+
+  content           Content              @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  asset             VideoAsset           @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, kind])
+  @@index([contentId, status, updatedAt])
+  @@index([assetId, status, updatedAt])
+  @@index([status, updatedAt])
+  @@map("video_renditions")
+}
+
+model PlaybackSession {
+  id                 String                @id @default(uuid())
+  userId             String                @map("user_id")
+  contentId          String                @map("content_id")
+  entitlementId      String?               @map("entitlement_id")
+  status             PlaybackSessionStatus @default(active) @map("status")
+  deliveryMode       PlaybackDeliveryMode  @map("delivery_mode")
+  deviceHash         String                @map("device_hash") @db.VarChar(128)
+  entitlementVersion Int                   @default(1) @map("entitlement_version")
+  expiresAt          DateTime              @map("expires_at")
+  revokedAt          DateTime?             @map("revoked_at")
+  lastHeartbeatAt    DateTime?             @map("last_heartbeat_at")
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+
+  user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content            Content               @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  entitlement        Entitlement?          @relation(fields: [entitlementId], references: [id], onDelete: SetNull)
+  grants             PlaybackGrant[]
+  watchEvents        WatchEvent[]
+
+  @@index([userId, status, expiresAt])
+  @@index([contentId, status])
+  @@index([entitlementId, status])
+  @@index([deviceHash, status, expiresAt])
+  @@index([status, expiresAt])
+  @@map("playback_sessions")
+}
+
+model PlaybackGrant {
+  id                String           @id @default(uuid())
+  playbackSessionId String           @map("playback_session_id")
+  contentId         String           @map("content_id")
+  tokenFingerprint  String           @unique @map("token_fingerprint") @db.VarChar(128)
+  scopePath         String           @map("scope_path") @db.VarChar(512)
+  expiresAt         DateTime         @map("expires_at")
+  revokedAt         DateTime?        @map("revoked_at")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  playbackSession   PlaybackSession  @relation(fields: [playbackSessionId], references: [id], onDelete: Cascade)
+  content           Content          @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@index([playbackSessionId, expiresAt])
+  @@index([contentId, expiresAt])
+  @@index([revokedAt, expiresAt])
+  @@map("playback_grants")
+}
+
+model PlaybackRevokeOutbox {
+  id                 String                    @id @default(uuid())
+  userId             String?                   @map("user_id")
+  contentId          String?                   @map("content_id")
+  entitlementId      String?                   @map("entitlement_id")
+  sourceOrderId      String?                   @map("source_order_id")
+  requestedByAdminId String?                   @map("requested_by_admin_id")
+  reason             PlaybackRevokeReason      @map("reason")
+  status             PlaybackRevokeOutboxStatus @default(queued) @map("status")
+  attemptCount       Int                       @default(0) @map("attempt_count")
+  lastErrorClass     String?                   @map("last_error_class") @db.VarChar(64)
+  availableAt        DateTime                  @default(now()) @map("available_at")
+  lockedAt           DateTime?                 @map("locked_at")
+  processedAt        DateTime?                 @map("processed_at")
+  createdAt          DateTime                  @default(now()) @map("created_at")
+  updatedAt          DateTime                  @updatedAt @map("updated_at")
+
+  user               User?                     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  content            Content?                  @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  entitlement        Entitlement?              @relation(fields: [entitlementId], references: [id], onDelete: SetNull)
+  sourceOrder        Order?                    @relation(fields: [sourceOrderId], references: [id], onDelete: SetNull)
+  requestedByAdmin   AdminUser?                @relation(fields: [requestedByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([status, availableAt, createdAt])
+  @@index([userId, status, createdAt])
+  @@index([contentId, status, createdAt])
+  @@index([entitlementId, status, createdAt])
+  @@index([sourceOrderId, status, createdAt])
+  @@map("playback_revoke_outbox")
 }
 
 model WatchEvent {
   id                String           @id @default(uuid())
   userId            String?          @map("user_id")
   contentId         String           @map("content_id")
+  sessionId         String?          @map("session_id")
   eventName         String           @map("event_name") @db.VarChar(64)
+  source            String?          @map("source") @db.VarChar(32)
+  errorClass        String?          @map("error_class") @db.VarChar(64)
   occurredAt        DateTime         @default(now()) @map("occurred_at")
   positionSec       Int?             @map("position_sec")
   quality           String?          @db.VarChar(32)
 
   user              User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
   content           Content          @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  playbackSession   PlaybackSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
   @@index([contentId, eventName, occurredAt])
+  @@index([sessionId, occurredAt])
   @@index([userId, occurredAt])
   @@index([occurredAt])
   @@map("watch_events")

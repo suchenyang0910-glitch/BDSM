@@ -2,7 +2,6 @@
   "use strict";
 
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-  const RECENT_KEY = "intune_recent_views_v1";
 
   const CLIENT_ERRORS = {
     unauthorized: "请先完成会话建立后再继续。",
@@ -54,6 +53,20 @@
       loaded: false,
       items: [],
     },
+    watch: {
+      loading: false,
+      loaded: false,
+      recent: null,
+      history: [],
+      pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
+    },
+    player: {
+      contentId: "",
+      video: null,
+      lastProgressSecond: -1,
+      started: false,
+    },
+    resumeIntent: null,
     route: {
       tab: "home",
       view: "tab",
@@ -189,6 +202,15 @@
     return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
   }
 
+  function formatSecondsClock(seconds) {
+    const safe = Math.max(0, Math.floor(Number(seconds) || 0));
+    const h = Math.floor(safe / 3600);
+    const m = Math.floor((safe % 3600) / 60);
+    const s = safe % 60;
+    const pad = function (n) { return String(n).padStart(2, "0"); };
+    return h > 0 ? (h + ":" + pad(m) + ":" + pad(s)) : (pad(m) + ":" + pad(s));
+  }
+
   function ensureMetaTag(selector, attrs) {
     let element = document.head.querySelector(selector);
     if (!element) {
@@ -236,6 +258,14 @@
     }
     const raw = String(window.location.hash || "").replace(/^#/, "");
     const params = new URLSearchParams(raw);
+    if (params.get("view") === "history") {
+      return {
+        view: "history",
+        id: "",
+        tab: "me",
+        fromTab: params.get("from") || "me",
+      };
+    }
     if (params.get("view") === "content" && params.get("id")) {
       return {
         view: "detail",
@@ -263,6 +293,23 @@
     params.set("id", id);
     params.set("from", fromTab || "home");
     window.location.hash = params.toString();
+  }
+
+  function setHashForHistory(fromTab) {
+    const params = new URLSearchParams();
+    params.set("view", "history");
+    params.set("from", fromTab || "me");
+    window.location.hash = params.toString();
+  }
+
+  function openContentDetail(id, fromTab, options) {
+    const opts = options || {};
+    state.resumeIntent = {
+      contentId: id,
+      resumePositionSec: Math.max(0, Math.floor(Number(opts.resumePositionSec) || 0)),
+      autoplay: !!opts.autoplay,
+    };
+    setHashForDetail(id, fromTab);
   }
 
   function showBootError(title, message) {
@@ -297,28 +344,50 @@
     return "查看详情";
   }
 
-  function getRecentItems() {
-    try {
-      const raw = JSON.parse(window.localStorage.getItem(RECENT_KEY) || "[]");
-      if (!Array.isArray(raw)) return [];
-      return raw.filter(function (item) { return item && item.id; }).slice(0, 3);
-    } catch (_) {
-      return [];
+  function getLastPlayedSubtitle(item) {
+    if (!item) return "暂无播放记录";
+    if (item.isFinished) return "已看完，下次从头播放";
+    return "上次看到 " + formatSecondsClock(item.positionSec || 0);
+  }
+
+  function applyWatchProgressItem(item, options) {
+    if (!item || !item.contentId) return;
+    const opts = options || {};
+    const existed = (state.watch.history || []).some(function (entry) { return entry.contentId === item.contentId; });
+    const history = (state.watch.history || []).filter(function (entry) { return entry.contentId !== item.contentId; });
+    history.unshift(item);
+    state.watch.history = history;
+    state.watch.recent = history[0] || null;
+    if (!existed) {
+      const total = Number(state.watch.pagination.total || 0) + 1;
+      state.watch.pagination.total = total;
+      state.watch.pagination.totalPages = Math.max(1, Math.ceil(total / (state.watch.pagination.pageSize || 20)));
+    }
+    if (!opts.skipRender) {
+      renderHomeResume();
+      renderMeResume();
+      if (state.route.view === "history") renderWatchHistory();
     }
   }
 
-  function rememberRecent(detail) {
-    if (!detail || !detail.id) return;
-    const next = getRecentItems().filter(function (item) { return item.id !== detail.id; });
-    next.unshift({
-      id: detail.id,
-      title: detail.title || "未命名内容",
-      duration: detail.duration || "—",
-      accessType: detail.accessType || "public",
-      coverUrl: detail.coverUrl || null,
-      viewedAt: new Date().toISOString(),
-    });
-    window.localStorage.setItem(RECENT_KEY, JSON.stringify(next.slice(0, 3)));
+  function removeWatchProgressItem(contentId) {
+    state.watch.history = (state.watch.history || []).filter(function (item) { return item.contentId !== contentId; });
+    state.watch.recent = state.watch.history[0] || null;
+    const nextTotal = Math.max(0, Number(state.watch.pagination.total || 0) - 1);
+    state.watch.pagination.total = nextTotal;
+    state.watch.pagination.totalPages = Math.max(1, Math.ceil(nextTotal / (state.watch.pagination.pageSize || 20)));
+    renderHomeResume();
+    renderMeResume();
+    if (state.route.view === "history") renderWatchHistory();
+  }
+
+  function clearWatchProgressState() {
+    state.watch.history = [];
+    state.watch.recent = null;
+    state.watch.pagination = { page: 1, pageSize: 20, total: 0, totalPages: 1 };
+    renderHomeResume();
+    renderMeResume();
+    if (state.route.view === "history") renderWatchHistory();
   }
 
   function renderContentCards(hostId, items, fromTab) {
@@ -342,12 +411,12 @@
         : formatAvailablePrices(item);
       node.querySelector(".card-access").textContent = getAccessLabel(item);
       node.querySelector(".cover-button").addEventListener("click", function () {
-        setHashForDetail(item.id, fromTab);
+        openContentDetail(item.id, fromTab, { autoplay: false, resumePositionSec: 0 });
       });
       const action = node.querySelector(".card-action");
       action.textContent = item.unlocked ? "查看详情" : "查看并了解权益";
       action.addEventListener("click", function () {
-        setHashForDetail(item.id, fromTab);
+        openContentDetail(item.id, fromTab, { autoplay: false, resumePositionSec: 0 });
       });
       host.appendChild(node);
     });
@@ -386,30 +455,35 @@
     renderContentCards("homeFeaturedCard", [featured], "home");
   }
 
-  function renderRecentList() {
+  function renderHomeResume() {
     const section = $("homeRecentSection");
-    const host = $("homeRecentList");
-    const recent = getRecentItems();
-    if (!recent.length) {
+    const host = $("homeRecentCard");
+    const recent = state.watch.recent;
+    if (!recent) {
       section.classList.add("is-hidden");
       host.innerHTML = "";
       return;
     }
     section.classList.remove("is-hidden");
-    host.innerHTML = "";
-    recent.forEach(function (item) {
-      const card = document.createElement("article");
-      card.className = "recent-visual-card";
-      card.innerHTML =
-        imageTag(item.coverUrl, "recent-visual-image", item.title || "最近浏览封面") +
-        '<button class="recent-visual-action" type="button" aria-label="继续查看 ' + escapeHtml(item.title) + '">' +
-        '<span class="cover-duration">' + escapeHtml(item.duration || "—") + "</span>" +
-        '<strong>' + escapeHtml(item.title) + "</strong>" +
-        "</button>";
-      card.querySelector("button").addEventListener("click", function () {
-        setHashForDetail(item.id, "home");
-      });
-      host.appendChild(card);
+    host.innerHTML =
+      '<article class="resume-card">' +
+      '<button class="resume-cover-button" type="button" aria-label="继续播放 ' + escapeHtml(recent.title) + '">' +
+      '<div class="resume-cover">' +
+      imageTag(recent.coverUrl, "resume-cover-image", recent.title || "上次播放封面", true) +
+      '<span class="cover-duration">' + escapeHtml(recent.duration || "—") + "</span>" +
+      "</div>" +
+      "</button>" +
+      '<div class="resume-body">' +
+      '<div class="resume-title-row"><strong>' + escapeHtml(recent.title || "未命名内容") + '</strong><span class="resume-time">' + escapeHtml(formatDateShort(recent.lastPlayedAt)) + "</span></div>" +
+      '<div class="resume-progress-track"><span class="resume-progress-value" style="width:' + escapeHtml(String(Math.max(0, Math.min(100, recent.progressPercent || 0)))) + '%"></span></div>' +
+      '<div class="resume-meta"><span>' + escapeHtml(getLastPlayedSubtitle(recent)) + '</span><button class="primary-button" type="button">继续播放</button></div>' +
+      "</div>" +
+      "</article>";
+    host.querySelector(".resume-cover-button").addEventListener("click", function () {
+      openContentDetail(recent.contentId, "home", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
+    });
+    host.querySelector(".resume-meta .primary-button").addEventListener("click", function () {
+      openContentDetail(recent.contentId, "home", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
     });
   }
 
@@ -451,7 +525,7 @@
     }
     renderBannerList();
     renderFeaturedCard();
-    renderRecentList();
+    renderHomeResume();
     renderThemeCards();
     renderContentCards("homeLatestGrid", state.home.latestContents || [], "home");
     updatePageSeo(state.home.seo || null);
@@ -570,7 +644,7 @@
         '<div class="stack-meta"><span>' + escapeHtml(formatAvailablePrices(item)) + '</span><span>' + escapeHtml(item.unlocked ? "可直接进入对应频道" : "购买后解锁该包频道") + "</span></div>" +
         '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + escapeHtml(item.unlocked ? "查看已解锁内容" : "查看内容包") + "</button></div>";
       card.querySelector("button").addEventListener("click", function () {
-        setHashForDetail(item.sampleContentId, "membership");
+        openContentDetail(item.sampleContentId, "membership", { autoplay: false, resumePositionSec: 0 });
       });
       packageHost.appendChild(card);
     });
@@ -671,12 +745,91 @@
         }
         if (order.product && order.product.id) {
           const target = (state.library.items || []).find(function (item) { return item.productId === order.product.id; });
-          if (target) setHashForDetail(target.id, "me");
+          if (target) openContentDetail(target.id, "me", { autoplay: false, resumePositionSec: 0 });
         }
       });
       actions.appendChild(primary);
       host.appendChild(card);
     });
+  }
+
+  function renderMeResume() {
+    const host = $("meResumeCard");
+    const recent = state.watch.recent;
+    if (!recent) {
+      host.innerHTML = '<div class="inline-state">还没有观看记录，去首页或片库打开一条内容后，这里会显示上次播放。</div>';
+      return;
+    }
+    host.innerHTML =
+      '<article class="resume-card">' +
+      '<button class="resume-cover-button" type="button" aria-label="继续播放 ' + escapeHtml(recent.title) + '">' +
+      '<div class="resume-cover">' +
+      imageTag(recent.coverUrl, "resume-cover-image", recent.title || "上次播放封面", true) +
+      '<span class="cover-duration">' + escapeHtml(recent.duration || "—") + "</span>" +
+      "</div>" +
+      "</button>" +
+      '<div class="resume-body">' +
+      '<div class="resume-title-row"><strong>' + escapeHtml(recent.title || "未命名内容") + '</strong><span class="resume-time">' + escapeHtml(formatDate(recent.lastPlayedAt)) + "</span></div>" +
+      '<div class="resume-progress-track"><span class="resume-progress-value" style="width:' + escapeHtml(String(Math.max(0, Math.min(100, recent.progressPercent || 0)))) + '%"></span></div>' +
+      '<div class="resume-meta"><span>' + escapeHtml(getLastPlayedSubtitle(recent)) + '</span><button class="primary-button" type="button">继续播放</button></div>' +
+      "</div>" +
+      "</article>";
+    host.querySelector(".resume-cover-button").addEventListener("click", function () {
+      openContentDetail(recent.contentId, "me", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
+    });
+    host.querySelector(".resume-meta .primary-button").addEventListener("click", function () {
+      openContentDetail(recent.contentId, "me", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
+    });
+  }
+
+  function renderWatchHistory() {
+    const host = $("watchHistoryList");
+    const empty = $("watchHistoryEmpty");
+    const loadMore = $("watchHistoryLoadMore");
+    const clearAll = $("watchHistoryClearButton");
+    const items = state.watch.history || [];
+    host.innerHTML = "";
+
+    if (!items.length) {
+      empty.classList.remove("is-hidden");
+      loadMore.classList.add("is-hidden");
+      clearAll.disabled = true;
+      return;
+    }
+
+    empty.classList.add("is-hidden");
+    clearAll.disabled = false;
+    items.forEach(function (item) {
+      const card = document.createElement("article");
+      card.className = "history-card";
+      card.innerHTML =
+        '<button class="history-cover-button" type="button" aria-label="继续播放 ' + escapeHtml(item.title) + '">' +
+        '<div class="history-cover">' +
+        imageTag(item.coverUrl, "history-cover-image", item.title || "历史封面") +
+        '<span class="cover-duration">' + escapeHtml(item.duration || "—") + "</span>" +
+        "</div>" +
+        "</button>" +
+        '<div class="history-body">' +
+        '<div class="history-title-row"><strong>' + escapeHtml(item.title || "未命名内容") + '</strong><span>' + escapeHtml(formatDate(item.lastPlayedAt)) + "</span></div>" +
+        '<div class="resume-progress-track"><span class="resume-progress-value" style="width:' + escapeHtml(String(Math.max(0, Math.min(100, item.progressPercent || 0)))) + '%"></span></div>' +
+        '<div class="history-meta"><span>' + escapeHtml(getLastPlayedSubtitle(item)) + '</span><span>' + escapeHtml(getAccessLabel(item)) + "</span></div>" +
+        '<div class="history-actions"><button class="primary-button" type="button">继续播放</button><button class="ghost-button" type="button">删除记录</button></div>' +
+        "</div>";
+      const buttons = card.querySelectorAll("button");
+      buttons[0].addEventListener("click", function () {
+        openContentDetail(item.contentId, "me", { autoplay: true, resumePositionSec: item.resumePositionSec || 0 });
+      });
+      buttons[1].addEventListener("click", function () {
+        openContentDetail(item.contentId, "me", { autoplay: true, resumePositionSec: item.resumePositionSec || 0 });
+      });
+      buttons[2].addEventListener("click", function () {
+        deleteWatchHistoryItem(item.contentId);
+      });
+      host.appendChild(card);
+    });
+
+    const hasMore = state.watch.pagination.page < state.watch.pagination.totalPages;
+    loadMore.classList.toggle("is-hidden", !hasMore);
   }
 
   function renderPreferenceCards() {
@@ -709,6 +862,7 @@
       ? "你有待支付订单，通知入口会直接带你回到这里。"
       : "已支付、待支付、失效订单都会统一收进这里。";
 
+    renderMeResume();
     renderUnlockedList();
     renderChannelCards();
     renderOrdersList();
@@ -753,8 +907,6 @@
     }
     const detail = state.detailCache[id];
     trackAnalytics("content_opened", { contentId: detail.id, sourceModule: state.route.fromTab || "home" });
-    rememberRecent(detail);
-    renderRecentList();
     updatePageSeo(detail.effectiveSeo || { title: detail.title, description: detail.description, keywords: [] });
     updateOgImage(detail.coverUrl || "");
     updateJsonLd(detail.videoObjectJsonLd || null);
@@ -817,11 +969,12 @@
     $("detailBackButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
     });
+    attachDetailPlayer(detail);
   }
 
   function handleBannerAction(banner) {
     if (banner.targetType === "content" && banner.targetId) {
-      setHashForDetail(banner.targetId, "home");
+      openContentDetail(banner.targetId, "home", { autoplay: false, resumePositionSec: 0 });
       return;
     }
     if (banner.targetType === "category" && banner.targetId) {
@@ -832,7 +985,7 @@
     if (banner.targetType === "package" && banner.targetId) {
       const target = (state.library.items || []).find(function (item) { return item.packageId === banner.targetId; });
       if (target) {
-        setHashForDetail(target.id, "home");
+        openContentDetail(target.id, "home", { autoplay: false, resumePositionSec: 0 });
         return;
       }
     }
@@ -962,6 +1115,58 @@
     }
   }
 
+  async function loadWatchProgress(page, append) {
+    if (state.watch.loading) return;
+    state.watch.loading = true;
+    const targetPage = Math.max(1, Number(page) || 1);
+    try {
+      const data = await apiCall("/api/user/watch-progress/history?page=" + targetPage + "&pageSize=20");
+      state.watch.loaded = true;
+      state.watch.pagination = data.pagination || { page: targetPage, pageSize: 20, total: 0, totalPages: 1 };
+      state.watch.recent = data.recent || null;
+      if (append) {
+        const existingIds = new Set((state.watch.history || []).map(function (item) { return item.contentId; }));
+        state.watch.history = (state.watch.history || []).concat((data.items || []).filter(function (item) {
+          return !existingIds.has(item.contentId);
+        }));
+      } else {
+        state.watch.history = data.items || [];
+      }
+    } catch (err) {
+      $("meResumeCard").innerHTML = '<div class="inline-state">播放记录加载失败：' + escapeHtml(apiText(err)) + "</div>";
+      $("homeRecentCard").innerHTML = "";
+      $("homeRecentSection").classList.add("is-hidden");
+    } finally {
+      state.watch.loading = false;
+      renderHomeResume();
+      renderMeResume();
+      if (state.route.view === "history") renderWatchHistory();
+    }
+  }
+
+  async function deleteWatchHistoryItem(contentId) {
+    try {
+      await apiCall("/api/user/watch-progress/" + encodeURIComponent(contentId), {
+        method: "DELETE",
+      });
+      removeWatchProgressItem(contentId);
+    } catch (err) {
+      showInlineMessage("删除观看记录失败：" + apiText(err));
+    }
+  }
+
+  async function clearAllWatchHistory() {
+    try {
+      await apiCall("/api/user/watch-progress/clear", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      clearWatchProgressState();
+    } catch (err) {
+      showInlineMessage("清空观看记录失败：" + apiText(err));
+    }
+  }
+
   function renderNotifyBadge() {
     const pending = state.orders.items.filter(function (item) { return item.status === "pending"; }).length;
     const badge = $("notifyBadge");
@@ -971,6 +1176,112 @@
     }
     badge.classList.remove("is-hidden");
     badge.textContent = pending > 99 ? "99+" : String(pending);
+  }
+
+  async function writeWatchProgress(contentId, payload) {
+    const body = Object.assign({}, payload || {});
+    if (!contentId || !body.eventName) return null;
+    try {
+      const res = await apiCall("/api/contents/" + encodeURIComponent(contentId) + "/watch-progress", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (res && res.item) applyWatchProgressItem(res.item);
+      return res;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function detachActivePlayer(reason) {
+    const activeVideo = state.player.video;
+    const activeContentId = state.player.contentId;
+    if (activeVideo && activeContentId) {
+      const eventName = reason || (activeVideo.ended ? "complete" : "leave");
+      writeWatchProgress(activeContentId, {
+        eventName: eventName,
+        positionSec: activeVideo.ended ? activeVideo.duration || activeVideo.currentTime || 0 : activeVideo.currentTime || 0,
+        durationSec: activeVideo.duration || null,
+        quality: "auto",
+      });
+    }
+    state.player.video = null;
+    state.player.contentId = "";
+    state.player.lastProgressSecond = -1;
+    state.player.started = false;
+  }
+
+  function attachDetailPlayer(detail) {
+    detachActivePlayer("leave");
+    const video = $("detailContent").querySelector(".detail-preview-video");
+    if (!video) return;
+    const intent = state.resumeIntent && state.resumeIntent.contentId === detail.id ? state.resumeIntent : null;
+    const resumePosition = intent ? Math.max(0, Math.floor(Number(intent.resumePositionSec) || 0)) : 0;
+    state.player.video = video;
+    state.player.contentId = detail.id;
+    state.player.lastProgressSecond = -1;
+    state.player.started = false;
+
+    video.addEventListener("loadedmetadata", function () {
+      if (resumePosition > 0 && Number.isFinite(video.duration) && resumePosition < Math.max(video.duration - 1, 1)) {
+        try { video.currentTime = resumePosition; } catch (_) {}
+      }
+      if (intent && intent.autoplay) {
+        const playback = video.play();
+        if (playback && typeof playback.catch === "function") playback.catch(function () {});
+      }
+      state.resumeIntent = null;
+    });
+
+    video.addEventListener("play", function () {
+      if (!state.player.started) {
+        state.player.started = true;
+        trackAnalytics("preview_start", { contentId: detail.id, seconds: Math.floor(video.currentTime || 0) });
+      }
+      writeWatchProgress(detail.id, {
+        eventName: "start",
+        positionSec: video.currentTime || 0,
+        durationSec: video.duration || detail.durationSeconds || null,
+        quality: "auto",
+      });
+    });
+
+    video.addEventListener("timeupdate", function () {
+      const current = Math.floor(video.currentTime || 0);
+      if (current <= 0) return;
+      if (state.player.lastProgressSecond < 0) {
+        state.player.lastProgressSecond = current;
+        return;
+      }
+      if (current - state.player.lastProgressSecond < 15) return;
+      state.player.lastProgressSecond = current;
+      writeWatchProgress(detail.id, {
+        eventName: "progress",
+        positionSec: current,
+        durationSec: video.duration || detail.durationSeconds || null,
+        quality: "auto",
+      });
+    });
+
+    video.addEventListener("pause", function () {
+      if (video.ended) return;
+      writeWatchProgress(detail.id, {
+        eventName: "pause",
+        positionSec: video.currentTime || 0,
+        durationSec: video.duration || detail.durationSeconds || null,
+        quality: "auto",
+      });
+    });
+
+    video.addEventListener("ended", function () {
+      trackAnalytics("preview_complete", { contentId: detail.id, seconds: Math.floor(video.duration || detail.durationSeconds || 0) });
+      writeWatchProgress(detail.id, {
+        eventName: "complete",
+        positionSec: video.duration || video.currentTime || detail.durationSeconds || 0,
+        durationSec: video.duration || detail.durationSeconds || null,
+        quality: "auto",
+      });
+    });
   }
 
   function openChannelAccess(resourceId) {
@@ -1049,38 +1360,49 @@
   }
 
   function routeTo(routeState) {
+    const leavingDetail = state.route && state.route.view === "detail" && routeState.view !== "detail";
+    if (leavingDetail) detachActivePlayer("leave");
     state.route = routeState;
-    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.tab });
+    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "history" ? "watch_history" : routeState.tab });
     const isDetail = routeState.view === "detail";
+    const isHistory = routeState.view === "history";
     const titleMap = {
       home: ["同频", ""],
       library: ["片库", "搜索、分类与筛选"],
       membership: ["会员", "会员主频道与内容包"],
       me: ["我的", "资产、订单、频道入口与绑定"],
     };
-    const isHome = !isDetail && routeState.tab === "home";
+    const isHome = !isDetail && !isHistory && routeState.tab === "home";
 
-    $("backButton").hidden = !isDetail;
-    $("bottomNav").classList.toggle("is-hidden", isDetail);
+    $("backButton").hidden = !(isDetail || isHistory);
+    $("bottomNav").classList.toggle("is-hidden", isDetail || isHistory);
     $("appHeader").classList.toggle("is-home", isHome);
-    $("headerTitle").textContent = isDetail ? "视频详情" : titleMap[routeState.tab][0];
+    $("headerTitle").textContent = isDetail ? "视频详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]);
     $("headerSubtitle").textContent = isDetail
       ? "查看权益与购买方式"
+      : isHistory
+        ? "按最近播放时间排序，可删除单条或清空记录"
       : (isHome ? "真实表达，在理解与边界中被看见" : titleMap[routeState.tab][1]);
     $("headerSubtitle").hidden = false;
     $("headerEyebrow").hidden = isHome;
 
     ["home", "library", "membership", "me"].forEach(function (tab) {
-      $(tab + "View").classList.toggle("is-hidden", isDetail || routeState.tab !== tab);
+      $(tab + "View").classList.toggle("is-hidden", isDetail || isHistory || routeState.tab !== tab);
     });
     $("detailView").classList.toggle("is-hidden", !isDetail);
+    $("watchHistoryView").classList.toggle("is-hidden", !isHistory);
 
     document.querySelectorAll(".nav-item").forEach(function (button) {
-      button.classList.toggle("is-active", !isDetail && button.getAttribute("data-tab") === routeState.tab);
+      button.classList.toggle("is-active", !isDetail && !isHistory && button.getAttribute("data-tab") === routeState.tab);
     });
 
     if (isDetail) {
       renderDetail(routeState.id);
+      return;
+    }
+    if (isHistory) {
+      if (!state.watch.loaded) loadWatchProgress(1, false);
+      renderWatchHistory();
       return;
     }
 
@@ -1090,6 +1412,7 @@
       loadOrders();
       loadEntitlements();
       loadChannels();
+      if (!state.watch.loaded) loadWatchProgress(1, false);
     }
   }
 
@@ -1100,7 +1423,7 @@
       trackAnalytics("session_started", { entrySource: state.env.isTelegram ? "telegram_mini_app" : "h5_direct" });
       await loadHome();
       await loadLibrary();
-      await Promise.all([loadOrders(), loadEntitlements(), loadChannels()]);
+      await Promise.all([loadOrders(), loadEntitlements(), loadChannels(), loadWatchProgress(1, false)]);
       routeTo(parseHash());
     } catch (err) {
       showBootError("暂时无法建立会话", apiText(err));
@@ -1127,6 +1450,16 @@
     });
     $("jumpLibraryButton").addEventListener("click", function () {
       setHashForTab("library");
+    });
+    $("meWatchHistoryButton").addEventListener("click", function () {
+      setHashForHistory("me");
+    });
+    $("watchHistoryLoadMore").addEventListener("click", function () {
+      if (state.watch.loading) return;
+      loadWatchProgress((state.watch.pagination.page || 1) + 1, true);
+    });
+    $("watchHistoryClearButton").addEventListener("click", function () {
+      clearAllWatchHistory();
     });
     $("bindTelegramButton").addEventListener("click", function () {
       const redirect = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
@@ -1160,6 +1493,26 @@
     window.addEventListener("hashchange", function () {
       routeTo(parseHash());
     });
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden" && state.player.video && state.player.contentId) {
+        writeWatchProgress(state.player.contentId, {
+          eventName: "leave",
+          positionSec: state.player.video.currentTime || 0,
+          durationSec: state.player.video.duration || null,
+          quality: "auto",
+        });
+      }
+    });
+    window.addEventListener("pagehide", function () {
+      if (state.player.video && state.player.contentId) {
+        writeWatchProgress(state.player.contentId, {
+          eventName: "leave",
+          positionSec: state.player.video.currentTime || 0,
+          durationSec: state.player.video.duration || null,
+          quality: "auto",
+        });
+      }
+    });
   }
 
   function initTelegram() {
@@ -1175,9 +1528,11 @@
     bindEvents();
     $("homeBannerList").innerHTML = createSkeletonCards(1);
     $("homeFeaturedCard").innerHTML = createSkeletonCards(1);
+    $("homeRecentCard").innerHTML = createSkeletonCards(1);
     $("homeLatestGrid").innerHTML = createSkeletonCards(4);
     $("libraryGrid").innerHTML = createSkeletonCards(4);
     $("membershipPrimaryCard").innerHTML = createSkeletonCards(1);
+    $("meResumeCard").innerHTML = createSkeletonCards(1);
     $("meUnlockedList").innerHTML = createSkeletonCards(1);
     if (!window.location.hash) setHashForTab("home");
     else routeTo(parseHash());

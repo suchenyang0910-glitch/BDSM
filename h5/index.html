@@ -3,447 +3,281 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>同频 InTune H5 Prototype</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="./styles.css" />
+    <meta name="theme-color" content="#12111A" />
+    <meta name="description" content="同频 H5 点播：免费试看、单条购买、内容包与月度会员。" />
+    <meta name="keywords" content="" />
+    <meta name="robots" content="noindex,nofollow" />
+    <meta property="og:title" content="同频 · H5 点播" />
+    <meta property="og:description" content="同频 H5 点播：免费试看、单条购买、内容包与月度会员。" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="" />
+    <title>同频 · H5 点播</title>
+    <link rel="stylesheet" href="./styles.css?v=20260825-h5-vod-1" />
+    <script id="videoObjectJsonLd" type="application/ld+json"></script>
   </head>
   <body>
     <div class="app-shell">
-      <header class="status-bar">
-        <span>InTune</span>
-        <span>15:24</span>
-        <span>98%</span>
+      <header id="appHeader" class="app-header">
+        <div class="header-main">
+          <button id="backButton" class="icon-button" type="button" aria-label="返回" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
+          </button>
+          <div class="header-copy">
+            <p id="headerEyebrow" class="eyebrow">INTUNE VOD</p>
+            <h1 id="headerTitle">同频</h1>
+            <p id="headerSubtitle" class="header-subtitle">视频点播目录、会员权益与 Telegram 频道交付</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="searchButton" class="icon-button" type="button" aria-label="搜索">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+          </button>
+          <button id="notifyButton" class="icon-button" type="button" aria-label="通知">
+            <span id="notifyBadge" class="header-badge is-hidden">0</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6"></path><path d="M10 18a2 2 0 0 0 4 0"></path></svg>
+          </button>
+        </div>
       </header>
 
-      <main class="phone-frame">
-        <section class="screen is-active" data-screen="home">
-          <div class="hero">
-            <div class="hero__top">
-              <div>
-                <p class="eyebrow">同频 InTune</p>
-                <h1>让同频的人彼此看见</h1>
-              </div>
-              <button class="icon-button" type="button" aria-label="搜索">⌕</button>
-            </div>
-            <p class="hero__copy">
-              一个强调平等、尊重与真实表达的垂直兴趣直播社区。
-            </p>
-            <div class="hero__chips">
-              <span>今日推荐</span>
-              <span>预约直播</span>
-              <span>社区话题</span>
-            </div>
-          </div>
+      <section id="globalError" class="global-banner is-hidden" aria-live="polite">
+        <div>
+          <strong id="globalErrorTitle">暂时无法建立会话</strong>
+          <p id="globalErrorMessage">请检查网络后重试。</p>
+        </div>
+        <button id="retryBootstrapButton" class="ghost-button" type="button">重试</button>
+      </section>
 
-          <section class="content-section">
-            <div class="section-header">
-              <div>
-                <p class="section-kicker">Today’s Picks</p>
-                <h2>今日推荐</h2>
-              </div>
-              <a href="#" aria-label="查看更多">查看更多</a>
-            </div>
-            <div class="card-scroll">
-              <article class="live-card live-card--feature">
-                <div class="live-card__badge">直播中</div>
-                <div class="live-card__content">
-                  <p class="live-card__tag">高质量对谈</p>
-                  <h3>边界、信任与关系表达</h3>
-                  <p>主播：阿澈 · 2.4k 在线</p>
-                </div>
-              </article>
-              <article class="live-card">
-                <div class="live-card__badge live-card__badge--soft">今晚 21:00</div>
-                <div class="live-card__content">
-                  <p class="live-card__tag">深夜谈心</p>
-                  <h3>城市夜谈：你如何理解真实表达</h3>
-                  <p>主播：Mori · 已有 326 人预约</p>
-                </div>
-              </article>
-            </div>
+      <main id="appMain" class="app-main">
+        <section id="homeView" class="tab-view">
+          <section class="home-banner-section">
+            <div id="homeBannerList" class="banner-rail"></div>
           </section>
 
-          <section class="content-section">
-            <div class="section-header">
-              <div>
-                <p class="section-kicker">Themes</p>
-                <h2>主题直播</h2>
-              </div>
+          <section class="section-block home-featured-section">
+            <div class="section-head">
+              <h3>今日精选</h3>
             </div>
-            <div class="theme-grid">
-              <button class="theme-pill" type="button">深夜谈心</button>
-              <button class="theme-pill" type="button">兴趣表达</button>
-              <button class="theme-pill" type="button">城市同频</button>
-              <button class="theme-pill" type="button">新人初见</button>
-              <button class="theme-pill" type="button">边界话题</button>
-              <button class="theme-pill" type="button">高质量对谈</button>
-            </div>
+            <div id="homeFeaturedCard"></div>
           </section>
 
-          <section class="content-section">
-            <div class="section-header">
-              <div>
-                <p class="section-kicker">Community</p>
-                <h2>社区动态</h2>
-              </div>
-              <a href="#">进入社区</a>
+          <section id="homeRecentSection" class="section-block is-hidden">
+            <div class="section-head">
+              <h3>上次播放</h3>
             </div>
-            <article class="post-card">
-              <div class="post-card__header">
-                <div class="avatar">澈</div>
-                <div>
-                  <h3>阿澈</h3>
-                  <p>上海 · 本周话题参与者</p>
-                </div>
-              </div>
-              <p class="post-card__body">
-                今天想聊聊“被理解”这件事。你认为什么样的互动会让你更愿意留下来？
-              </p>
-              <div class="post-card__actions">
-                <span>❤ 128</span>
-                <span>💬 34</span>
-                <span>☆ 收藏</span>
-              </div>
-            </article>
+            <div id="homeRecentCard"></div>
           </section>
 
-          <section class="content-section">
-            <div class="section-header">
-              <div>
-                <p class="section-kicker">Creators</p>
-                <h2>创作者推荐</h2>
-              </div>
+          <section class="section-block">
+            <div class="section-head">
+              <h3>最新</h3>
+              <button id="jumpLibraryButton" class="text-button" type="button">查看全部</button>
             </div>
-            <div class="creator-list">
-              <article class="creator-card">
-                <div class="avatar avatar--large">M</div>
-                <div class="creator-card__content">
-                  <h3>Mori</h3>
-                  <p>新人主播 · 擅长轻访谈和预约直播</p>
-                </div>
-                <button class="ghost-button" type="button">关注</button>
-              </article>
-              <article class="creator-card">
-                <div class="avatar avatar--large">L</div>
-                <div class="creator-card__content">
-                  <h3>Luna</h3>
-                  <p>长期创作者 · 社区互动质量高</p>
-                </div>
-                <button class="ghost-button" type="button">预约</button>
-              </article>
+            <div id="homeLatestGrid" class="content-grid"></div>
+          </section>
+
+          <section id="homeThemesSection" class="section-block is-hidden">
+            <div class="section-head">
+              <h3>按主题探索</h3>
             </div>
+            <div id="homeThemesList" class="topic-rail"></div>
           </section>
         </section>
 
-        <section class="screen" data-screen="community">
-          <div class="page-head">
-            <div>
-              <p class="eyebrow">Community</p>
-              <h1>社区</h1>
+        <section id="libraryView" class="tab-view is-hidden">
+          <div class="toolbar-card">
+            <label class="search-box" for="librarySearchInput">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+              <input id="librarySearchInput" type="search" placeholder="搜索标题或描述" autocomplete="off" />
+            </label>
+            <div id="libraryCategoryList" class="chip-row"></div>
+            <div id="librarySortSegment" class="segment" role="tablist" aria-label="片库排序">
+              <button type="button" class="segment-button is-active" data-sort="newest">最新</button>
+              <button type="button" class="segment-button" data-sort="popular">最受欢迎</button>
+              <button type="button" class="segment-button" data-sort="featured">精选</button>
             </div>
-            <button class="icon-button" type="button">＋</button>
           </div>
-
-          <div class="tab-row">
-            <button class="tab-chip is-selected" type="button">最新</button>
-            <button class="tab-chip" type="button">热门</button>
-            <button class="tab-chip" type="button">关注</button>
-            <button class="tab-chip" type="button">同城</button>
-            <button class="tab-chip" type="button">话题</button>
-          </div>
-
-          <section class="topic-banner">
-            <p>本周话题</p>
-            <h2>什么样的表达，让你更有安全感？</h2>
-            <button class="primary-button" type="button">参与讨论</button>
-          </section>
-
-          <div class="post-feed">
-            <article class="post-card">
-              <div class="post-card__header">
-                <div class="avatar">Y</div>
-                <div>
-                  <h3>Yuki</h3>
-                  <p>杭州 · 同城连接</p>
-                </div>
-              </div>
-              <p class="post-card__body">
-                今天第一次预约开播，有点紧张，但也很想认真聊聊“边界感”这个话题。
-              </p>
-              <div class="post-card__actions">
-                <span>❤ 86</span>
-                <span>💬 12</span>
-                <span>☆ 预约提醒</span>
-              </div>
-            </article>
-
-            <article class="post-card">
-              <div class="post-card__header">
-                <div class="avatar">R</div>
-                <div>
-                  <h3>Rae</h3>
-                  <p>成都 · 兴趣表达</p>
-                </div>
-              </div>
-              <p class="post-card__body">
-                同频最吸引我的地方是，大家更愿意认真交流，而不是只看热闹。
-              </p>
-              <div class="post-card__actions">
-                <span>❤ 59</span>
-                <span>💬 19</span>
-                <span>☆ 收藏</span>
-              </div>
-            </article>
-          </div>
+          <div id="libraryState" class="inline-state"></div>
+          <div id="libraryGrid" class="content-grid"></div>
         </section>
 
-        <section class="screen" data-screen="messages">
-          <div class="page-head">
+        <section id="membershipView" class="tab-view is-hidden">
+          <div class="panel-card membership-summary">
             <div>
-              <p class="eyebrow">Messages</p>
-              <h1>消息</h1>
+              <p class="eyebrow">MEMBERSHIP</p>
+              <h2 id="membershipHeadline">会员与内容包</h2>
+              <p id="membershipCopy" class="muted-copy">理解权益，再决定购买方式。</p>
             </div>
+            <div id="membershipStatusBadge" class="status-badge">加载中</div>
           </div>
 
-          <div class="message-grid">
-            <article class="quick-card">
-              <span>👤</span>
-              <h3>新增关注</h3>
-              <p>3 条新动态</p>
-            </article>
-            <article class="quick-card">
-              <span>❤</span>
-              <h3>点赞与收藏</h3>
-              <p>8 条未读</p>
-            </article>
-            <article class="quick-card">
-              <span>💬</span>
-              <h3>评论与提及</h3>
-              <p>2 条待查看</p>
-            </article>
-            <article class="quick-card">
-              <span>⏰</span>
-              <h3>预约提醒</h3>
-              <p>今晚 21:00 开播</p>
-            </article>
-          </div>
-
-          <div class="list-panel">
-            <article class="list-row">
-              <div class="list-row__icon">◎</div>
-              <div class="list-row__content">
-                <h3>系统通知</h3>
-                <p>同频社区规则已更新，点击查看</p>
-              </div>
-            </article>
-            <article class="list-row">
-              <div class="list-row__icon">¥</div>
-              <div class="list-row__content">
-                <h3>钱包服务</h3>
-                <p>你的会员将在 3 天后到期</p>
-              </div>
-            </article>
-            <article class="list-row">
-              <div class="list-row__icon">✦</div>
-              <div class="list-row__content">
-                <h3>官方助手</h3>
-                <p>本周话题已开放，欢迎参与讨论</p>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section class="screen" data-screen="profile">
-          <div class="page-head">
-            <div>
-              <p class="eyebrow">Profile</p>
-              <h1>我的</h1>
-            </div>
-            <button class="icon-button" type="button">⚙</button>
-          </div>
-
-          <section class="profile-card">
-            <div class="profile-card__top">
-              <div class="avatar avatar--xl">T</div>
+          <section class="section-block">
+            <div class="section-head">
               <div>
-                <h2>同频体验官</h2>
-                <p>ID: InTune 1024</p>
-                <div class="profile-tags">
-                  <span>真实表达</span>
-                  <span>边界感</span>
-                </div>
+                <p class="eyebrow">MAIN CHANNEL</p>
+                <h3>会员主频道</h3>
               </div>
             </div>
-            <div class="profile-stats">
-              <div><strong>120</strong><span>粉丝</span></div>
-              <div><strong>56</strong><span>关注</span></div>
-              <div><strong>18</strong><span>收藏</span></div>
-            </div>
+            <div id="membershipPrimaryCard"></div>
           </section>
 
-          <section class="utility-grid">
-            <article class="utility-card utility-card--link" data-open-panel="wallet">
-              <p>钱包</p>
-              <h3>¥ 260.00</h3>
-              <span>查看余额与流水</span>
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">PACKAGES</p>
+                <h3>内容包</h3>
+              </div>
+            </div>
+            <div id="membershipPackagesList" class="stack-list"></div>
+          </section>
+        </section>
+
+        <section id="meView" class="tab-view is-hidden">
+          <div class="panel-card profile-card">
+            <div>
+              <p class="eyebrow">MY ACCOUNT</p>
+              <h2 id="profileTitle">加载中</h2>
+              <p id="profileSubtitle" class="muted-copy">正在读取账户信息…</p>
+            </div>
+            <div class="profile-actions">
+              <button id="bindTelegramButton" class="primary-button" type="button">绑定 Telegram</button>
+              <button id="logoutButton" class="ghost-button" type="button">退出登录</button>
+            </div>
+          </div>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">LAST PLAYED</p>
+                <h3>上次播放</h3>
+              </div>
+              <button id="meWatchHistoryButton" class="text-button" type="button">观看历史</button>
+            </div>
+            <div id="meResumeCard"></div>
+          </section>
+
+          <div class="info-grid">
+            <article class="info-card">
+              <p class="info-label">会员状态</p>
+              <strong id="meMembershipText">加载中</strong>
+              <p id="meMembershipHint" class="muted-copy">正在读取权益摘要…</p>
             </article>
-            <article class="utility-card utility-card--link" data-open-panel="membership">
-              <p>会员</p>
-              <h3>V1 在途</h3>
-              <span>尊重真实，自在连接</span>
+            <article class="info-card">
+              <p class="info-label">订单摘要</p>
+              <strong id="meOrdersText">加载中</strong>
+              <p id="meOrdersHint" class="muted-copy">我的订单会显示在这里。</p>
             </article>
-            <article class="utility-card">
-              <p>主播认证</p>
-              <h3>申请中</h3>
-              <span>预计 1 个工作日审核</span>
-            </article>
-            <article class="utility-card">
-              <p>我的预约</p>
-              <h3>3 场</h3>
-              <span>今晚 21:00 有开播提醒</span>
-            </article>
+          </div>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">UNLOCKED</p>
+                <h3>我的已解锁</h3>
+              </div>
+            </div>
+            <div id="meUnlockedList" class="stack-list"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">CHANNELS</p>
+                <h3>频道入口</h3>
+              </div>
+            </div>
+            <div id="meChannelsList" class="stack-list"></div>
+          </section>
+
+          <section class="section-block" id="meOrdersSection">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">ORDERS</p>
+                <h3>我的订单</h3>
+              </div>
+            </div>
+            <div id="meOrdersList" class="stack-list"></div>
+          </section>
+
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">PREFERENCES</p>
+                <h3>偏好与帮助</h3>
+              </div>
+            </div>
+            <div id="mePreferenceList" class="stack-list"></div>
+          </section>
+        </section>
+
+        <section id="detailView" class="tab-view is-hidden">
+          <article id="detailContent" class="detail-shell"></article>
+        </section>
+
+        <section id="watchHistoryView" class="tab-view is-hidden">
+          <section class="section-block">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">WATCH HISTORY</p>
+                <h3>观看历史</h3>
+              </div>
+              <button id="watchHistoryClearButton" class="ghost-button" type="button">清空记录</button>
+            </div>
+            <div id="watchHistoryEmpty" class="empty-state is-hidden">还没有观看历史，去首页或片库打开一条内容后再回来查看。</div>
+            <div id="watchHistoryList" class="stack-list"></div>
+            <button id="watchHistoryLoadMore" class="ghost-button is-hidden" type="button" style="margin-top:12px;">加载更多</button>
           </section>
         </section>
       </main>
 
-      <section class="overlay-panel" data-panel="wallet" aria-hidden="true">
-        <div class="overlay-panel__sheet">
-          <div class="overlay-panel__head">
-            <div>
-              <p class="eyebrow">Wallet</p>
-              <h2>钱包</h2>
-            </div>
-            <button class="icon-button overlay-close" data-close-panel="wallet" type="button">×</button>
-          </div>
+      <aside id="desktopRail" class="desktop-rail" aria-label="账户与继续观看">
+        <div id="desktopRailContent" class="desktop-rail-content" aria-live="polite"></div>
+      </aside>
 
-          <article class="wallet-hero">
-            <div>
-              <p>当前余额</p>
-              <h3>¥ 260.00</h3>
-              <span>流水清晰，权益透明，可随时查看记录</span>
-            </div>
-            <button class="ghost-button" type="button">流水记录</button>
-          </article>
-
-          <section class="overlay-section">
-            <div class="section-header">
-              <div>
-                <p class="section-kicker">Recharge</p>
-                <h2>充值档位</h2>
-              </div>
-            </div>
-            <div class="package-grid">
-              <button class="package-card" type="button">
-                <strong>¥ 30</strong>
-                <span>基础体验</span>
-              </button>
-              <button class="package-card is-selected" type="button">
-                <strong>¥ 68</strong>
-                <span>推荐选择</span>
-              </button>
-              <button class="package-card" type="button">
-                <strong>¥ 128</strong>
-                <span>长期常用</span>
-              </button>
-              <button class="package-card" type="button">
-                <strong>¥ 298</strong>
-                <span>会员配套</span>
-              </button>
-            </div>
-            <button class="primary-button primary-button--full" type="button">立即充值</button>
-          </section>
-
-          <section class="overlay-section overlay-note">
-            <p>充值说明</p>
-            <ul>
-              <li>充值前展示清晰金额与对应权益，不使用强刺激促销文案。</li>
-              <li>支持查看流水记录、充值说明与客服入口。</li>
-              <li>消费行为以清晰、自愿、可追踪为原则。</li>
-            </ul>
-          </section>
-        </div>
-      </section>
-
-      <section class="overlay-panel" data-panel="membership" aria-hidden="true">
-        <div class="overlay-panel__sheet">
-          <div class="overlay-panel__head">
-            <div>
-              <p class="eyebrow">Membership</p>
-              <h2>会员</h2>
-            </div>
-            <button class="icon-button overlay-close" data-close-panel="membership" type="button">×</button>
-          </div>
-
-          <article class="membership-hero">
-            <p>当前等级</p>
-            <h3>V1 在途</h3>
-            <span>让表达更从容，让连接更稳定</span>
-          </article>
-
-          <section class="overlay-section">
-            <div class="section-header">
-              <div>
-                <p class="section-kicker">Benefits</p>
-                <h2>会员权益</h2>
-              </div>
-            </div>
-            <div class="benefit-list">
-              <article class="benefit-item">
-                <strong>优先预约提醒</strong>
-                <span>重要直播与活动更早收到通知</span>
-              </article>
-              <article class="benefit-item">
-                <strong>精选内容优先推荐</strong>
-                <span>更高质量内容触达效率</span>
-              </article>
-              <article class="benefit-item">
-                <strong>社区活动优先参与</strong>
-                <span>话题、预约、专题活动优先进入</span>
-              </article>
-              <article class="benefit-item">
-                <strong>客服优先响应</strong>
-                <span>更稳定的服务体验</span>
-              </article>
-            </div>
-            <button class="primary-button primary-button--full" type="button">开通会员</button>
-          </section>
-
-          <section class="overlay-section overlay-note">
-            <p>会员说明</p>
-            <ul>
-              <li>会员价值强调体验效率与关系服务，不强调身份压迫感。</li>
-              <li>所有权益均需清晰列明，避免模糊承诺。</li>
-              <li>会员体系与品牌气质保持一致：克制、透明、可信。</li>
-            </ul>
-          </section>
-        </div>
-      </section>
-
-      <nav class="bottom-nav" aria-label="底部导航">
-        <button class="nav-item is-active" data-target="home" type="button">
-          <span>⌂</span>
+      <nav id="bottomNav" class="bottom-nav" aria-label="底部导航">
+        <button class="nav-item is-active" data-tab="home" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5L12 5l8 6.5V20a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z"></path></svg>
           <span>首页</span>
         </button>
-        <button class="nav-item" data-target="community" type="button">
-          <span>◎</span>
-          <span>社区</span>
+        <button class="nav-item" data-tab="library" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+          <span>片库</span>
         </button>
-        <button class="nav-item" data-target="messages" type="button">
-          <span>✉</span>
-          <span>消息</span>
+        <button class="nav-item" data-tab="membership" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19V9.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2V19"></path><path d="M9 7V5a3 3 0 0 1 6 0v2"></path><path d="M8 12h8"></path></svg>
+          <span>会员</span>
         </button>
-        <button class="nav-item" data-target="profile" type="button">
-          <span>◐</span>
+        <button class="nav-item" data-tab="me" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M5 20a7 7 0 0 1 14 0"></path></svg>
           <span>我的</span>
         </button>
       </nav>
     </div>
 
-    <script src="./app.js"></script>
+    <template id="contentCardTemplate">
+      <article class="content-card">
+        <button class="cover-button" type="button">
+          <div class="card-cover">
+            <img class="cover-image is-hidden" alt="" loading="lazy" />
+            <span class="cover-duration"></span>
+          </div>
+        </button>
+        <div class="card-body">
+          <p class="card-tag"></p>
+          <h3 class="card-title"></h3>
+          <p class="card-desc"></p>
+          <div class="card-meta">
+            <span class="card-price"></span>
+            <span class="card-access"></span>
+          </div>
+          <button class="card-action primary-button" type="button"></button>
+        </div>
+      </article>
+    </template>
+
+    <script src="./app.js?v=20260825-h5-vod-1"></script>
   </body>
 </html>

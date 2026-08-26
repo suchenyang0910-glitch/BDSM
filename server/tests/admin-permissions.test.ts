@@ -284,7 +284,7 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
   }
 });
 
-test("免费试看自动扇出到全部已启用免费流量频道，不要求内容选择频道", async () => {
+test("试看不再投放 Telegram 免费频道，membership_full 也不会自动补 public_free_preview", async () => {
   const mainKey = "TELEGRAM_FREE_CHANNEL_PREVIEW_MAIN_CHAT_ID";
   const tutorialKey = "TELEGRAM_FREE_CHANNEL_TUTORIAL_BASICS_CHAT_ID";
   const announcementKey = "TELEGRAM_FREE_CHANNEL_ANNOUNCEMENTS_CHAT_ID";
@@ -298,19 +298,26 @@ test("免费试看自动扇出到全部已启用免费流量频道，不要求�
     const editorCookie = await loginAdmin(app, "editor");
     const editor = await prisma.adminUser.findUnique({ where: { email: TEST_CREDENTIALS.editor.email } });
     assert.ok(editor, "editor seed should exist");
-    const previewAsset = await seedReadyMediaAsset(prisma, {
-      id: crypto.randomUUID(), kind: "preview_video", ownerAdminId: editor.id, filename: "preview.mp4",
-    });
     const contentId = crypto.randomUUID();
     await prisma.content.create({
       data: {
         id: contentId,
-        title: "免费流量池扇出测试",
+        title: "试看改走 Web HLS，不再投放 Telegram 免费频道",
         accessType: "public",
         status: "draft",
-        previewAssetId: previewAsset.id,
-        // 故意不填 freeChannelCode：频道池为平台配置，而非内容字段。
         freeChannelCode: null,
+      },
+    });
+    const publicFullAsset = await seedReadyVideoAsset(prisma, {
+      id: crypto.randomUUID(),
+      contentId,
+      filename: "public-full.mp4",
+    });
+    await prisma.content.update({
+      where: { id: contentId },
+      data: {
+        fullVideoAssetId: publicFullAsset.id,
+        fullVideoSegments: { create: [{ videoAssetId: publicFullAsset.id, segmentOrder: 1 }] },
       },
     });
 
@@ -318,21 +325,19 @@ test("免费试看自动扇出到全部已启用免费流量频道，不要求�
       method: "POST",
       url: `/api/admin/contents/${contentId}/start-telegram-publish`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { channelKinds: ["public_free_preview"], reason: "验证自动扇出" },
+      payload: { channelKinds: ["public_free_preview"], reason: "验证试看已改为 Web HLS" },
     });
-    assert.equal(response.statusCode, 201, response.body);
-    const body = response.json() as any;
-    assert.equal(body.jobs.length, 2, "two enabled free channels should create two independent jobs");
-    assert.deepEqual(
-      new Set(body.jobs.map((job: any) => job.targetFreeChannelCode)),
-      new Set(["free_preview_main", "free_tutorial_basics"]),
-    );
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal((response.json() as any).error, "preview_delivery_not_supported");
 
     const membershipContentId = crypto.randomUUID();
+    const previewAsset = await seedReadyMediaAsset(prisma, {
+      id: crypto.randomUUID(), kind: "preview_video", ownerAdminId: editor.id, filename: "preview.mp4",
+    });
     await prisma.content.create({
       data: {
         id: membershipContentId,
-        title: "会员内容自动补免费试看",
+        title: "会员内容只投放完整视频，试看不再自动补到 Telegram",
         accessType: "membership",
         status: "draft",
         previewAssetId: previewAsset.id,
@@ -354,13 +359,13 @@ test("免费试看自动扇出到全部已启用免费流量频道，不要求�
       method: "POST",
       url: `/api/admin/contents/${membershipContentId}/start-telegram-publish`,
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { channelKinds: ["membership_full"], reason: "会员视频自动附带免费试看" },
+      payload: { channelKinds: ["membership_full"], reason: "会员视频只排队完整交付" },
     });
     assert.equal(membershipResponse.statusCode, 201, membershipResponse.body);
     const membershipJobs = (membershipResponse.json() as any).jobs;
-    assert.equal(membershipJobs.length, 3, "会员完整视频加上已就绪试看，应自动投放 2 个免费频道和 1 个会员频道");
-    assert.equal(membershipJobs.filter((job: any) => job.channelKind === "public_free_preview").length, 2);
+    assert.equal(membershipJobs.length, 1, "membership_full 只应创建 1 个完整视频任务");
     assert.equal(membershipJobs.filter((job: any) => job.channelKind === "membership_full").length, 1);
+    assert.equal(membershipJobs.filter((job: any) => job.channelKind === "public_free_preview").length, 0);
 
     const repeatedMembershipResponse = await app.inject({
       method: "POST",
@@ -376,7 +381,7 @@ test("免费试看自动扇出到全部已启用免费流量频道，不要求�
       "同一内容重复请求必须复用原任务，而不是再创建一组频道发布任务",
     );
     const storedJobCount = await prisma.telegramPublishJob.count({ where: { contentId: membershipContentId } });
-    assert.equal(storedJobCount, 3, "重复请求后数据库只能保留 2 个免费试看 + 1 个会员完整视频任务");
+    assert.equal(storedJobCount, 1, "重复请求后数据库只能保留 1 个会员完整视频任务");
   } finally {
     await app.close();
     for (const [key, value] of [[mainKey, before[0]], [tutorialKey, before[1]], [announcementKey, before[2]]] as const) {
@@ -687,7 +692,7 @@ test("频道登记请求列表绝不回传私密邀请链接明文", async () =>
   }
 });
 
-test("public 内容绑定完整视频必须返回 full_video_not_allowed_for_public", async () => {
+test("public 内容允许绑定完整视频并作为 Web 试看/完整版的唯一真源", async () => {
   const app = await createApp(prisma);
   try {
     const superCookie = await loginAdmin(app, "superAdmin");
@@ -702,11 +707,17 @@ test("public 内容绑定完整视频必须返回 full_video_not_allowed_for_pub
       headers: { cookie: superCookie, "Content-Type": "application/json" },
       payload: {
         fullVideoAssetId: mediaAsset.id,
-        reason: "public 试图绑定完整视频",
+        fullVideoAssetIds: [mediaAsset.id],
+        reason: "public 绑定完整视频作为唯一源片",
       },
     });
-    assert.equal(resp.statusCode, 400, resp.body);
-    assert.equal((resp.json() as any).error, "full_video_not_allowed_for_public");
+    assert.equal(resp.statusCode, 200, resp.body);
+    const refreshed = await prisma.content.findUnique({
+      where: { id: TEST_KNOWN_IDS.contentPublic },
+      include: { fullVideoSegments: { orderBy: { segmentOrder: "asc" } } },
+    });
+    assert.equal(refreshed?.fullVideoAssetId, mediaAsset.id);
+    assert.deepEqual(refreshed?.fullVideoSegments.map((segment: any) => segment.videoAssetId), [mediaAsset.id]);
   } finally {
     await app.close();
   }

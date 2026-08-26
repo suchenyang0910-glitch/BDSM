@@ -5,6 +5,7 @@ import { hmacSha256Hex, userIdIndexKey } from "../utils/crypto.js";
 import { extractPrismaCodeOnly } from "../utils/structuredError.js";
 import { verifyAndFreezePaymentAddressIntegrity } from "./paymentAddressIntegrity.js";
 import { notifyPaymentSuccess } from "./paymentSuccessNotifier.js";
+import { queuePlaybackRevokesForEntitlements } from "./playbackRevocation.js";
 
 type Tx = any;
 
@@ -337,6 +338,12 @@ export async function refundOrder(
         ipAddress: opts.ipAddress ?? null,
         userAgent: opts.userAgent ?? null,
       },
+    });
+    await queuePlaybackRevokesForEntitlements(tx, {
+      revokedEntitlements: revokedList.map((item: any) => ({ id: item.id, userId: item.userId })),
+      sourceOrderId: order.id,
+      requestedByAdminId: opts.adminId,
+      reason: "refund",
     });
     return { order: updatedOrder, revoked: revokedList };
   });

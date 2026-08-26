@@ -50,6 +50,7 @@ import {
   normalizeTelegramHashtagsFromInputs,
   appendTelegramTagLine,
 } from "../services/seoMetadata.js";
+import { revokePlaybackSessionsByContent } from "../services/playbackAdmin.js";
 import { randomBytes, createHash } from "node:crypto";
 import { decryptChatIdAesGcm } from "../utils/crypto.js";
 
@@ -82,6 +83,16 @@ const VOD_MIME_RULES: Record<z.infer<typeof VOD_ASSET_KIND_Z>, { prefixes: strin
   preview_source: { prefixes: ["video/"], maxBytes: 1024n * 1024n * 1024n },
   full_source: { prefixes: ["video/"], maxBytes: 8n * 1024n * 1024n * 1024n },
 };
+
+function normalizePreviewPolicy(input: { previewEnabled?: boolean | null; previewDurationSeconds?: number | null }) {
+  const previewEnabled = input.previewEnabled !== false;
+  const rawDuration = Number(input.previewDurationSeconds ?? 60);
+  const previewDurationSeconds = [30, 60, 90].includes(rawDuration) ? rawDuration : 60;
+  return {
+    previewEnabled,
+    previewDurationSeconds,
+  };
+}
 
 function adminMeta(req: FastifyRequest) {
   const sess = (req as any).admin as AdminSession;
@@ -116,8 +127,24 @@ function sanitizeErrorClass(input: string | null | undefined): string | null {
   return String(input).trim().toLowerCase().replace(/[^a-z0-9_:-]/g, "").slice(0, 64) || null;
 }
 
+function summarizeVideoRendition(row: any) {
+  return {
+    kind: row.kind,
+    status: row.status,
+    width: row.width ?? null,
+    height: row.height ?? null,
+    bitrateKbps: row.bitrateKbps ?? null,
+    durationSeconds: row.durationSeconds ?? null,
+    segmentCount: row.segmentCount ?? null,
+    byteSize: row.byteSize != null ? String(row.byteSize) : null,
+    errorClass: sanitizeErrorClass(row.errorClass),
+    readyAt: row.readyAt ? new Date(row.readyAt).toISOString() : null,
+  };
+}
+
 function summarizeVodAsset(row: any) {
   const transcodeJob = row?.transcodeJobs?.[0] || null;
+  const renditions = Array.isArray(row?.renditions) ? row.renditions.map((item: any) => summarizeVideoRendition(item)) : [];
   return {
     id: row.id,
     kind: row.kind,
@@ -130,12 +157,18 @@ function summarizeVodAsset(row: any) {
     createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
     transcode: transcodeJob
       ? {
+          id: transcodeJob.id,
           status: transcodeJob.status,
           attemptCount: transcodeJob.attemptCount,
+          progressPercent: typeof transcodeJob.progressPercent === "number" ? transcodeJob.progressPercent : 0,
           errorClass: sanitizeErrorClass(transcodeJob.errorClass),
+          workerIdPresent: !!transcodeJob.workerId,
+          leaseUntil: transcodeJob.leaseUntil ? new Date(transcodeJob.leaseUntil).toISOString() : null,
+          lastHeartbeatAt: transcodeJob.lastHeartbeatAt ? new Date(transcodeJob.lastHeartbeatAt).toISOString() : null,
           queuedAt: transcodeJob.queuedAt ? new Date(transcodeJob.queuedAt).toISOString() : null,
         }
       : null,
+    renditions,
   };
 }
 
@@ -473,11 +506,13 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
 
   // —— 强业务矩阵校验：accessType × 素材
   if (accessType === "public") {
-    if (fullVideoAssetIds.length > 0) {
-      return { ok: false, status: 400, error: "full_video_not_allowed_for_public", message: "public（免费预览）类型禁止上传或绑定完整视频；完整视频仅允许在会员/内容包私密频道交付。" };
-    }
-    if (!previewAssetId && !ctx.allowDraftWithoutDeliveryMedia) {
-      return { ok: false, status: 400, error: "public_requires_preview_asset", message: "public 类型必须上传并绑定试看视频（previewAssetId，30–60 秒并已加水印）。" };
+    if (fullVideoAssetIds.length === 0 && !ctx.allowDraftWithoutDeliveryMedia) {
+      return {
+        ok: false,
+        status: 400,
+        error: "public_requires_full_video",
+        message: "public 类型需上传一份完整源视频，系统将自动生成独立私有试看 HLS。",
+      };
     }
   }
 
@@ -548,15 +583,6 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
         status: 400,
         error: "public_must_not_bind_package",
         message: "公开内容不得绑定收费内容包 packageId。",
-      };
-    }
-    // 免费频道是平台级流量池，而不是每条内容的运营选择项。
-    if ((await listFreePreviewDistributionTargets(prisma)).length === 0) {
-      return {
-        ok: false,
-        status: 503,
-        error: "free_channel_pool_not_configured",
-        message: "免费流量频道池尚未配置，请先在服务端启用至少一个免费频道。",
       };
     }
   }
@@ -650,16 +676,6 @@ async function queueTelegramPublishForContent(input: {
   }
 
   const kinds = Array.from(new Set(input.channelKinds));
-  // 会员/内容包的试看是固定流量入口：只要素材就绪，后台即自动补齐免费频道分发，
-  // 不再让运营在“完整视频”和“免费预览”之间手工做易错的二选一。
-  if (
-    (content.accessType === "membership" || content.accessType === "package") &&
-    content.previewAsset?.status === "ready" &&
-    content.previewAsset.kind === "preview_video" &&
-    !kinds.includes("public_free_preview")
-  ) {
-    kinds.unshift("public_free_preview");
-  }
   const plans: Array<{
     mediaAssetId?: string | null;
     videoAssetId?: string | null;
@@ -679,16 +695,12 @@ async function queueTelegramPublishForContent(input: {
       : [];
   for (const kind of kinds) {
     if (kind === "public_free_preview") {
-      if (!content.previewAsset || content.previewAsset.status !== "ready") {
-        return { ok: false, status: 409, error: "preview_asset_required", message: "免费预览必须先上传并校验试看视频。" };
-      }
-      const freePool = await listFreePreviewDistributionTargets(prisma);
-      if (freePool.length === 0) {
-        return { ok: false, status: 503, error: "free_channel_pool_not_configured", message: "免费流量频道池尚未配置，请先在服务端启用至少一个免费频道。" };
-      }
-      for (const channel of freePool) {
-        plans.push({ mediaAssetId: content.previewAsset.id, targetFreeChannelCode: channel.code, channelKindDb: kind });
-      }
+      return {
+        ok: false,
+        status: 409,
+        error: "preview_delivery_not_supported",
+        message: "试看 HLS 现由 Worker 自动生成并仅通过 Web 播放会话签发；Telegram 不再投放单独试看视频。",
+      };
       continue;
     }
     if (kind === "membership_full") {
@@ -887,6 +899,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     seoKeywords: z.array(z.string().max(40)).optional().default([]),
     geoKeywords: z.array(z.string().max(40)).optional().default([]),
     previewUrl: z.string().trim().max(500).optional().nullable(),
+    previewEnabled: z.boolean().optional().default(true),
+    previewDurationSeconds: z.union([z.literal(30), z.literal(60), z.literal(90)]).optional().default(60),
     durationSeconds: z.number().int().min(0).optional().nullable(),
     accessType: z.enum(["public", "single", "membership", "package"]).optional().default("single"),
     freeChannelCode: z.string().max(64).trim().optional().nullable(),
@@ -1534,7 +1548,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         const lockedSession = await tx.uploadSession.findUnique({ where: { id: session.id } });
         const existingAsset = await tx.videoAsset.findFirst({
           where: { uploadSessionId: session.id },
-          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+          include: {
+            transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+            renditions: { orderBy: [{ kind: "asc" }] },
+          },
         });
         if (lockedSession?.completedAt && existingAsset) {
           return existingAsset;
@@ -1602,7 +1619,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         }
         return tx.videoAsset.findUnique({
           where: { id: asset.id },
-          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+          include: {
+            transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+            renditions: { orderBy: [{ kind: "asc" }] },
+          },
         });
       });
 
@@ -1751,7 +1771,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         });
         const existingAsset = await tx.videoAsset.findFirst({
           where: { uploadSessionId: session.id },
-          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+          include: {
+            transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+            renditions: { orderBy: [{ kind: "asc" }] },
+          },
         });
         if (lockedSession?.completedAt && existingAsset) {
           await syncContentFullVideoBindings(tx, session.contentId);
@@ -1891,7 +1914,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         await syncContentFullVideoBindings(tx, session.contentId);
         return tx.videoAsset.findUnique({
           where: { id: asset.id },
-          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+          include: {
+            transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+            renditions: { orderBy: [{ kind: "asc" }] },
+          },
         });
       });
       return reply.send({ ok: true, asset: summarizeVodAsset(result) });
@@ -1913,7 +1939,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const [assets, pendingSessions] = await Promise.all([
         vodPrisma.videoAsset.findMany({
           where: { contentId, status: { not: "deleted" } },
-          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+          include: {
+            transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+            renditions: { orderBy: [{ kind: "asc" }] },
+          },
           orderBy: [{ createdAt: "asc" }],
         }),
         vodPrisma.uploadSession.findMany({
@@ -1945,6 +1974,128 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     },
   );
 
+  fastify.post(
+    "/admin/transcode-jobs/:id/retry",
+    { preHandler: [requireAdmin("content:publish")] },
+    async (req: any, reply) => {
+      const id = ZID.parse(req.params.id);
+      const meta = adminMeta(req);
+      const updated = await prisma.$transaction(async (tx: any) => {
+        const job = await tx.transcodeJob.findUnique({
+          where: { id },
+          include: {
+            asset: {
+              include: {
+                renditions: { orderBy: [{ kind: "asc" }] },
+                transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+              },
+            },
+          },
+        });
+        if (!job) return { error: "not_found" as const };
+        if (job.status !== "failed") return { error: "job_status_not_retryable" as const, job };
+        const after = await tx.transcodeJob.update({
+          where: { id },
+          data: {
+            status: "queued",
+            errorClass: null,
+            workerId: null,
+            leaseUntil: null,
+            lastHeartbeatAt: null,
+            progressPercent: 0,
+            queuedAt: new Date(),
+            finishedAt: null,
+          },
+        });
+        await tx.videoRendition.updateMany({
+          where: { assetId: job.assetId, status: { in: ["failed", "processing"] } },
+          data: {
+            status: "pending",
+            errorClass: null,
+            readyAt: null,
+          },
+        });
+        await writeAudit(tx, meta, "transcode_job.retry", "transcode_job", id, serialize({ status: job.status, errorClass: job.errorClass }), serialize({ status: after.status }), "manual retry");
+        return {
+          error: null,
+          job: await tx.transcodeJob.findUnique({ where: { id } }),
+          asset: await tx.videoAsset.findUnique({
+            where: { id: job.assetId },
+            include: {
+              transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+              renditions: { orderBy: [{ kind: "asc" }] },
+            },
+          }),
+        };
+      });
+      if (updated.error === "not_found") return reply.status(404).send({ error: "not_found", message: "转码任务不存在" });
+      if (updated.error === "job_status_not_retryable") {
+        return reply.status(409).send({ error: "job_status_not_retryable", message: `当前 status=${updated.job.status}；仅 failed 任务允许重试。` });
+      }
+      return reply.send({ ok: true, job: updated.job, asset: summarizeVodAsset(updated.asset) });
+    },
+  );
+
+  fastify.post(
+    "/admin/transcode-jobs/:id/cancel",
+    { preHandler: [requireAdmin("content:publish")] },
+    async (req: any, reply) => {
+      const id = ZID.parse(req.params.id);
+      const meta = adminMeta(req);
+      const updated = await prisma.$transaction(async (tx: any) => {
+        const job = await tx.transcodeJob.findUnique({
+          where: { id },
+          include: {
+            asset: {
+              include: {
+                renditions: { orderBy: [{ kind: "asc" }] },
+                transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+              },
+            },
+          },
+        });
+        if (!job) return { error: "not_found" as const };
+        if (!["queued", "processing"].includes(job.status)) return { error: "job_status_not_cancellable" as const, job };
+        const after = await tx.transcodeJob.update({
+          where: { id },
+          data: {
+            status: "cancelled",
+            errorClass: "job_cancelled",
+            workerId: null,
+            leaseUntil: null,
+            lastHeartbeatAt: new Date(),
+            progressPercent: 0,
+            finishedAt: new Date(),
+          },
+        });
+        await tx.videoRendition.updateMany({
+          where: { assetId: job.assetId, status: "processing" },
+          data: {
+            status: "failed",
+            errorClass: "job_cancelled",
+          },
+        });
+        await writeAudit(tx, meta, "transcode_job.cancel", "transcode_job", id, serialize({ status: job.status }), serialize({ status: after.status }), "manual cancel");
+        return {
+          error: null,
+          job: after,
+          asset: await tx.videoAsset.findUnique({
+            where: { id: job.assetId },
+            include: {
+              transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+              renditions: { orderBy: [{ kind: "asc" }] },
+            },
+          }),
+        };
+      });
+      if (updated.error === "not_found") return reply.status(404).send({ error: "not_found", message: "转码任务不存在" });
+      if (updated.error === "job_status_not_cancellable") {
+        return reply.status(409).send({ error: "job_status_not_cancellable", message: `当前 status=${updated.job.status}；仅 queued/processing 任务允许取消。ready 产物不能通过此接口删除。` });
+      }
+      return reply.send({ ok: true, job: updated.job, asset: summarizeVodAsset(updated.asset) });
+    },
+  );
+
   fastify.delete(
     "/admin/contents/:contentId/assets/:assetId",
     { preHandler: [requireAdmin("content:edit")] },
@@ -1956,7 +2107,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         prisma.content.findUnique({ where: { id: contentId }, select: { id: true, status: true } }),
         vodPrisma.videoAsset.findFirst({
           where: { id: assetId, contentId },
-          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+          include: {
+            transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+            renditions: { orderBy: [{ kind: "asc" }] },
+          },
         }),
       ]);
       if (!content) {
@@ -1985,7 +2139,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         await writeAudit(tx, meta, "vod.asset.delete", "video_asset", asset.id, serialize({ status: asset.status }), serialize({ status: "deleted" }), `content=${contentId}`);
         return tx.videoAsset.findUnique({
           where: { id: asset.id },
-          include: { transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 } },
+          include: {
+            transcodeJobs: { orderBy: { queuedAt: "desc" }, take: 1 },
+            renditions: { orderBy: [{ kind: "asc" }] },
+          },
         });
       });
       return reply.send({ ok: true, asset: summarizeVodAsset(deleted) });
@@ -2060,6 +2217,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         return reply.status(preCheck.status).send({ error: preCheck.error, message: preCheck.message, details: preCheck.details });
       }
       const { reason, categoryIds, ...payload } = body;
+      const previewPolicy = normalizePreviewPolicy(payload);
       const fullVideoAssetIds = normalizeFullVideoAssetIds(payload.fullVideoAssetIds, payload.fullVideoAssetId);
       const parseDates = (d: any) => (d ? new Date(d) : null);
       const normalizedSeo = normalizeSeoPayload(payload);
@@ -2090,6 +2248,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         seoKeywords: normalizedSeo.seoKeywords,
         geoKeywords: normalizedSeo.geoKeywords,
         previewUrl: (payload.previewUrl != null ? payload.previewUrl : redundantPreviewUrl) ?? null,
+        previewEnabled: previewPolicy.previewEnabled,
+        previewDurationSeconds: previewPolicy.previewDurationSeconds,
         durationSeconds: payload.durationSeconds ?? redundantDuration ?? null,
         accessType: payload.accessType,
         isRecommended: payload.isRecommended,
@@ -2157,6 +2317,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       }
 
       const mergedAccessType = (payload.accessType ?? before.accessType) as AccessTypeBound;
+      const previewPolicy = normalizePreviewPolicy({
+        previewEnabled: payload.previewEnabled !== undefined ? payload.previewEnabled : (before as any).previewEnabled,
+        previewDurationSeconds: payload.previewDurationSeconds !== undefined ? payload.previewDurationSeconds : (before as any).previewDurationSeconds,
+      });
       const mergedPackageId = payload.packageId !== undefined ? payload.packageId : before.packageId;
       const mergedProductId = payload.productId !== undefined ? payload.productId : before.productId;
       const mergedFreeChannelCode = payload.freeChannelCode !== undefined ? payload.freeChannelCode : before.freeChannelCode;
@@ -2225,6 +2389,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         }
       }
       if (segmentInputProvided) data.fullVideoAssetId = mergedFullVideoAssetId;
+      data.previewEnabled = previewPolicy.previewEnabled;
+      data.previewDurationSeconds = previewPolicy.previewDurationSeconds;
       if (assetRedundancies) {
         if (assetRedundancies.coverUrl !== undefined && payload.coverUrl === undefined) data.coverUrl = assetRedundancies.coverUrl;
         if (assetRedundancies.previewUrl !== undefined && payload.previewUrl === undefined) data.previewUrl = assetRedundancies.previewUrl;
@@ -2370,17 +2536,21 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         await writeAudit(tx, meta, "content.publish", "content", id, stripSensitiveFields(before), stripSensitiveFields(after), reason);
       });
 
-      // 内容发布即启动频道交付：会员/内容包必发完整视频；有试看时自动扇出至全部免费流量频道。
-      // 历史已发布内容不会被本分支回放，避免升级代码后向频道重复投递。
+      // 内容发布只自动排队完整视频的 Telegram 备用交付。
+      // 试看 HLS 由 Worker 自动生成并通过 Web 播放链路签发，不再向 Telegram 投放单独试看视频。
       const automaticKinds: TelegramPublishPlanKind[] = [];
-      if (before.accessType === "public") automaticKinds.push("public_free_preview");
       if (before.accessType === "membership") automaticKinds.push("membership_full");
       if (before.accessType === "package") automaticKinds.push("package_full");
-      if (
-        (before.accessType === "membership" || before.accessType === "package") &&
-        before.previewAssetId
-      ) {
-        automaticKinds.unshift("public_free_preview");
+      if (automaticKinds.length === 0) {
+        return reply.send({
+          ok: true,
+          status: "published",
+          telegramPublish: {
+            queued: false,
+            error: null,
+            message: "当前内容不需要自动创建 Telegram 备用交付任务。",
+          },
+        });
       }
       const telegramPublish = await queueTelegramPublishForContent({
         prisma,
@@ -2431,6 +2601,11 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           data: { status: "archived", publishedAt: null, lastEditorId: meta.adminId },
         });
         await writeAudit(tx, meta, "content.unpublish", "content", id, stripSensitiveFields(before), stripSensitiveFields(after), reason);
+      });
+      await revokePlaybackSessionsByContent(prisma, {
+        contentId: id,
+        requestedByAdminId: meta.adminId,
+        reason: "content_unpublished",
       });
       return reply.send({ ok: true, status: "archived" });
     },

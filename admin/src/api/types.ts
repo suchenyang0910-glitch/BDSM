@@ -228,6 +228,8 @@ export type ContentItem = {
   geoKeywords?: string[];
   effectiveSeo?: EffectiveSeo;
   previewUrl: string | null;
+  previewEnabled?: boolean;
+  previewDurationSeconds?: number;
   durationSeconds: number | null;
   accessType: "public" | "single" | "membership" | "package";
   status: ContentStatus;
@@ -282,6 +284,8 @@ export type CreateContentInput = {
   description?: string | null;
   tags?: string[];
   previewUrl?: string | null;
+  previewEnabled?: boolean;
+  previewDurationSeconds?: 30 | 60 | 90;
   seoTitle?: string | null;
   seoDescription?: string | null;
   seoKeywords?: string[];

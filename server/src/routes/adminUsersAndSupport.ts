@@ -11,6 +11,7 @@ import {
 } from "../services/telegramBot.js";
 import { resolveMembershipChannelRef } from "../services/membershipChannel.js";
 import { processEntitlementGraceCleanup } from "../services/entitlementsCron.js";
+import { revokePlaybackSessionsByUser } from "../services/playbackAdmin.js";
 import type { ResourceType } from "@prisma/client";
 
 type Tx = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
@@ -94,6 +95,10 @@ const noteSchema = z.object({
   note: z.string().min(1).max(5000),
   isPublic: z.boolean().default(false),
   actionRef: z.string().optional(),
+});
+
+const revokePlaybackSessionsSchema = z.object({
+  reason: z.string().min(2).max(1000),
 });
 
 function entitlementRow(e: any) {
@@ -921,6 +926,51 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
       return reply.send({
         ...ticketRow(t),
         events: (t as any).events.map(ticketEventRow),
+      });
+    },
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    "/admin/users/:id/revoke-playback-sessions",
+    { preHandler: [requireAdmin("*")] },
+    async (req, reply) => {
+      const admin = (req as any).admin as { adminId: string; role: string; email: string };
+      if (admin.role !== "super_admin") {
+        return reply.status(403).send({ error: "forbidden", message: "权限不足，需要 super_admin" });
+      }
+      const parse = revokePlaybackSessionsSchema.safeParse(req.body ?? {});
+      if (!parse.success) return reply.status(400).send({ error: "bad_request", details: parse.error.issues });
+
+      const user = await prisma.user.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, status: true },
+      });
+      if (!user) return reply.status(404).send({ error: "not_found", message: "用户不存在" });
+
+      const result = await revokePlaybackSessionsByUser(prisma, {
+        userId: user.id,
+        requestedByAdminId: admin.adminId,
+        reason: user.status === "suspended" ? "user_suspended" : "manual_admin",
+      });
+      await prisma.adminAuditLog.create({
+        data: {
+          adminId: admin.adminId,
+          action: "admin.user.revoke_playback_sessions",
+          objectType: "user",
+          objectId: user.id,
+          reason: parse.data.reason,
+          ipAddress: (req.ip as string) || null,
+          userAgent: (req.headers["user-agent"] as string) || null,
+          afterValue: {
+            playbackRevokeOutboxId: result.outboxId,
+            activeSessionCount: result.activeCount,
+          },
+        },
+      });
+      return reply.send({
+        ok: true,
+        playbackRevokeOutboxId: result.outboxId,
+        activeSessionCount: result.activeCount,
       });
     },
   );
