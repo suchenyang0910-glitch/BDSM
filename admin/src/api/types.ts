@@ -219,6 +219,8 @@ export type ContentItem = {
   id: string;
   title: string;
   coverUrl: string | null;
+  /** 受控 VOD 封面预览入口；不包含对象存储地址。 */
+  coverPreviewPath?: string | null;
   thumbnailUrl: string | null;
   description: string | null;
   tags: string[];

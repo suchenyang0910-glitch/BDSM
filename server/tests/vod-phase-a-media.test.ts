@@ -1087,6 +1087,20 @@ test("Phase A: media list response omits storage keys, bucket names, URLs, and s
       headers: { cookie: editorCookie },
     });
     assert.equal(vodPreviewResp.statusCode, 302, vodPreviewResp.body);
+
+    // 兼容仍缓存了旧后台脚本的浏览器：它可能把 VOD cover 错传至旧
+    // MediaAsset 外键。服务端必须忽略同内容的 VOD cover，而不是报素材不存在。
+    const legacyPayloadResp = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        coverAssetId: vodCover.id,
+        accessType: "membership",
+        productId: TEST_KNOWN_IDS.membershipProductKey,
+      },
+    });
+    assert.equal(legacyPayloadResp.statusCode, 200, legacyPayloadResp.body);
   } finally {
     await app.close();
   }

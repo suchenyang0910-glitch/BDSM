@@ -619,6 +619,35 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   return { ok: true };
 }
 
+/**
+ * 兼容早期后台脚本：VOD 的封面存在 video_assets，旧脚本却会把它写到
+ * MediaAsset 的 coverAssetId 字段。该字段不是 VOD 封面的绑定位；同内容的
+ * VOD cover 必须忽略，避免已校验封面反而阻断普通“保存视频信息”。
+ *
+ * 只忽略确实属于当前内容、且 kind=cover 的 VOD 素材；任意未知 ID 仍由
+ * 后续校验严格拒绝，不能借此绕过素材归属检查。
+ */
+async function omitLegacyCoverReferenceForVodAsset(
+  prisma: PrismaClient,
+  contentId: string,
+  payload: { coverAssetId?: string | null },
+): Promise<boolean> {
+  const candidateId = payload.coverAssetId;
+  if (!candidateId) return false;
+  const [legacyAsset, vodAsset] = await Promise.all([
+    prisma.mediaAsset.findUnique({ where: { id: candidateId }, select: { id: true } }),
+    (prisma as any).videoAsset.findUnique({
+      where: { id: candidateId },
+      select: { contentId: true, kind: true },
+    }),
+  ]);
+  if (!legacyAsset && vodAsset?.contentId === contentId && vodAsset.kind === "cover") {
+    delete payload.coverAssetId;
+    return true;
+  }
+  return false;
+}
+
 async function validatePublishReady(
   prisma: PrismaClient,
   contentId: string,
@@ -1045,6 +1074,14 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             product: { select: { id: true, title: true, priceMinor: true, currency: true } },
             package: { select: { id: true, title: true } },
             lastEditor: { select: { id: true, email: true, displayName: true } },
+            // VOD Phase A 的封面不再写入旧 MediaAsset；列表必须读取已校验的
+            // VOD cover，并只下发受控预览入口，不能泄漏对象存储地址。
+            videoAssets: {
+              where: { kind: "cover", status: "verified", deletedAt: null },
+              orderBy: { createdAt: "desc" },
+              take: 1,
+              select: { id: true },
+            },
           },
           skip: (qp.page - 1) * qp.limit,
           take: qp.limit,
@@ -1054,10 +1091,16 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       ]);
       return reply.send(serialize({
         total, page: qp.page, limit: qp.limit,
-        data: rows.map((c: any) => attachEffectiveSeo({
-          ...c,
-          categories: c.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
-        }, platform)),
+        data: rows.map((c: any) => {
+          const { videoAssets, ...content } = c;
+          return attachEffectiveSeo({
+            ...content,
+            coverPreviewPath: videoAssets[0]
+              ? `/api/admin/vod-assets/${encodeURIComponent(videoAssets[0].id)}/preview`
+              : null,
+            categories: c.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
+          }, platform);
+        }),
       }));
     },
   );
@@ -2379,6 +2422,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         include: { categories: { orderBy: { displayOrder: "asc" } }, fullVideoSegments: { orderBy: { segmentOrder: "asc" } } },
       });
       if (!before) return reply.status(404).send({ error: "not_found" });
+
+      // 服务端兼容旧版后台已缓存的 VOD cover 引用；新版前端本身不会再提交它。
+      await omitLegacyCoverReferenceForVodAsset(prisma, id, payload);
 
       if (!adminHasPermission(meta.adminRole, "content:publish")) {
         if (before.status === "published") {

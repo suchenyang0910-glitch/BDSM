@@ -1739,7 +1739,7 @@ const ContentsPage: React.FC = () => {
       key: "cover",
       width: 88,
       render: (_: any, r) => {
-        const src = r.coverUrl || r.thumbnailUrl;
+        const src = r.coverPreviewPath || r.coverUrl || r.thumbnailUrl;
         if (!src) return <Text type="secondary">—</Text>;
         return (
           <img
