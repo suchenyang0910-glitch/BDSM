@@ -4,6 +4,8 @@ import { formatDuration } from "../utils/telegram.js";
 import { buildEffectiveSeo, buildVideoObjectJsonLd } from "../services/seoMetadata.js";
 import { resolveDefaultMonthlyMembershipProduct } from "../services/membershipProduct.js";
 import { createPrivatePresignedReadUrl } from "../services/objectStorage.js";
+import type { PlaybackConfig } from "../services/playbackConfig.js";
+import { getPlaybackStatusSummary } from "../services/playbackSessions.js";
 
 const contentsQuerySchema = z.object({
   categoryId: z.string().optional(),
@@ -15,6 +17,12 @@ const contentsQuerySchema = z.object({
 
 export default async function contentRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
+  // The public content page must remain renderable while delivery is disabled,
+  // but it must only offer managed playback when the server explicitly permits it.
+  const playbackConfig = (((fastify as any).playbackConfig as PlaybackConfig | undefined) || {
+    mode: "disabled", configured: false, missingKeys: [], cdnBaseUrl: "", signingMode: "signed_cookie",
+    sessionTtlSeconds: 300, heartbeatIntervalSeconds: 15, maxActiveDevices: 2, allowContentIds: [], allowUserIds: [],
+  }) as PlaybackConfig;
 
   async function tryGetPlatformMetadata() {
     try {
@@ -257,6 +265,10 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     });
     const pageUrl = `${resolveBaseUrl(req)}/#view=content&id=${encodeURIComponent(content.id)}`;
     const product = content.product || (content.accessType === "membership" ? defaultMembershipProduct : null);
+    const playbackStatus = (await getPlaybackStatusSummary(prisma, playbackConfig, {
+      contentId: content.id,
+      userId: uid,
+    })).body;
     return {
       id: content.id,
       title: content.title,
@@ -281,6 +293,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         : null,
       unlocked,
       ownedBy,
+      playbackStatus,
       publishedAt: content.publishedAt?.toISOString(),
       effectiveSeo,
       robots: "noindex,nofollow",

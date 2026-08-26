@@ -876,6 +876,10 @@
   }
 
   function getPrimaryDetailAction(detail) {
+    const playback = detail && detail.playbackStatus;
+    if (playback && !playback.errorClass && (playback.action === "preview" || playback.action === "play_full")) {
+      return { text: playback.action === "play_full" ? "播放完整视频" : "免费试看", handler: function () { startManagedPlayback(detail); } };
+    }
     if (detail.unlocked) {
       return { text: "观看完整视频", handler: function () { openChannelAccess(detail.id); } };
     }
@@ -886,6 +890,36 @@
       return { text: "查看内容包", handler: function () { startPurchase(detail); } };
     }
     return { text: "查看频道预览", handler: function () { openChannelAccess(detail.id); } };
+  }
+
+  function canPlayNativeHls(video) {
+    return !!(video && video.canPlayType && /maybe|probably/i.test(video.canPlayType("application/vnd.apple.mpegurl")));
+  }
+
+  async function startManagedPlayback(detail) {
+    const video = $("detailContent").querySelector(".detail-preview-video");
+    if (!video) return;
+    try {
+      const session = await apiCall("/api/contents/" + encodeURIComponent(detail.id) + "/playback-session", {
+        method: "POST", body: JSON.stringify({}),
+      });
+      if (!session || !session.manifestUrl) throw new Error("playback_session_missing");
+      if (canPlayNativeHls(video)) {
+        video.src = session.manifestUrl;
+      } else if (window.Hls && window.Hls.isSupported && window.Hls.isSupported()) {
+        if (state.player.hls && state.player.hls.destroy) state.player.hls.destroy();
+        state.player.hls = new window.Hls({ enableWorker: true, maxBufferLength: 30, maxMaxBufferLength: 60 });
+        state.player.hls.loadSource(session.manifestUrl);
+        state.player.hls.attachMedia(video);
+      } else {
+        throw new Error("hls_not_supported");
+      }
+      video.play().catch(function () {});
+      const button = $("detailPrimaryButton");
+      if (button && session.deliveryVariant === "preview") button.textContent = "正在试看";
+    } catch (_) {
+      showInlineMessage("试看暂时不可用，请稍后重试。");
+    }
   }
 
   async function renderDetail(id) {
@@ -918,9 +952,11 @@
     const previewUpgradeEnabled = !detail.unlocked && !!detail.product &&
       (detail.accessType === "membership" || detail.accessType === "package");
     const previewUpgradeText = detail.accessType === "membership" ? "开通会员" : "解锁内容包";
-    const mediaSlot = detail.previewUrl
+    const managedPreview = detail.playbackStatus && detail.playbackStatus.previewAvailable && !detail.playbackStatus.errorClass;
+    const mediaSlot = (managedPreview || detail.previewUrl)
       ? '<section class="detail-media detail-media-preview" aria-label="免费试看">' +
-        '<video class="detail-preview-video" controls playsinline preload="metadata" src="' + escapeHtml(detail.previewUrl) + '"' +
+        '<video class="detail-preview-video" controls playsinline preload="metadata"' +
+          (detail.previewUrl ? ' src="' + escapeHtml(detail.previewUrl) + '"' : '') +
           (detail.coverUrl ? ' poster="' + escapeHtml(detail.coverUrl) + '"' : '') + '>' +
           '当前浏览器不支持视频在线播放。' +
         '</video>' +
