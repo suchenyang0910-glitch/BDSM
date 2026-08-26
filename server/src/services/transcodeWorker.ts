@@ -1020,6 +1020,17 @@ export async function processClaimedTranscodeJob(
       renditions: readyRows,
     });
     await markTranscodeJobReady(prisma, { jobId: job.id }, new Date());
+    // A published title becomes web-playable only after every required HLS
+    // rendition has been verified.  Do this here instead of at upload time so
+    // users never receive a player pointing at an incomplete transcode.
+    await (prisma as any).content.updateMany({
+      where: {
+        id: job.contentId,
+        status: "published",
+        platformPlaybackEnabled: false,
+      },
+      data: { platformPlaybackEnabled: true },
+    });
     await deletePrefixSafe(tmpRootPrefix);
     return {
       ok: true,
