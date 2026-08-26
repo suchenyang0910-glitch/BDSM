@@ -555,6 +555,9 @@ test("[S1-F3] 后台私密视频入口受控跳转到关联频道消息", async 
 //     全链路每个动作的审计日志 before/after 均 stripSensitiveFields 无 -100 / t.me/+
 // ============================================================
 test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序存在，无敏感泄露", async () => {
+  const freeChannelEnv = "TELEGRAM_FREE_CHANNEL_PREVIEW_MAIN_CHAT_ID";
+  const originalFreeChannel = process.env[freeChannelEnv];
+  process.env[freeChannelEnv] = "-1000000000999";
   const app = await buildTestApp(prisma);
   try {
     const editorCookie = await loginAdmin(app, "editor");
@@ -593,6 +596,21 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
         mimeType: "video/mp4",
         byteSize: BigInt(1024),
         sha256: `legacy-s1-g-${newId}`,
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
+    // 免费流量入口会使用已校验的封面推广；该规则必须由测试显式满足，
+    // 不能为了旧样本而放宽生产校验。
+    await prisma.videoAsset.create({
+      data: {
+        contentId: newId,
+        kind: "cover",
+        objectKey: `tests/${newId}/s1-g-membership-cover.jpg`,
+        originalFilename: "s1-g-membership-cover.jpg",
+        mimeType: "image/jpeg",
+        byteSize: BigInt(1024),
+        sha256: `cover-s1-g-${newId}`,
         status: "verified",
         verifiedAt: new Date(),
       },
@@ -638,13 +656,17 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
     );
     const publishBody = publishResp.json() as any;
     assert.equal(publishBody.telegramPublish?.queued, true, "publishing a membership video must create a private-channel delivery job");
-    assert.equal(publishBody.telegramPublish?.jobs?.length, 1, "membership content without an optional preview channel creates exactly one private-channel job");
-    assert.equal(publishBody.telegramPublish?.jobs?.[0]?.channelKind, "membership_full");
+    assert.equal(publishBody.telegramPublish?.jobs?.length, 2, "membership content creates both a mandatory free-entry promotion and the private-channel job");
+    assert.ok(publishBody.telegramPublish?.jobs?.some((job: any) => job.channelKind === "public_free_preview"));
+    assert.ok(publishBody.telegramPublish?.jobs?.some((job: any) => job.channelKind === "membership_full"));
     const queuedJobs = await prisma.telegramPublishJob.findMany({
       where: { contentId: newId },
       select: { channelKind: true, status: true },
     });
-    assert.deepEqual(queuedJobs, [{ channelKind: "membership_full", status: "queued" }]);
+    assert.deepEqual(queuedJobs, [
+      { channelKind: "public_free_preview", status: "queued" },
+      { channelKind: "membership_full", status: "queued" },
+    ]);
     assertNoSensitiveLeaks(publishResp.body, "membership publish 2xx");
 
     // 审计 4 动作按序存在，且脱敏
@@ -666,6 +688,8 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
       assertNoSensitiveLeaks(serial, `audit action=${(log as any).action} before/after payload`);
     }
   } finally {
+    if (originalFreeChannel === undefined) delete process.env[freeChannelEnv];
+    else process.env[freeChannelEnv] = originalFreeChannel;
     await app.close();
   }
 });

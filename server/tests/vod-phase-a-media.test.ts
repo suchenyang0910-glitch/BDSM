@@ -839,6 +839,9 @@ test("Phase A: repeated multipart complete stays idempotent after first success"
 });
 
 test("Phase A: multipart full video auto-binds content and publish jobs reference video assets", async () => {
+  const freeChannelEnv = "TELEGRAM_FREE_CHANNEL_PREVIEW_MAIN_CHAT_ID";
+  const originalFreeChannel = process.env[freeChannelEnv];
+  process.env[freeChannelEnv] = "-1000000000998";
   const app = await createApp(prisma);
   let membershipSessionId = "";
   let packageSessionId = "";
@@ -899,6 +902,20 @@ test("Phase A: multipart full video auto-binds content and publish jobs referenc
     assert.equal(membershipCreate.statusCode, 201, membershipCreate.body);
     const membershipContentId = (membershipCreate.json() as any).id as string;
 
+    const membershipCover = await prisma.videoAsset.create({
+      data: {
+        contentId: membershipContentId,
+        kind: "cover",
+        objectKey: `covers/${membershipContentId}/membership-cover.jpg`,
+        originalFilename: "membership-cover.jpg",
+        mimeType: "image/jpeg",
+        byteSize: 1024n,
+        sha256: "c".repeat(64),
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
+
     const packageCreate = await app.inject({
       method: "POST",
       url: "/api/admin/contents",
@@ -912,6 +929,20 @@ test("Phase A: multipart full video auto-binds content and publish jobs referenc
     });
     assert.equal(packageCreate.statusCode, 201, packageCreate.body);
     const packageContentId = (packageCreate.json() as any).id as string;
+
+    const packageCover = await prisma.videoAsset.create({
+      data: {
+        contentId: packageContentId,
+        kind: "cover",
+        objectKey: `covers/${packageContentId}/package-cover.jpg`,
+        originalFilename: "package-cover.jpg",
+        mimeType: "image/jpeg",
+        byteSize: 1024n,
+        sha256: "d".repeat(64),
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
 
     const membershipInit = await app.inject({
       method: "POST",
@@ -976,7 +1007,10 @@ test("Phase A: multipart full video auto-binds content and publish jobs referenc
       payload: { channelKinds: ["membership_full"], reason: "membership publish should reference video asset" },
     });
     assert.equal(membershipPublish.statusCode, 201, membershipPublish.body);
-    assert.equal((membershipPublish.json() as any).jobs[0].videoAssetId, membershipAssetId);
+    const membershipJobs = (membershipPublish.json() as any).jobs;
+    assert.equal(membershipJobs.length, 2, membershipPublish.body);
+    assert.equal(membershipJobs.find((job: any) => job.channelKind === "membership_full")?.videoAssetId, membershipAssetId);
+    assert.equal(membershipJobs.find((job: any) => job.channelKind === "public_free_preview")?.videoAssetId, membershipCover.id);
 
     const packagePublish = await app.inject({
       method: "POST",
@@ -985,7 +1019,10 @@ test("Phase A: multipart full video auto-binds content and publish jobs referenc
       payload: { channelKinds: ["package_full"], reason: "package publish should reference video asset" },
     });
     assert.equal(packagePublish.statusCode, 201, packagePublish.body);
-    assert.equal((packagePublish.json() as any).jobs[0].videoAssetId, packageAssetId);
+    const packageJobs = (packagePublish.json() as any).jobs;
+    assert.equal(packageJobs.length, 2, packagePublish.body);
+    assert.equal(packageJobs.find((job: any) => job.channelKind === "package_full")?.videoAssetId, packageAssetId);
+    assert.equal(packageJobs.find((job: any) => job.channelKind === "public_free_preview")?.videoAssetId, packageCover.id);
 
     const storedJobs = await prisma.telegramPublishJob.findMany({
       where: { contentId: { in: [membershipContentId, packageContentId] } },
@@ -1014,11 +1051,15 @@ test("Phase A: multipart full video auto-binds content and publish jobs referenc
         channelKind: job.channelKind,
       }))),
       sortByDeliveryKind([
+        { contentId: membershipContentId, mediaAssetId: null, videoAssetId: membershipCover.id, channelKind: "public_free_preview" },
         { contentId: membershipContentId, mediaAssetId: null, videoAssetId: membershipAssetId, channelKind: "membership_full" },
+        { contentId: packageContentId, mediaAssetId: null, videoAssetId: packageCover.id, channelKind: "public_free_preview" },
         { contentId: packageContentId, mediaAssetId: null, videoAssetId: packageAssetId, channelKind: "package_full" },
       ]),
     );
   } finally {
+    if (originalFreeChannel === undefined) delete process.env[freeChannelEnv];
+    else process.env[freeChannelEnv] = originalFreeChannel;
     restore();
     await app.close();
   }
