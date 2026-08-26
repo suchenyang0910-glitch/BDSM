@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { formatDuration } from "../utils/telegram.js";
-import { buildEffectiveSeo, buildVideoObjectJsonLd } from "../services/seoMetadata.js";
+import { buildEffectiveSeo } from "../services/seoMetadata.js";
 import { resolveDefaultMonthlyMembershipProduct } from "../services/membershipProduct.js";
 import { createPrivatePresignedReadUrl } from "../services/objectStorage.js";
 import type { PlaybackConfig } from "../services/playbackConfig.js";
@@ -30,12 +30,6 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     } catch {
       return null;
     }
-  }
-
-  function resolveBaseUrl(req: any) {
-    const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
-    const host = String(req.headers.host || "bdsm.linkx.club");
-    return `${proto}://${host}`;
   }
 
   function resolvePublishedCoverUrl(content: any) {
@@ -266,7 +260,6 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       platformSeoKeywords: platformMetadata?.seoKeywords,
       platformGeoKeywords: platformMetadata?.geoKeywords,
     });
-    const pageUrl = `${resolveBaseUrl(req)}/#view=content&id=${encodeURIComponent(content.id)}`;
     const product = content.product || (content.accessType === "membership" ? defaultMembershipProduct : null);
     const playbackStatus = (await getPlaybackStatusSummary(prisma, playbackConfig, {
       contentId: content.id,
@@ -300,15 +293,9 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       publishedAt: content.publishedAt?.toISOString(),
       effectiveSeo,
       robots: "noindex,nofollow",
-      videoObjectJsonLd: buildVideoObjectJsonLd({
-        title: effectiveSeo.title || content.title,
-        description: effectiveSeo.description || content.description || "",
-        thumbnailUrl: resolvePublishedCoverUrl(content),
-        previewUrl: content.previewUrl,
-        uploadDate: content.publishedAt?.toISOString() || null,
-        durationSeconds: content.durationSeconds,
-        pageUrl,
-      }),
+      // 内容详情属于受控应用内页面；即使页面有 robots=noindex，也不能下发
+      // VideoObject，以免社交预抓取或忽略 robots 的爬虫读取封面、描述和播放地址。
+      videoObjectJsonLd: null,
     };
   });
 }

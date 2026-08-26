@@ -1233,9 +1233,11 @@
     }
     const detail = state.detailCache[id];
     trackAnalytics("content_opened", { contentId: detail.id, sourceModule: state.route.fromTab || "home" });
-    updatePageSeo(detail.effectiveSeo || { title: detail.title, description: detail.description, keywords: [] });
-    updateOgImage(detail.coverUrl || "");
-    updateJsonLd(detail.videoObjectJsonLd || null);
+    // 详情是受控应用内页面：内容本身照常渲染，但不得把付费内容标题、封面
+    // 或播放信息写到可被社交预抓取/爬虫读取的 head 元数据中。
+    updatePageSeo(null);
+    updateOgImage("");
+    updateJsonLd(null);
 
     const primaryAction = getPrimaryDetailAction(detail);
     const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;

@@ -67,7 +67,7 @@ test("catalog APIs return seeded home, category and content data", async () => {
       TEST_KNOWN_IDS.membershipProductKey,
       "membership content without an explicit product should inherit the sole active 30-day membership product",
     );
-    assert.equal(detailBody.videoObjectJsonLd?.["@type"], "VideoObject", "detail should expose VideoObject JSON-LD");
+    assert.equal(detailBody.videoObjectJsonLd, null, "private detail must not expose VideoObject JSON-LD");
   } finally {
     await app.close();
   }
