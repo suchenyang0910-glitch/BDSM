@@ -384,13 +384,23 @@
         actionText: "立即续费",
       };
     }
-    if (safe.status === "active" && safe.expiresAt && expiresMs < Date.now()) {
+    if (safe.status === "grace") {
       return {
         state: "grace",
         badgeText: "宽限期中",
         badgeClass: "status-badge status-warning",
         title: "会员进入宽限期",
         copy: "会员已于 " + formatDateShort(safe.expiresAt) + " 到期，完成续费即可恢复完整权益。",
+        actionText: "续费恢复权益",
+      };
+    }
+    if (safe.status === "active" && safe.expiresAt && expiresMs < Date.now()) {
+      return {
+        state: "expired",
+        badgeText: "已到期",
+        badgeClass: "status-badge status-warning",
+        title: "会员已到期",
+        copy: "会员权益已到期，续费后将恢复权益。",
         actionText: "续费恢复权益",
       };
     }

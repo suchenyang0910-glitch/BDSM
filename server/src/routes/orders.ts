@@ -1835,6 +1835,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
           status: e.status,
           startsAt: e.startsAt.toISOString(),
           expiresAt: e.expiresAt ? e.expiresAt.toISOString() : null,
+          graceEndsAt: e.graceEndsAt ? new Date(e.graceEndsAt).toISOString() : null,
           orderNo: e.sourceOrder?.orderNo || null,
         };
         if (e.resourceType === "membership_channel") memberships.push(item);
@@ -1886,13 +1887,23 @@ export default async function orderRoutes(fastify: FastifyInstance) {
         (m) => m.status === "active" && (!m.expiresAt || new Date(m.expiresAt).getTime() >= now.getTime()),
       );
       const latestMembership = memberships[0] || null;
+      const inferredGraceEndsAt = latestMembership && latestMembership.status === "active" && latestMembership.expiresAt
+        ? (latestMembership.graceEndsAt || new Date(new Date(latestMembership.expiresAt).getTime() + 3 * 24 * 60 * 60 * 1000).toISOString())
+        : latestMembership?.graceEndsAt || null;
+      const latestMembershipInGrace = latestMembership &&
+        latestMembership.status === "active" &&
+        latestMembership.expiresAt &&
+        inferredGraceEndsAt &&
+        new Date(inferredGraceEndsAt).getTime() >= now.getTime();
       return reply.send({
         summary: {
           membership: activeMembership
-            ? { status: "active", expiresAt: activeMembership.expiresAt }
+            ? { status: "active", expiresAt: activeMembership.expiresAt, graceEndsAt: activeMembership.graceEndsAt }
+            : latestMembershipInGrace
+            ? { status: "grace", expiresAt: latestMembership.expiresAt, graceEndsAt: inferredGraceEndsAt }
             : latestMembership && !activeMembership
-            ? { status: latestMembership.status, expiresAt: latestMembership.expiresAt }
-            : { status: "none", expiresAt: null },
+            ? { status: latestMembership.status === "active" ? "expired" : latestMembership.status, expiresAt: latestMembership.expiresAt, graceEndsAt: inferredGraceEndsAt }
+            : { status: "none", expiresAt: null, graceEndsAt: null },
           totalEntitlements: rows.length,
         },
         memberships,

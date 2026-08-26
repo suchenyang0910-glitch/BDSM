@@ -366,8 +366,32 @@ test("正常链路：finance 可 mark_paid → 审计写 → 会员续费从旧 
     assert.equal(entResp.statusCode, 200, entResp.body);
     const ent = entResp.json() as any;
     assert.equal(ent.summary.membership.status, "active");
+    assert.equal(ent.summary.membership.graceEndsAt, null, "active membership must not be presented as grace");
     assert.equal(ent.summary.totalEntitlements, 3, "1 package + 2 membership entitlements rows");
     assert.equal(ent.memberships.length, 2, "two membership_channel rows");
+
+    const graceEndsAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await prisma.entitlement.updateMany({
+      where: { id: { in: ent.memberships.map((item: any) => item.id) } },
+      data: { expiresAt: new Date(Date.now() - 60 * 60 * 1000), graceEndsAt },
+    });
+    const graceResp = await app.inject({ method: "GET", url: "/api/user/entitlements", headers: { cookie: userCookie } });
+    assert.equal(graceResp.statusCode, 200, graceResp.body);
+    assert.equal((graceResp.json() as any).summary.membership.status, "grace");
+    assert.equal((graceResp.json() as any).summary.membership.graceEndsAt, graceEndsAt.toISOString());
+
+    await prisma.entitlement.updateMany({
+      where: { id: { in: ent.memberships.map((item: any) => item.id) } },
+      data: { graceEndsAt: new Date(Date.now() - 60 * 60 * 1000) },
+    });
+    const expiredResp = await app.inject({ method: "GET", url: "/api/user/entitlements", headers: { cookie: userCookie } });
+    assert.equal(expiredResp.statusCode, 200, expiredResp.body);
+    assert.equal((expiredResp.json() as any).summary.membership.status, "expired");
+
+    await Promise.all(ent.memberships.map((item: any) => prisma.entitlement.update({
+      where: { id: item.id },
+      data: { expiresAt: item.expiresAt ? new Date(item.expiresAt) : null, graceEndsAt: item.graceEndsAt ? new Date(item.graceEndsAt) : null },
+    })));
 
     const homeResp = await app.inject({ method: "GET", url: "/api/home", headers: { cookie: userCookie } });
     assert.equal(homeResp.statusCode, 200, homeResp.body);
