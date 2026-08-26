@@ -1312,7 +1312,7 @@ h3 {
 
 @media (min-width: 1440px) {
   .content-grid {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   #homeFeaturedCard .content-card,
