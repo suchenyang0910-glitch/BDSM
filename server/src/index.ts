@@ -276,6 +276,16 @@ async function main() {
     index: ["index.html"],
   });
   app.get("/h5", async (_req, reply) => reply.redirect("/h5/"));
+
+  // Serve HLS.js from the application origin so protected video playback does
+  // not rely on a third-party script CDN being available in the viewer's region.
+  await app.register(fastifyStatic, {
+    root: path.join(ROOT_DIR, "server", "node_modules", "hls.js", "dist"),
+    prefix: "/api/vendor/hls/",
+    decorateReply: false,
+    index: false,
+  });
+
   app.get("/login.html", async (_req, reply) => reply.redirect("/mini-app/login.html"));
   app.get("/h5-pay.html", async (_req, reply) => reply.redirect("/mini-app/h5-pay.html"));
 
