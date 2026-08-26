@@ -12,7 +12,7 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="" />
     <title>Samewave 同频 · 点播</title>
-    <link rel="stylesheet" href="./styles.css?v=20260826-vod-playback-5" />
+    <link rel="stylesheet" href="./styles.css?v=20260826-vod-playback-6" />
     <script src="/api/vendor/hls/hls.min.js"></script>
     <script id="videoObjectJsonLd" type="application/ld+json"></script>
   </head>
@@ -48,6 +48,27 @@
         <button id="retryBootstrapButton" class="ghost-button" type="button">重试</button>
       </section>
       <div id="inlineToast" class="inline-toast is-hidden" role="status" aria-live="polite"></div>
+
+      <section id="installGuide" class="install-guide is-hidden" role="dialog" aria-modal="true" aria-labelledby="installGuideTitle" aria-describedby="installGuideCopy">
+        <div class="install-guide-backdrop"></div>
+        <div class="install-guide-card">
+          <button id="installGuideClose" class="install-guide-close" type="button" aria-label="关闭提示">×</button>
+          <p class="eyebrow">快捷访问</p>
+          <h2 id="installGuideTitle">将同频添加到手机桌面</h2>
+          <p id="installGuideCopy" class="muted-copy">添加后可像 App 一样从桌面直接打开，下次无需重新寻找网页入口。</p>
+          <div class="install-guide-steps">
+            <div class="install-guide-step">
+              <strong>iPhone / iPad</strong>
+              <span>Safari 底部点“分享” → “添加到主屏幕” → “添加”。</span>
+            </div>
+            <div class="install-guide-step">
+              <strong>Android</strong>
+              <span>浏览器右上角菜单 → “添加到主屏幕”或“安装应用”。</span>
+            </div>
+          </div>
+          <button id="installGuideDone" class="primary-button" type="button">知道了</button>
+        </div>
+      </section>
 
       <main id="appMain" class="app-main">
         <section id="homeView" class="tab-view">
@@ -280,6 +301,6 @@
       </article>
     </template>
 
-    <script src="./app.js?v=20260826-vod-playback-4"></script>
+    <script src="./app.js?v=20260826-vod-playback-6"></script>
   </body>
 </html>

@@ -89,6 +89,29 @@
     return document.getElementById(id);
   }
 
+  const H5_INSTALL_GUIDE_STORAGE_KEY = "samewave_h5_install_guide_seen_v1";
+
+  function isStandaloneH5() {
+    return window.matchMedia && window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  }
+
+  function isTouchFirstDevice() {
+    return !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+  }
+
+  function dismissInstallGuide() {
+    $("installGuide").classList.add("is-hidden");
+    try { window.localStorage.setItem(H5_INSTALL_GUIDE_STORAGE_KEY, "1"); } catch (_) {}
+  }
+
+  function showInstallGuideOnFirstH5Visit() {
+    if (state.env.isTelegram || isStandaloneH5() || !isTouchFirstDevice()) return;
+    try {
+      if (window.localStorage.getItem(H5_INSTALL_GUIDE_STORAGE_KEY) === "1") return;
+    } catch (_) {}
+    $("installGuide").classList.remove("is-hidden");
+  }
+
   function escapeHtml(value) {
     return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
@@ -2235,6 +2258,8 @@
   }
 
   function bindEvents() {
+    $("installGuideClose").addEventListener("click", dismissInstallGuide);
+    $("installGuideDone").addEventListener("click", dismissInstallGuide);
     $("retryBootstrapButton").addEventListener("click", bootstrapApp);
     $("backButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
@@ -2340,6 +2365,8 @@
     $("meUnlockedList").innerHTML = createSkeletonCards(1);
     if (!window.location.hash) setHashForTab("home");
     else routeTo(parseHash());
-    bootstrapApp();
+    bootstrapApp().finally(function () {
+      window.setTimeout(showInstallGuideOnFirstH5Visit, 500);
+    });
   });
 })();
