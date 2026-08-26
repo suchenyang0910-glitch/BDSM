@@ -1028,6 +1028,23 @@ test("Phase A: media list response omits storage keys, bucket names, URLs, and s
   const app = await createApp(prisma);
   try {
     const editorCookie = await loginAdmin(app, "editor");
+    const cover = await prisma.mediaAsset.create({
+      data: {
+        kind: "cover_image",
+        status: "ready",
+        originalFilename: "cover.jpg",
+        mimeType: "image/jpeg",
+        contentLength: 1024n,
+        storageBucket: "private-bucket-name",
+        storageKey: "covers/internal-key.jpg",
+        storagePublicUrl: "https://example.invalid/covers/internal-key.jpg",
+        lastVerifiedAt: new Date(),
+      },
+    });
+    await prisma.content.update({
+      where: { id: TEST_KNOWN_IDS.contentDraft },
+      data: { coverAssetId: cover.id },
+    });
     await prisma.videoAsset.create({
       data: {
         contentId: TEST_KNOWN_IDS.contentDraft,
@@ -1051,6 +1068,15 @@ test("Phase A: media list response omits storage keys, bucket names, URLs, and s
     const body = mediaResp.json() as any;
     assert.ok(Array.isArray(body.items));
     assert.equal(typeof body.items[0].byteSize, "string");
+    const coverItem = body.items.find((item: any) => item.id === cover.id);
+    assert.equal(coverItem?.previewPath, `/api/admin/media/${cover.id}/preview`);
+    assert.doesNotMatch(JSON.stringify(coverItem), /example\.invalid|internal-key|private-bucket/i);
+    const previewResp = await app.inject({
+      method: "GET",
+      url: `/api/admin/media/${cover.id}/preview`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(previewResp.statusCode, 302, previewResp.body);
   } finally {
     await app.close();
   }

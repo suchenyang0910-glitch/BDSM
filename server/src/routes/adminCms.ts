@@ -172,6 +172,27 @@ function summarizeVodAsset(row: any) {
   };
 }
 
+/** 轻媒体（封面 / 历史试看）与 VideoAsset 使用不同表，但后台素材页需要统一展示。 */
+function summarizeLightMediaAsset(row: any) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    filename: summarizeFilename(row.originalFilename),
+    byteSize: row.contentLength != null ? String(row.contentLength) : null,
+    mimeType: row.mimeType || null,
+    status: row.status,
+    errorClass: sanitizeErrorClass(row.lastErrorClass),
+    verifiedAt: row.lastVerifiedAt ? new Date(row.lastVerifiedAt).toISOString() : null,
+    createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    // 只下发后台受控预览路径，绝不把对象存储 URL / Key 返回给浏览器。
+    previewPath: row.kind === "cover_image" && row.status === "ready"
+      ? `/api/admin/media/${encodeURIComponent(row.id)}/preview`
+      : null,
+    transcode: null,
+    renditions: [],
+  };
+}
+
 function isMultipartVodAssetKind(kind: z.infer<typeof VOD_ASSET_KIND_Z> | string | null | undefined): boolean {
   return kind === "full_source";
 }
@@ -1931,7 +1952,22 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const contentId = ZID.parse(req.params.contentId);
       const content = await prisma.content.findUnique({
         where: { id: contentId },
-        select: { id: true, status: true },
+        select: {
+          id: true,
+          status: true,
+          coverAsset: {
+            select: {
+              id: true, kind: true, status: true, originalFilename: true, mimeType: true,
+              contentLength: true, storagePublicUrl: true, lastErrorClass: true, lastVerifiedAt: true, createdAt: true,
+            },
+          },
+          previewAsset: {
+            select: {
+              id: true, kind: true, status: true, originalFilename: true, mimeType: true,
+              contentLength: true, storagePublicUrl: true, lastErrorClass: true, lastVerifiedAt: true, createdAt: true,
+            },
+          },
+        },
       });
       if (!content) {
         return reply.status(404).send({ error: VOD_ERROR_CLASS.content_not_found, message: "内容不存在" });
@@ -1952,6 +1988,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         }),
       ]);
       const assetSessionIds = new Set(assets.map((item: any) => item.uploadSessionId).filter(Boolean));
+      const lightAssets = [content.coverAsset, content.previewAsset]
+        .filter((item: any) => item && item.status !== "deleted")
+        .map((item: any) => summarizeLightMediaAsset(item));
       const pendingItems = pendingSessions
         .filter((session: any) => !assetSessionIds.has(session.id))
         .map((session: any) => ({
@@ -1968,7 +2007,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         }));
       return reply.send({
         contentStatus: content.status,
-        items: [...assets.map((row: any) => summarizeVodAsset(row)), ...pendingItems],
+        items: [...lightAssets, ...assets.map((row: any) => summarizeVodAsset(row)), ...pendingItems],
         uploadSessions: pendingSessions.map((session: any) => summarizeUploadSession(session)),
       });
     },
@@ -3549,6 +3588,23 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         return after;
       });
       return reply.send({ ok: finalStatus === "ready", id: updated.id, status: updated.status, publicUrl: updated.storagePublicUrl, contentLength: updated.contentLength ? String(updated.contentLength) : null });
+    },
+  );
+
+  fastify.get(
+    "/admin/media/:id/preview",
+    { preHandler: [requireAdmin("content:view")] },
+    async (req: any, reply) => {
+      const id = z.string().uuid().parse(req.params.id);
+      const asset = await prisma.mediaAsset.findUnique({
+        where: { id },
+        select: { kind: true, status: true, storagePublicUrl: true },
+      });
+      if (!asset || asset.kind !== "cover_image" || asset.status !== "ready" || !asset.storagePublicUrl) {
+        return reply.status(404).send({ error: "not_found" });
+      }
+      // 受控入口只用于已登录后台的封面查看；浏览器随后跳转到公开封面对象。
+      return reply.header("Cache-Control", "private, max-age=300").redirect(asset.storagePublicUrl, 302);
     },
   );
 

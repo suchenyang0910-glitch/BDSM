@@ -84,6 +84,7 @@ export type MediaAssetItem = {
   originalFilename: string;
   mimeType: string | null;
   contentLength: number;
+  previewPath?: string | null;
   status: MediaAssetStatus;
   lastErrorClass?: string | null;
   lastVerifiedAt?: string | null;
@@ -460,6 +461,7 @@ function normalizeMediaAsset(raw: any): MediaAssetItem {
     originalFilename: String(raw?.filename || "未命名文件"),
     mimeType: raw?.mimeType || null,
     contentLength: Number(raw?.byteSize || 0),
+    previewPath: typeof raw?.previewPath === "string" ? raw.previewPath : null,
     status: mapApiMediaStatus((raw?.status || "uploading") as ApiMediaStatus),
     lastErrorClass: raw?.errorClass || raw?.transcode?.errorClass || null,
     lastVerifiedAt: raw?.verifiedAt || null,
@@ -846,6 +848,9 @@ const ContentsPage: React.FC = () => {
       setCoverAsset(cover);
       setCoverAssetId(cover?.id || null);
       setCoverAssetContentId(cover?.id ? contentId : null);
+      // 重新打开编辑页时没有本地 Object URL；应使用受控的站内预览地址。
+      // 否则素材状态正确却只显示黑色占位框，误导运营以为上传失败。
+      setCoverPreviewUrl(cover?.previewPath || null);
       setPreviewAsset(preview);
       setPreviewAssetId(preview?.id || null);
       setFullVideoSegments(fulls);
@@ -874,6 +879,7 @@ const ContentsPage: React.FC = () => {
       setCoverAsset(null);
       setCoverAssetId(null);
       setCoverAssetContentId(null);
+      setCoverPreviewUrl(null);
       setPreviewAsset(null);
       setPreviewAssetId(null);
       setFullVideoSegments([]);
