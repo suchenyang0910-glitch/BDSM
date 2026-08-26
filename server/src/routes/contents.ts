@@ -152,6 +152,17 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         priceMinor: product?.priceMinor?.toString(),
         priceCurrency: product?.currency,
         usdtPriceMinor: product?.usdtPriceMinor?.toString() ?? null,
+        // Keep catalog cards actionable. The H5/Mini App membership page
+        // receives these rows and uses product to start a renewal or checkout.
+        product: product
+          ? {
+              id: product.id,
+              priceMinor: product.priceMinor.toString(),
+              currency: product.currency,
+              usdtPriceMinor: product.usdtPriceMinor?.toString() ?? null,
+              type: product.type,
+            }
+          : null,
         publishedAt: c.publishedAt?.toISOString(),
         effectiveSeo: buildEffectiveSeo({
           contentSeoTitle: c.seoTitle,

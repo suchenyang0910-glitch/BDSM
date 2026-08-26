@@ -49,12 +49,24 @@ test("catalog APIs return seeded home, category and content data", async () => {
     assert.equal(homeBody.robots, "noindex,nofollow", "home should stay noindex by default");
     assert.equal(homeBody.seo?.title, "同频平台默认 SEO 标题", "home should inherit platform SEO title");
     assert.ok(Array.isArray(homeBody.contents[0]?.effectiveSeo?.keywords), "content list should expose effectiveSeo");
+    const homeMembership = homeBody.contents.find((item) => item.id === TEST_KNOWN_IDS.contentMembership);
+    assert.equal(
+      homeMembership?.product?.id,
+      TEST_KNOWN_IDS.membershipProductKey,
+      "home membership cards must carry their purchasable product contract",
+    );
 
     const contents = await app.inject({ method: "GET", url: "/api/contents?pageSize=5" });
     assert.equal(contents.statusCode, 200, contents.body);
     const listBody = contents.json() as { items: any[] };
     assert.ok(listBody.items.length > 0, "contents paged should have seed data");
     assert.ok(listBody.items.every((item) => item.effectiveSeo && typeof item.effectiveSeo === "object"), "list items should include effectiveSeo");
+    const listMembership = listBody.items.find((item) => item.id === TEST_KNOWN_IDS.contentMembership);
+    assert.equal(
+      listMembership?.product?.id,
+      TEST_KNOWN_IDS.membershipProductKey,
+      "catalog membership cards must carry their purchasable product contract",
+    );
 
     const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentMembership}` });
     assert.equal(detail.statusCode, 200, detail.body);

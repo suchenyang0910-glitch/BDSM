@@ -96,6 +96,18 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       priceMinor: product?.priceMinor?.toString(),
       priceCurrency: product?.currency,
       usdtPriceMinor: product?.usdtPriceMinor?.toString() ?? null,
+      // Card/list consumers need the same purchase contract as a detail page.
+      // Returning only productId/price made the membership screen unable to
+      // render its primary "开通会员 / 立即续费" action.
+      product: product
+        ? {
+            id: product.id,
+            priceMinor: product.priceMinor.toString(),
+            currency: product.currency,
+            usdtPriceMinor: product.usdtPriceMinor?.toString() ?? null,
+            type: product.type,
+          }
+        : null,
       publishedAt: row.publishedAt?.toISOString(),
       unlocked: opts.unlocked,
       effectiveSeo: buildEffectiveSeo({
