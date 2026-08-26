@@ -422,9 +422,9 @@ const OrdersPage: React.FC = () => {
                 <Tag style={{ marginLeft: 6 }}>@{r.user.username}</Tag>
               ) : null}
             </div>
-            {r.user?.telegramUserId ? (
+            {r.user?.telegramUserIdMasked ? (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                TG ID: {r.user.telegramUserId}
+                TG ID: {r.user.telegramUserIdMasked}
               </Text>
             ) : null}
           </div>
@@ -697,8 +697,8 @@ const OrdersPage: React.FC = () => {
               </Descriptions.Item>
               <Descriptions.Item label="用户">
                 {markPaidModal.order.user?.displayName || "未知用户"}
-                {markPaidModal.order.user?.telegramUserId
-                  ? `（TG ID: ${markPaidModal.order.user.telegramUserId}）`
+                {markPaidModal.order.user?.telegramUserIdMasked
+                  ? `（TG ID: ${markPaidModal.order.user.telegramUserIdMasked}）`
                   : ""}
               </Descriptions.Item>
               <Descriptions.Item label="商品">
@@ -783,8 +783,8 @@ const OrdersPage: React.FC = () => {
               </Descriptions.Item>
               <Descriptions.Item label="用户">
                 {cancelModal.order.user?.displayName || "未知用户"}
-                {cancelModal.order.user?.telegramUserId
-                  ? `（TG ID: ${cancelModal.order.user.telegramUserId}）`
+                {cancelModal.order.user?.telegramUserIdMasked
+                  ? `（TG ID: ${cancelModal.order.user.telegramUserIdMasked}）`
                   : ""}
               </Descriptions.Item>
               <Descriptions.Item label="当前状态">
@@ -845,8 +845,8 @@ const OrdersPage: React.FC = () => {
               </Descriptions.Item>
               <Descriptions.Item label="用户">
                 {refundModal.order.user?.displayName || "未知用户"}
-                {refundModal.order.user?.telegramUserId
-                  ? `（TG ID: ${refundModal.order.user.telegramUserId}）`
+                {refundModal.order.user?.telegramUserIdMasked
+                  ? `（TG ID: ${refundModal.order.user.telegramUserIdMasked}）`
                   : ""}
               </Descriptions.Item>
               <Descriptions.Item label="商品 / 金额">
@@ -994,7 +994,7 @@ const OrdersPage: React.FC = () => {
                 </Space>
                 <div>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    <UserOutlined /> Telegram UID: {detail.user?.telegramUserId || "-"}
+                    <UserOutlined /> Telegram UID: {detail.user?.telegramUserIdMasked || "-"}
                   </Text>
                 </div>
               </Descriptions.Item>

@@ -161,12 +161,24 @@ function orderResponse(o: any, opts?: { exposeInvoiceIfOwnedBy?: string | null; 
   return out;
 }
 
+/**
+ * Telegram numeric IDs are operational lookup keys, not an admin-list display
+ * field.  Keep the suffix useful for reconciliation without disclosing the
+ * complete identifier to every account that can open an order.
+ */
+function maskTelegramUserId(value: bigint | string | number | null | undefined): string | null {
+  if (value == null) return null;
+  const raw = String(value);
+  if (!/^\d+$/.test(raw)) return null;
+  return `••••${raw.slice(-4)}`;
+}
+
 function adminOrderResponse(o: any) {
   const base: any = orderResponse(o);
   base.user = o.user
     ? {
         id: o.user.id,
-        telegramUserId: o.user.telegramUserId?.toString() ?? null,
+        telegramUserIdMasked: maskTelegramUserId(o.user.telegramUserId),
         username: o.user.username ?? null,
         displayName: o.user.displayName,
         status: o.user.status,

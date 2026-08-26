@@ -59,6 +59,11 @@ export type UserBrief = {
   avatarUrl?: string | null;
 };
 
+/** The orders API deliberately suppresses the complete Telegram numeric ID. */
+export type OrderUserBrief = Omit<UserBrief, "telegramUserId"> & {
+  telegramUserIdMasked: string | null;
+};
+
 export type Entitlement = {
   id: string;
   resourceType: ResourceType;
@@ -79,7 +84,7 @@ export type OrderItem = {
   providerOrderId: string | null;
   paidAt: string | null;
   createdAt: string;
-  user: UserBrief;
+  user: OrderUserBrief;
   entitlements: Entitlement[];
 };
 

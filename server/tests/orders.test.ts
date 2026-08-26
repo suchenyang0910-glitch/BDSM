@@ -210,6 +210,8 @@ test("后台订单列表：链上交易 blockNumber(BigInt) 必须安全序列�
     const body = response.json() as any;
     assert.equal(body.items.length, 1);
     assert.equal(body.items[0].paymentTransactions[0].blockNumber, "61234567890");
+    assert.equal(body.items[0].user.telegramUserId, undefined, "后台订单接口不得返回完整 Telegram UID");
+    assert.match(body.items[0].user.telegramUserIdMasked, /^••••\d{4}$/);
   } finally {
     await app.close();
   }
