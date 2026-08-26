@@ -73,6 +73,35 @@ test("catalog APIs return seeded home, category and content data", async () => {
   }
 });
 
+test("published VOD cover is exposed through a controlled public content route", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    await prisma.videoAsset.create({
+      data: {
+        contentId: TEST_KNOWN_IDS.contentMembership,
+        kind: "cover",
+        objectKey: `covers/${TEST_KNOWN_IDS.contentMembership}/00000000-0000-0000-0000-000000000001/cover.jpg`,
+        mimeType: "image/jpeg",
+        byteSize: 1024n,
+        sha256: "a".repeat(64),
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
+
+    const list = await app.inject({ method: "GET", url: "/api/contents?pageSize=20" });
+    assert.equal(list.statusCode, 200, list.body);
+    const listItem = (list.json() as any).items.find((item: any) => item.id === TEST_KNOWN_IDS.contentMembership);
+    assert.equal(listItem?.coverUrl, `/api/contents/${TEST_KNOWN_IDS.contentMembership}/cover`);
+
+    const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentMembership}` });
+    assert.equal(detail.statusCode, 200, detail.body);
+    assert.equal((detail.json() as any).coverUrl, `/api/contents/${TEST_KNOWN_IDS.contentMembership}/cover`);
+  } finally {
+    await app.close();
+  }
+});
+
 test("access-link routes enforce POST and authenticated session", async () => {
   const app = await createTestApp(prisma);
   try {

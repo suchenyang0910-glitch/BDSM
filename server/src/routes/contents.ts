@@ -3,6 +3,7 @@ import { z } from "zod";
 import { formatDuration } from "../utils/telegram.js";
 import { buildEffectiveSeo, buildVideoObjectJsonLd } from "../services/seoMetadata.js";
 import { resolveDefaultMonthlyMembershipProduct } from "../services/membershipProduct.js";
+import { createPrivatePresignedReadUrl } from "../services/objectStorage.js";
 
 const contentsQuerySchema = z.object({
   categoryId: z.string().optional(),
@@ -27,6 +28,13 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https");
     const host = String(req.headers.host || "bdsm.linkx.club");
     return `${proto}://${host}`;
+  }
+
+  function resolvePublishedCoverUrl(content: any) {
+    const cover = Array.isArray(content.videoAssets) ? content.videoAssets[0] : null;
+    // VOD covers are stored in video_assets. The browser receives a controlled
+    // application route, never an object key or a stable object-storage URL.
+    return cover ? `/api/contents/${encodeURIComponent(content.id)}/cover` : content.coverUrl || null;
   }
 
   fastify.get("/contents", async (req) => {
@@ -59,6 +67,12 @@ export default async function contentRoutes(fastify: FastifyInstance) {
           categories: { select: { category: { select: { id: true, name: true } } } },
           product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
           package: { select: { id: true, title: true } },
+          videoAssets: {
+            where: { kind: "cover", status: "verified", deletedAt: null },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: { id: true },
+          },
         },
       }),
       tryGetPlatformMetadata(),
@@ -104,7 +118,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       return {
         id: c.id,
         title: c.title,
-        coverUrl: c.coverUrl,
+        coverUrl: resolvePublishedCoverUrl(c),
         description: c.description || "",
         previewUrl: c.previewUrl || null,
         duration: formatDuration(c.durationSeconds),
@@ -149,6 +163,32 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     };
   });
 
+  fastify.get<{ Params: { id: string } }>("/contents/:id/cover", async (req, reply) => {
+    const { id } = req.params;
+    const content = await prisma.content.findUnique({
+      where: { id },
+      select: {
+        status: true,
+        videoAssets: {
+          where: { kind: "cover", status: "verified", deletedAt: null },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { objectKey: true },
+        },
+      },
+    });
+    const cover = content?.videoAssets?.[0];
+    if (!content || content.status !== "published" || !cover) {
+      return reply.status(404).send({ error: "not_found" });
+    }
+    try {
+      const signed = await createPrivatePresignedReadUrl(cover.objectKey, 5 * 60);
+      return reply.redirect(signed.downloadUrl);
+    } catch {
+      return reply.status(503).send({ error: "cover_unavailable" });
+    }
+  });
+
   fastify.get<{ Params: { id: string } }>("/contents/:id", async (req, reply) => {
     const { id } = req.params;
     const uid = (req as any).userId as string | undefined;
@@ -161,6 +201,12 @@ export default async function contentRoutes(fastify: FastifyInstance) {
           categories: { select: { category: { select: { id: true, name: true } } } },
           package: { select: { id: true, title: true, coverUrl: true } },
           product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true, durationDays: true } },
+          videoAssets: {
+            where: { kind: "cover", status: "verified", deletedAt: null },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: { id: true },
+          },
         },
       }),
       tryGetPlatformMetadata(),
@@ -214,7 +260,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     return {
       id: content.id,
       title: content.title,
-      coverUrl: content.coverUrl,
+      coverUrl: resolvePublishedCoverUrl(content),
       description: content.description || "",
       previewUrl: content.previewUrl || null,
       duration: formatDuration(content.durationSeconds),
@@ -241,7 +287,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       videoObjectJsonLd: buildVideoObjectJsonLd({
         title: effectiveSeo.title || content.title,
         description: effectiveSeo.description || content.description || "",
-        thumbnailUrl: content.coverUrl,
+        thumbnailUrl: resolvePublishedCoverUrl(content),
         previewUrl: content.previewUrl,
         uploadDate: content.publishedAt?.toISOString() || null,
         durationSeconds: content.durationSeconds,
