@@ -982,6 +982,7 @@ const ContentsPage: React.FC = () => {
     setChannelMessages([]);
     // 默认勾选与 accessType 匹配的 channel kinds
     const defaultKinds: Array<TelegramPublishJobItem["channelKind"]> = [];
+    if (row.accessType !== "single" && freeChannels.length > 0) defaultKinds.push("public_free_preview");
     if (row.accessType === "membership") defaultKinds.push("membership_full");
     if (row.accessType === "package") defaultKinds.push("package_full");
     setChannelKinds(defaultKinds);
@@ -2603,6 +2604,21 @@ const ContentsPage: React.FC = () => {
                             style={{ width: "100%" }}
                           >
                             <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                              <Checkbox
+                                value="public_free_preview"
+                                disabled={!canPublish || accessTypeValue === "single" || freeChannels.length === 0 || !coverAssetId}
+                              >
+                                <Space>
+                                  <Tag color={CHANNEL_KIND_LABEL.public_free_preview.color}>免费频道推广</Tag>
+                                  <span style={{ color: "#666", fontSize: 12 }}>
+                                    {freeChannels.length === 0
+                                      ? "（未满足：尚未配置免费流量频道）"
+                                      : !coverAssetId
+                                        ? "（未满足：请先上传并校验封面图）"
+                                        : `✅ 自动发送封面图 + Bot 内容入口到全部 ${freeChannels.length} 个免费频道；60 秒试看在同频内播放`}
+                                  </span>
+                                </Space>
+                              </Checkbox>
                               <Checkbox
                                 value="membership_full"
                                 disabled={

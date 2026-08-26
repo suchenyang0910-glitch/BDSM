@@ -705,6 +705,13 @@ async function queueTelegramPublishForContent(input: {
       coverAsset: true,
       previewAsset: true,
       fullVideoAsset: true,
+      // 免费频道只发一张已校验封面图作为推广入口；试看仍由 Web HLS 播放，
+      // 不复制完整视频，也不要求运营另传试看文件。
+      videoAssets: {
+        where: { kind: "cover", status: "verified", deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
       fullVideoSegments: { orderBy: { segmentOrder: "asc" }, include: { videoAsset: true } },
       package: { select: { id: true, status: true, channelId: true, channelIdCiphertext: true, title: true } },
     },
@@ -752,12 +759,31 @@ async function queueTelegramPublishForContent(input: {
       : [];
   for (const kind of kinds) {
     if (kind === "public_free_preview") {
-      return {
-        ok: false,
-        status: 409,
-        error: "preview_delivery_not_supported",
-        message: "试看 HLS 现由 Worker 自动生成并仅通过 Web 播放会话签发；Telegram 不再投放单独试看视频。",
-      };
+      const promoCover = content.videoAssets[0];
+      if (!promoCover) {
+        return {
+          ok: false,
+          status: 409,
+          error: "free_promo_cover_required",
+          message: "免费频道推广需要一张已校验封面图；60 秒试看仍由 Web 自动生成，不需要单独上传试看视频。",
+        };
+      }
+      const targets = await listFreePreviewDistributionTargets(prisma);
+      if (targets.length === 0) {
+        return {
+          ok: false,
+          status: 409,
+          error: "free_channel_pool_not_configured",
+          message: "尚未配置可用的免费流量频道。请先在频道管理中设置至少一个公开 free_preview 频道。",
+        };
+      }
+      for (const target of targets) {
+        plans.push({
+          videoAssetId: promoCover.id,
+          targetFreeChannelCode: target.code,
+          channelKindDb: kind,
+        });
+      }
       continue;
     }
     if (kind === "membership_full") {
@@ -2652,9 +2678,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         await writeAudit(tx, meta, "content.publish", "content", id, stripSensitiveFields(before), stripSensitiveFields(after), reason);
       });
 
-      // 内容发布只自动排队完整视频的 Telegram 备用交付。
-      // 试看 HLS 由 Worker 自动生成并通过 Web 播放链路签发，不再向 Telegram 投放单独试看视频。
+      // 所有可售内容默认向全部免费流量频道发送“封面图 + Bot 内容入口”；
+      // 60 秒试看在 Web 内播放，完整视频才进入相应私密频道。
       const automaticKinds: TelegramPublishPlanKind[] = [];
+      if (["public", "membership", "package"].includes(before.accessType)) automaticKinds.push("public_free_preview");
       if (before.accessType === "membership") automaticKinds.push("membership_full");
       if (before.accessType === "package") automaticKinds.push("package_full");
       if (automaticKinds.length === 0) {

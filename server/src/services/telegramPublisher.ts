@@ -259,8 +259,8 @@ function resolveTgMethodForAsset(
 ): { tgMethod: "sendPhoto" | "sendVideo"; mediaFilename: string; mediaContentType: string; supportsStreaming?: boolean } {
   const kind = asset.kind as any;
   const filename = asset.originalFilename || `${kind}_${safeHexDigest(String(asset.kind || "a"), 12)}`;
-  const contentType = asset.mimeType || (kind === "cover_image" ? "image/jpeg" : "video/mp4");
-  if (kind === "cover_image") {
+  const contentType = asset.mimeType || ((kind === "cover_image" || kind === "cover") ? "image/jpeg" : "video/mp4");
+  if (kind === "cover_image" || kind === "cover") {
     return { tgMethod: "sendPhoto", mediaFilename: filename, mediaContentType: contentType };
   }
   return {
@@ -395,7 +395,7 @@ export async function processPublishJob(
     return { ok: false, reason: "asset_not_ready" };
   }
   if (
-    asset.kind !== "cover_image" &&
+    asset.kind !== "cover_image" && asset.kind !== "cover" &&
     usesTelegramCloudBotApi() &&
     asset.contentLength != null &&
     BigInt(asset.contentLength.toString()) > BigInt(TELEGRAM_CLOUD_SAFE_UPLOAD_BYTES)
@@ -443,7 +443,7 @@ export async function processPublishJob(
   const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([
     Array.isArray((job as any).telegramTagsJson) ? (job as any).telegramTagsJson : [],
   ]);
-  const isPreviewKind = job.channelKind === "public_free_preview" && asset.kind === "preview_video";
+  const isPreviewKind = job.channelKind === "public_free_preview" && (asset.kind === "preview_video" || asset.kind === "cover");
   let captionBundle: { caption?: string; parseMode?: "HTML" } = {};
   const isFullVideoKind =
     (job.channelKind === "membership_full" || job.channelKind === "package_full") &&
