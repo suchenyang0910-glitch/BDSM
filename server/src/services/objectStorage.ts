@@ -81,6 +81,11 @@ export type PrivateObjectStorageInitResult = {
   expectedHttpHeaders: Record<string, string>;
 };
 
+export type PrivateObjectStorageReadResult = {
+  downloadUrl: string;
+  expiresAt: Date;
+};
+
 export type PrivateMultipartUploadInitInput = {
   sessionId: string;
   objectKey: string;
@@ -348,6 +353,25 @@ export async function createPrivatePresignedUpload(
     uploadExpiresAt: new Date(Date.now() + expiresSeconds * 1000),
     expectedHttpHeaders: headers,
   };
+}
+
+/**
+ * 仅由已授权的服务端路由调用，用于短期预览私有对象。
+ * 不把 Bucket、Key 或稳定对象 URL 暴露给浏览器端。
+ */
+export async function createPrivatePresignedReadUrl(
+  objectKey: string,
+  expiresSeconds = 5 * 60,
+): Promise<PrivateObjectStorageReadResult> {
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  if (!isAllowedPrivateObjectKey(objectKey)) {
+    throw new Error("OBJECT_STORAGE_KEY_INVALID");
+  }
+  const ttl = Math.min(Math.max(Math.floor(expiresSeconds), 30), 15 * 60);
+  const cmd = new GetObjectCommand({ Bucket: env.bucket, Key: objectKey });
+  const downloadUrl = await getSignedUrl(s3, cmd as any, { expiresIn: ttl });
+  return { downloadUrl, expiresAt: new Date(Date.now() + ttl * 1000) };
 }
 
 export async function createPrivateMultipartUpload(

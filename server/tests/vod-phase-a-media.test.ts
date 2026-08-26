@@ -1045,7 +1045,7 @@ test("Phase A: media list response omits storage keys, bucket names, URLs, and s
       where: { id: TEST_KNOWN_IDS.contentDraft },
       data: { coverAssetId: cover.id },
     });
-    await prisma.videoAsset.create({
+    const vodCover = await prisma.videoAsset.create({
       data: {
         contentId: TEST_KNOWN_IDS.contentDraft,
         kind: "cover",
@@ -1071,12 +1071,22 @@ test("Phase A: media list response omits storage keys, bucket names, URLs, and s
     const coverItem = body.items.find((item: any) => item.id === cover.id);
     assert.equal(coverItem?.previewPath, `/api/admin/media/${cover.id}/preview`);
     assert.doesNotMatch(JSON.stringify(coverItem), /example\.invalid|internal-key|private-bucket/i);
+    const vodCoverItem = body.items.find((item: any) => item.id === vodCover.id);
+    assert.equal(vodCoverItem?.source, "vod");
+    assert.equal(vodCoverItem?.previewPath, `/api/admin/vod-assets/${vodCover.id}/preview`);
+    assert.doesNotMatch(JSON.stringify(vodCoverItem), /test-session|objectKey|private-bucket/i);
     const previewResp = await app.inject({
       method: "GET",
       url: `/api/admin/media/${cover.id}/preview`,
       headers: { cookie: editorCookie },
     });
     assert.equal(previewResp.statusCode, 302, previewResp.body);
+    const vodPreviewResp = await app.inject({
+      method: "GET",
+      url: `/api/admin/vod-assets/${vodCover.id}/preview`,
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(vodPreviewResp.statusCode, 302, vodPreviewResp.body);
   } finally {
     await app.close();
   }

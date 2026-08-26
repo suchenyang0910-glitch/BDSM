@@ -23,6 +23,7 @@ import {
 import {
   createPresignedPutUpload,
   createPrivatePresignedUpload,
+  createPrivatePresignedReadUrl,
   createPrivateMultipartUpload,
   createPrivateMultipartPartUploadUrl,
   listPrivateMultipartParts,
@@ -151,6 +152,11 @@ function summarizeVodAsset(row: any) {
     filename: summarizeFilename(row.originalFilename),
     byteSize: row.byteSize != null ? String(row.byteSize) : null,
     mimeType: row.mimeType || null,
+    source: "vod",
+    // 受控的后台预览入口；真正的对象地址只由该入口短期签发。
+    previewPath: row.kind === "cover" && row.status === "verified" && !row.deletedAt
+      ? `/api/admin/vod-assets/${encodeURIComponent(row.id)}/preview`
+      : null,
     status: row.status,
     errorClass: sanitizeErrorClass(row.errorClass),
     verifiedAt: row.verifiedAt ? new Date(row.verifiedAt).toISOString() : null,
@@ -180,6 +186,7 @@ function summarizeLightMediaAsset(row: any) {
     filename: summarizeFilename(row.originalFilename),
     byteSize: row.contentLength != null ? String(row.contentLength) : null,
     mimeType: row.mimeType || null,
+    source: "legacy",
     status: row.status,
     errorClass: sanitizeErrorClass(row.lastErrorClass),
     verifiedAt: row.lastVerifiedAt ? new Date(row.lastVerifiedAt).toISOString() : null,
@@ -2010,6 +2017,30 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         items: [...lightAssets, ...assets.map((row: any) => summarizeVodAsset(row)), ...pendingItems],
         uploadSessions: pendingSessions.map((session: any) => summarizeUploadSession(session)),
       });
+    },
+  );
+
+  // VOD 封面位于 video_assets（而非旧 media_assets）。只允许后台已登录用户
+  // 通过此跳转读取一张短时签名预览，列表接口不会泄露对象 Key 或 Bucket。
+  fastify.get(
+    "/admin/vod-assets/:id/preview",
+    { preHandler: [requireAdmin("content:view")] },
+    async (req: any, reply) => {
+      const id = z.string().uuid().parse(req.params.id);
+      const asset = await vodPrisma.videoAsset.findUnique({
+        where: { id },
+        select: { kind: true, status: true, deletedAt: true, objectKey: true },
+      });
+      if (!asset || asset.kind !== "cover" || asset.status !== "verified" || asset.deletedAt) {
+        return reply.status(404).send({ error: "not_found" });
+      }
+      try {
+        const signed = await createPrivatePresignedReadUrl(asset.objectKey);
+        return reply.redirect(signed.downloadUrl);
+      } catch (error) {
+        emitSafetyEvent({ event: "vod_cover_preview_sign_failed", errorClass: "object_storage_unavailable", note: `asset=${id}` }, error);
+        return reply.status(503).send({ error: VOD_ERROR_CLASS.object_storage_unavailable, message: "封面预览暂不可用" });
+      }
     },
   );
 

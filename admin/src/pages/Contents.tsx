@@ -84,6 +84,8 @@ export type MediaAssetItem = {
   originalFilename: string;
   mimeType: string | null;
   contentLength: number;
+  /** `vod` 是当前阶段的私有媒体链路；legacy 只用于兼容旧的 MediaAsset。 */
+  source?: "vod" | "legacy";
   previewPath?: string | null;
   status: MediaAssetStatus;
   lastErrorClass?: string | null;
@@ -461,6 +463,7 @@ function normalizeMediaAsset(raw: any): MediaAssetItem {
     originalFilename: String(raw?.filename || "未命名文件"),
     mimeType: raw?.mimeType || null,
     contentLength: Number(raw?.byteSize || 0),
+    source: raw?.source === "legacy" ? "legacy" : "vod",
     previewPath: typeof raw?.previewPath === "string" ? raw.previewPath : null,
     status: mapApiMediaStatus((raw?.status || "uploading") as ApiMediaStatus),
     lastErrorClass: raw?.errorClass || raw?.transcode?.errorClass || null,
@@ -1505,10 +1508,11 @@ const ContentsPage: React.FC = () => {
         return;
       }
       setSubmitting(true);
-      // 禁止携带旧抽屉/失败上传遗留的 coverAssetId。编辑时未加载到当前内容的
-      // 封面字段直接省略，由服务端保留既有值；新建时才明确写 null。
+      // VOD 阶段的封面由 VideoAsset 按 contentId 归属，不能写进旧
+      // MediaAsset 外键（否则会把一个有效的 VOD cover 误判为“不存在”）。
+      // 仅兼容历史 MediaAsset 时才携带 coverAssetId。
       const currentReadyCoverAssetId =
-        coverAssetContentId === editing?.id && coverAsset?.status === "ready"
+        coverAssetContentId === editing?.id && coverAsset?.status === "ready" && coverAsset?.source === "legacy"
           ? coverAsset.id
           : null;
       const payload: any = {
