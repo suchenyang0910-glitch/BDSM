@@ -27,6 +27,7 @@
       hasInitData: !!(tg && tg.initData && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id),
     },
     session: null,
+    sessionReady: false,
     booting: false,
     home: null,
     detailCache: {},
@@ -969,10 +970,37 @@
     return !!(video && video.canPlayType && /maybe|probably/i.test(video.canPlayType("application/vnd.apple.mpegurl")));
   }
 
+  function playbackErrorClass(err) {
+    const payload = err && err.payload ? err.payload : {};
+    const code = String(payload.userError || payload.error || payload.errorClass || "").toLowerCase();
+    const message = String(err && err.message || "").toLowerCase();
+    if (err && Number(err.status) === 401) return "session_not_ready";
+    if (code === "playback_not_configured" || code === "content_unavailable") return code;
+    if (/hls_not_supported|mediasource/.test(message)) return "hls_unsupported";
+    if (/playback_session_missing/.test(message)) return "session_unavailable";
+    return "playback_unavailable";
+  }
+
+  function showPlaybackFailure(err, shouldNotify) {
+    const errorClass = playbackErrorClass(err);
+    const notice = $("previewPlaybackNotice");
+    if (notice) {
+      notice.classList.remove("is-hidden");
+      notice.setAttribute("data-error-class", errorClass);
+      notice.textContent = errorClass === "hls_unsupported"
+        ? "当前浏览器暂不支持试看播放，请使用最新版浏览器后重试。"
+        : "试看暂时不可用，请刷新后重试。";
+    }
+    // 只记录固定类别，不写入服务端或浏览器原始异常内容。
+    try { console.warn("[playback] failed", errorClass); } catch (_) {}
+    if (shouldNotify) showInlineMessage(notice ? notice.textContent : "试看暂时不可用，请刷新后重试。");
+  }
+
   async function prepareManagedPlayback(detail, autoplay) {
     const video = $("detailContent").querySelector(".detail-preview-video");
     if (!video) return;
     try {
+      if (!state.sessionReady) throw Object.assign(new Error("session_not_ready"), { status: 401 });
       let session;
       // HLS.js attaches through MediaSource asynchronously; currentSrc can stay
       // empty briefly even though the already-created session is valid. Do not
@@ -1008,7 +1036,7 @@
       if (button && session.deliveryVariant === "preview") button.textContent = "正在试看";
     } catch (_) {
       state.player.preparingPlayback = null;
-      if (autoplay) showInlineMessage("试看暂时不可用，请稍后重试。");
+      showPlaybackFailure(_, autoplay);
     }
   }
 
@@ -1055,6 +1083,7 @@
           '当前浏览器不支持视频在线播放。' +
         '</video>' +
         '<div class="detail-media-label"><strong>免费试看</strong><span>试看不需要开通会员</span></div>' +
+        '<div id="previewPlaybackNotice" class="detail-playback-notice is-hidden" role="status" aria-live="polite"></div>' +
         (previewUpgradeEnabled
           ? '<div id="previewUpgradeGate" class="detail-preview-gate is-hidden" role="status" aria-live="polite">' +
             '<div class="detail-preview-gate-copy"><span>试看结束</span><strong>开通后继续观看完整内容</strong>' +
@@ -1180,6 +1209,7 @@
     }
 
     state.session = session;
+    state.sessionReady = true;
     state.booting = false;
   }
 
@@ -1689,7 +1719,7 @@
     $("meResumeCard").innerHTML = createSkeletonCards(1);
     $("meUnlockedList").innerHTML = createSkeletonCards(1);
     if (!window.location.hash) setHashForTab("home");
-    else routeTo(parseHash());
+    // 详情播放会话依赖 H5/Telegram 身份；先完成登录初始化，再渲染路由。
     bootstrapApp();
   });
 })();

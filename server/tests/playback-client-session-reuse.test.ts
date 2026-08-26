@@ -11,5 +11,11 @@ for (const file of ["h5/app.js", "telegram-mini-app/app.js"]) {
     const source = await readFile(path.join(ROOT, file), "utf8");
     assert.match(source, /if \(state\.player\.preparedContentId === detail\.id\) \{/);
     assert.doesNotMatch(source, /preparedContentId === detail\.id && video\.currentSrc/);
+    assert.match(source, /sessionReady: false/);
+    assert.match(source, /state\.sessionReady = true/);
+    assert.match(source, /bootstrapApp\(\);/);
+    assert.doesNotMatch(source, /else routeTo\(parseHash\(\)\);\s*bootstrapApp\(\);/);
+    assert.match(source, /function playbackErrorClass\(err\)/);
+    assert.match(source, /console\.warn\("\[playback\] failed", errorClass\)/);
   });
 }

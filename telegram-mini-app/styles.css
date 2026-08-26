@@ -895,6 +895,17 @@ h3 {
   font-size: 11px;
 }
 
+.detail-playback-notice {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 189, 89, 0.36);
+  border-radius: 10px;
+  background: rgba(255, 189, 89, 0.08);
+  color: #ffe2ad;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .detail-preview-video {
   display: block;
   width: 100%;
