@@ -737,13 +737,9 @@ img.is-image-unavailable {
 .chip-row {
   display: flex;
   gap: 8px;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  overflow: visible;
   padding-bottom: 4px;
-  scrollbar-width: none;
-}
-
-.chip-row::-webkit-scrollbar {
-  display: none;
 }
 
 .chip {
