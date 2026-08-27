@@ -119,6 +119,31 @@ test("published VOD cover is exposed through a controlled public content route",
   }
 });
 
+test("home exposes every active category instead of truncating the category rail", async () => {
+  const app = await createTestApp(prisma);
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
+  const category = await prisma.category.create({
+    data: {
+      name: `全量分类 ${suffix}`,
+      slug: `all-active-category-${suffix}`,
+      status: "active",
+      sortOrder: -999,
+    },
+  });
+  try {
+    const home = await app.inject({ method: "GET", url: "/api/home" });
+    assert.equal(home.statusCode, 200, home.body);
+    const categories = (home.json() as { categories: Array<{ id: string }> }).categories;
+    assert.ok(
+      categories.some((item) => item.id === category.id),
+      "every active category configured in the admin console must be returned to user clients",
+    );
+  } finally {
+    await prisma.category.delete({ where: { id: category.id } });
+    await app.close();
+  }
+});
+
 test("legacy MediaAsset covers use the controlled route and never leak a durable storage URL", async () => {
   const app = await createTestApp(prisma);
   const assetId = "legacy-cover-control-test";

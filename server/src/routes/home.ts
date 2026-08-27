@@ -189,7 +189,6 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       prisma.category.findMany({
         where: { status: "active" },
         orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
-        take: 8,
       }),
       prisma.content.findMany({
         where: { status: "published" },
