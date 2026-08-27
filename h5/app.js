@@ -1384,7 +1384,7 @@
     action.innerHTML =
       '<p class="stack-note">' + escapeHtml(isActive
         ? "会员有效期内续费会从当前到期日顺延。"
-        : "完成支付后将恢复会员主频道与对应内容权益。") + '</p>' +
+        : "完成支付后即可在网页、H5 与 Mini App 观看全部会员内容。") + '</p>' +
       '<button class="primary-button" type="button">' + (isActive ? "立即续费" : "开通会员") + "</button>";
     action.querySelector("button").addEventListener("click", function () {
       startPurchase(membershipEntry);
@@ -1400,8 +1400,8 @@
     if (summary.status === "active") {
       badge.textContent = summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已开通";
       badge.className = "status-badge";
-      $("membershipHeadline").textContent = "会员主频道与内容包";
-      $("membershipCopy").textContent = "支付成功后，只会进入你实际拥有权益对应的频道；可随时续费延长有效期。";
+      $("membershipHeadline").textContent = "会员权益已生效";
+      $("membershipCopy").textContent = "有效期内可在网页、H5 与 Mini App 观看全部会员内容；频道与 Bot 是可选的关注入口。";
     } else {
       badge.textContent = summary.status === "expired" ? "已到期" : "未开通";
       badge.className = "status-badge status-warning";
@@ -1414,7 +1414,7 @@
     const membershipEntry = findMembershipEntry();
     const membershipHost = $("membershipPrimaryCard");
     if (!membershipEntry) {
-      membershipHost.innerHTML = '<div class="inline-state">当前还没有配置会员主频道入口。</div>';
+      membershipHost.innerHTML = '<div class="inline-state">当前还没有配置月度会员商品。</div>';
     } else {
       membershipHost.innerHTML = "";
       renderContentCards("membershipPrimaryCard", [membershipEntry], "membership");
@@ -1435,7 +1435,7 @@
         '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.title) + '</div>' +
         '<div class="stack-subtitle">共 ' + escapeHtml(String(item.count)) + ' 条内容</div></div>' +
         '<div class="status-badge' + (item.unlocked ? "" : " status-warning") + '">' + escapeHtml(item.unlocked ? "已解锁" : "内容包") + "</div></div>" +
-        '<div class="stack-meta"><span>' + escapeHtml(formatAvailablePrices(item)) + '</span><span>' + escapeHtml(item.unlocked ? "可直接进入对应频道" : "购买后解锁该包频道") + "</span></div>" +
+        '<div class="stack-meta"><span>' + escapeHtml(formatAvailablePrices(item)) + '</span><span>' + escapeHtml(item.unlocked ? "可直接观看包内内容" : "购买后解锁包内完整内容") + "</span></div>" +
         '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">' + escapeHtml(item.unlocked ? "查看已解锁内容" : "查看内容包") + "</button></div>";
       card.querySelector("button").addEventListener("click", function () {
         openContentDetail(item.sampleContentId, "membership", { autoplay: false, resumePositionSec: 0 });
@@ -1653,7 +1653,7 @@
       ? (membershipSummary.expiresAt ? "已开通至 " + formatDateShort(membershipSummary.expiresAt) : "已开通")
       : "未开通";
     $("meMembershipHint").textContent = membershipSummary.status === "active"
-      ? "会员内容会在详情页直接展示频道入口；可在「会员」页续费。"
+      ? "会员有效期内可直接观看全部会员内容；可在「会员」页续费。"
       : (membershipSummary.status === "expired" ? "会员已到期，可在「会员」页恢复权益。" : "会员与内容包购买入口在「会员」页。");
     $("meOrdersText").textContent = state.orders.items.length ? "共 " + state.orders.items.length + " 条" : "暂无订单";
     $("meOrdersHint").textContent = state.orders.items.some(function (item) { return item.status === "pending"; })
@@ -1918,8 +1918,17 @@
         },
       };
     }
-    if (detail.unlocked && detail.accessType !== "single") {
-      return { text: "前往频道观看", handler: function () { openChannelAccess(detail.id); } };
+    if (detail.unlocked) {
+      return {
+        text: playback && playback.action === "processing" ? "转码处理中" : "观看完整视频",
+        handler: function () {
+          if (playback && !playback.errorClass && playback.action === "play_full") {
+            startManagedPlayback(detail);
+            return;
+          }
+          showInlineMessage("完整视频正在准备中，请稍后再试。");
+        },
+      };
     }
     if (pendingOrder) {
       return { text: "继续支付", handler: function () { continuePendingOrder(pendingOrder, detail); } };
@@ -2051,18 +2060,18 @@
       '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(playback && playback.action === "play_full"
         ? "已解锁，可直接受控播放"
         : detail.unlocked
-          ? "已解锁，可走备用交付"
+          ? "已解锁，可直接观看"
           : getAccessLabel(detail)) + '</div>' +
       '<div class="stack-subtitle">' + escapeHtml(playback && playback.action === "play_full"
         ? "当前账户已满足权益，可创建完整播放会话。"
         : playback && playback.action === "preview" && !playback.errorClass
           ? "当前可直接试看；试看结束后可继续开通对应权益。"
           : detail.unlocked && playback && playback.errorClass
-            ? (detail.accessType === "single" ? "当前已解锁本视频，完整 Web 播放正在准备中。" : "完整 Web 播放仍保持关闭，当前请先使用 Telegram 备用观看。")
-            : detail.unlocked
-        ? (detail.accessType === "single" ? "该内容已归属到你当前账户，可直接请求完整播放。" : "该内容已归属到你当前账户的有效权益。")
+            ? "当前已解锁，完整视频正在准备中。"
+          : detail.unlocked
+        ? "该内容已归属到你当前账户的有效权益，可直接请求完整播放。"
         : detail.accessType === "membership"
-          ? "该内容通过会员主频道交付。"
+          ? "开通会员后可在网页、H5 与 Mini App 观看完整内容。"
           : detail.accessType === "single"
             ? "可先试看，再解锁当前视频的完整内容。"
           : detail.accessType === "package"
@@ -2080,7 +2089,7 @@
     if (purchaseHost) {
       if (detail.accessType === "membership") {
         purchaseHost.innerHTML =
-          '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 开通会员，持续获得会员主频道更新。' +
+          '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">开通会员后，可在网页、H5 与 Mini App 观看全部会员内容。' +
           (state.env.isTelegram
             ? ' 请使用 Telegram Stars 完成开通。'
             : (detail.product && detail.product.usdtPriceMinor

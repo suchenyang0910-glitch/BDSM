@@ -36,6 +36,16 @@ test("h5 back navigation synchronously stops and detaches the active video", asy
   assert.match(source, /const leavingDetail = state\.route && state\.route\.view === "detail" && routeState\.view !== "detail";\s*if \(leavingDetail\) detachActivePlayer\("leave"\);/);
 });
 
+test("active membership uses web playback rather than mandatory channel delivery", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const paySource = await readFile(path.join(ROOT, "telegram-mini-app/h5-pay.js"), "utf8");
+  assert.match(appSource, /if \(detail\.unlocked\) \{[\s\S]{0,900}观看完整视频[\s\S]{0,900}startManagedPlayback\(detail\)/);
+  assert.doesNotMatch(appSource, /detail\.unlocked && detail\.accessType !== "single"[\s\S]{0,300}前往频道观看/);
+  assert.match(appSource, /开通会员后可在网页、H5 与 Mini App 观看完整内容/);
+  assert.match(paySource, /会员权益已生效[\s\S]{0,160}网页、H5 与 Mini App/);
+  assert.doesNotMatch(paySource, /绑定 Telegram 后领取频道/);
+});
+
 test("h5 catalog UI uses whole-card navigation and server-backed library search", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");

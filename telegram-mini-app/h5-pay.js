@@ -429,20 +429,17 @@
     if (!card) return;
     // 钱包 App 返回 H5 时，始终把已支付结果带回可见的支付详情页，避免停留在旧的待支付列表。
     showView("payDetail");
-    const bound = currentIdentitySession?.telegramBound === true;
     const hasReturnTo = !!currentReturnToFromQs();
     const message = $("activatedMessage");
     const button = $("btnBackMiniApp");
     if (message) {
-      message.innerHTML = bound
-        ? (hasReturnTo
-          ? "权益已确认发放，正在返回原内容详情页。<br/>你也可以立即回到内容继续观看完整视频。"
-          : "权益已确认发放，正在返回站内继续查看。<br/>已绑定 Telegram 的频道权益也会同步可用。")
-        : "订单已确认支付成功。请先绑定 Telegram，以便合并权益并领取私密频道邀请。";
+      message.innerHTML = hasReturnTo
+        ? "会员权益已生效，正在返回原内容详情页。<br/>现在即可观看完整视频。"
+        : "会员权益已生效。现在即可在网页、H5 与 Mini App 观看全部会员内容；频道与 Bot 是可选关注入口。";
     }
-    if (button) button.textContent = bound ? (hasReturnTo ? "立即回到内容" : "立即查看我的权益") : "绑定 Telegram 后领取频道";
+    if (button) button.textContent = hasReturnTo ? "立即回到内容" : "立即开始观看";
     card.style.display = "block";
-    if (bound && !paidRedirectTimer) {
+    if (!paidRedirectTimer) {
       paidRedirectTimer = window.setTimeout(() => {
         window.location.assign(resolvePostPaymentTarget());
       }, 3000);
@@ -1132,11 +1129,6 @@
       showView("orders");
     });
     $("btnBackMiniApp")?.addEventListener("click", () => {
-      if (!currentIdentitySession?.telegramBound) {
-        const returnTo = encodeURIComponent(location.pathname + location.search + location.hash);
-        location.href = `/login.html?redirect=${returnTo}`;
-        return;
-      }
       location.href = resolvePostPaymentTarget();
     });
   }
