@@ -1052,23 +1052,21 @@
     }
     section.classList.remove("is-hidden");
     host.innerHTML =
-      '<article class="resume-card">' +
-      '<button class="resume-cover-button" type="button" aria-label="继续播放 ' + escapeHtml(recent.title) + '">' +
-      '<div class="resume-cover">' +
-      imageTag(recent.coverUrl, "resume-cover-image", recent.title || "上次播放封面", true) +
-      '<span class="cover-duration">' + escapeHtml(recent.duration || "—") + "</span>" +
-      "</div>" +
-      "</button>" +
-      '<div class="resume-body">' +
-      '<div class="resume-title-row"><strong>' + escapeHtml(recent.title || "未命名内容") + '</strong><span class="resume-time">' + escapeHtml(formatDateShort(recent.lastPlayedAt)) + "</span></div>" +
-      '<div class="resume-progress-track"><span class="resume-progress-value" style="width:' + escapeHtml(String(Math.max(0, Math.min(100, recent.progressPercent || 0)))) + '%"></span></div>' +
-      '<div class="resume-meta"><span>' + escapeHtml(getLastPlayedSubtitle(recent)) + '</span><button class="primary-button" type="button">继续播放</button></div>' +
+      '<article class="resume-card resume-card-compact">' +
+      '<button class="resume-inline-copy" type="button" aria-label="继续播放 ' + escapeHtml(recent.title) + '">' +
+      '<span class="resume-inline-label">继续播放</span>' +
+      '<strong>' + escapeHtml(recent.title || "未命名内容") + '</strong>' +
+      '<span class="resume-inline-meta">' + escapeHtml(getLastPlayedSubtitle(recent)) + '</span>' +
+      '</button>' +
+      '<div class="resume-inline-actions">' +
+      '<span class="resume-inline-progress" aria-hidden="true"><span style="width:' + escapeHtml(String(Math.max(0, Math.min(100, recent.progressPercent || 0)))) + '%"></span></span>' +
+      '<button class="primary-button" type="button">继续播放</button>' +
       "</div>" +
       "</article>";
-    host.querySelector(".resume-cover-button").addEventListener("click", function () {
+    host.querySelector(".resume-inline-copy").addEventListener("click", function () {
       openContentDetail(recent.contentId, "home", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
     });
-    host.querySelector(".resume-meta .primary-button").addEventListener("click", function () {
+    host.querySelector(".resume-inline-actions .primary-button").addEventListener("click", function () {
       openContentDetail(recent.contentId, "home", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
     });
   }
@@ -1196,12 +1194,6 @@
     host.innerHTML = "";
     extraHost.innerHTML = "";
 
-    const primaryCategories = categories.slice(0, 6);
-    const extraCategories = categories.slice(6);
-    const activeExtraCategory = extraCategories.find(function (category) {
-      return state.library.categoryId === category.id;
-    }) || null;
-
     const renderCategoryChip = function (category, targetHost, closeAfterSelect) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -1215,28 +1207,14 @@
       targetHost.appendChild(btn);
     };
 
-    primaryCategories.forEach(function (category) {
+    // 分类是发现内容的主要入口，不能因为屏幕较窄而静默隐藏。
+    // 移动端交由 CSS 横向滚动承载全部标签，桌面端自然换行展示。
+    categories.forEach(function (category) {
       renderCategoryChip(category, host, false);
     });
-    extraCategories.forEach(function (category) {
-      renderCategoryChip(category, extraHost, true);
-    });
-
-    if (!extraCategories.length) {
-      moreButton.classList.add("is-hidden");
-      moreButton.classList.remove("is-active");
-      moreButton.setAttribute("aria-expanded", "false");
-      extraHost.classList.add("is-hidden");
-      return;
-    }
-
-    moreButton.classList.remove("is-hidden");
-    moreButton.classList.toggle("is-active", !!activeExtraCategory || state.library.showExtraCategories);
-    moreButton.textContent = activeExtraCategory && !state.library.showExtraCategories
-      ? "更多筛选 · " + activeExtraCategory.name
-      : (state.library.showExtraCategories ? "收起筛选" : "更多筛选");
-    moreButton.setAttribute("aria-expanded", state.library.showExtraCategories ? "true" : "false");
-    extraHost.classList.toggle("is-hidden", !state.library.showExtraCategories);
+    moreButton.classList.add("is-hidden");
+    moreButton.setAttribute("aria-expanded", "false");
+    extraHost.classList.add("is-hidden");
   }
 
   function renderLibrary() {

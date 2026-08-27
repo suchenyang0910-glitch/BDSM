@@ -12,7 +12,7 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="" />
     <title>Samewave 同频 · 点播</title>
-    <link rel="stylesheet" href="./styles.css?v=20260827-vod-flow-1" />
+    <link rel="stylesheet" href="./styles.css?v=20260827-catalog-p0-1" />
     <script src="/api/vendor/hls/hls.min.js"></script>
     <script id="videoObjectJsonLd" type="application/ld+json"></script>
   </head>
@@ -72,6 +72,10 @@
 
       <main id="appMain" class="app-main">
         <section id="homeView" class="tab-view">
+          <section id="homeRecentSection" class="section-block home-recent-section is-hidden">
+            <div id="homeRecentCard"></div>
+          </section>
+
           <section class="home-banner-section">
             <div id="homeBannerList" class="banner-rail"></div>
           </section>
@@ -81,13 +85,6 @@
               <h3>今日精选</h3>
             </div>
             <div id="homeFeaturedCard"></div>
-          </section>
-
-          <section id="homeRecentSection" class="section-block is-hidden">
-            <div class="section-head">
-              <h3>上次播放</h3>
-            </div>
-            <div id="homeRecentCard"></div>
           </section>
 
           <section class="section-block">
@@ -311,6 +308,6 @@
     </template>
 
     <!-- Bump on every player release: the managed HLS flow must never run from a stale browser cache. -->
-    <script src="./app.js?v=20260827-vod-flow-1"></script>
+    <script src="./app.js?v=20260827-catalog-p0-1"></script>
   </body>
 </html>

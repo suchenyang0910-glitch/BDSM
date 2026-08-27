@@ -40,16 +40,31 @@ test("h5 catalog UI uses whole-card navigation and server-backed library search"
   assert.match(htmlSource, /libraryLoadMoreButton/);
 });
 
-test("h5 library keeps primary categories visible and uses mobile infinite scroll", async () => {
+test("h5 library exposes every configured category and keeps mobile infinite scroll", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
-  assert.match(appSource, /const primaryCategories = categories\.slice\(0, 6\)/);
-  assert.match(appSource, /const extraCategories = categories\.slice\(6\)/);
+  const cssSource = await readFile(path.join(ROOT, "h5/styles.css"), "utf8");
+  assert.match(appSource, /categories\.forEach\(function \(category\) \{\s*renderCategoryChip\(category, host, false\)/);
+  assert.doesNotMatch(appSource, /const primaryCategories = categories\.slice\(0, 6\)/);
+  assert.doesNotMatch(appSource, /const extraCategories = categories\.slice\(6\)/);
   assert.match(appSource, /libraryCategoryMoreButton/);
   assert.match(appSource, /function shouldUseLibraryInfiniteScroll\(\)/);
   assert.match(appSource, /window\.addEventListener\("scroll", maybeLoadLibraryOnScroll/);
   assert.match(htmlSource, /libraryCategoryExtras/);
   assert.match(htmlSource, /libraryInfiniteSentinel/);
+  assert.match(cssSource, /#libraryCategoryList \{\s*flex-wrap: nowrap;\s*overflow-x: auto;/);
+});
+
+test("h5 home keeps continue watching compact and safely renders channel labels", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
+  const cssSource = await readFile(path.join(ROOT, "h5/styles.css"), "utf8");
+  assert.match(appSource, /function escapeHtml\(value\)/);
+  assert.match(appSource, /resume-card resume-card-compact/);
+  assert.match(appSource, /resume-inline-actions/);
+  assert.match(htmlSource, /id="homeRecentSection"[\s\S]{0,420}id="homeBannerList"/);
+  assert.match(cssSource, /\.resume-card-compact \{/);
+  assert.match(cssSource, /\.bottom-nav \{[\s\S]{0,700}z-index: 100;/);
 });
 
 test("checkout flow preserves return target and payment success returns to content detail", async () => {
