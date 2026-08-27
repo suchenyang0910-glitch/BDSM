@@ -75,6 +75,7 @@ test("免费频道试看文案只导向官方 Bot 对话，不直跳站外收银
     description: "测试说明",
   });
   assert.match(withProduct.caption, /https:\/\/t\.me\/InTune_bdsm_bot\?start=content_content-test-001/);
+  assert.match(withProduct.caption, /👉👉<a href="https:\/\/t\.me\/InTune_bdsm_bot\?start=content_content-test-001">打开【同频 Bot】 查看试看与完整内容<\/a>👈👈/);
   assert.doesNotMatch(withProduct.caption, /h5-pay\.html|bdsm\.linkx\.club/);
 
   const withoutProduct = buildPreviewVideoCaption({

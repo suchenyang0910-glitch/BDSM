@@ -114,7 +114,7 @@ export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" |
     `${safeDesc}`,
     "完整内容已收录于同频。",
     "",
-    `<a href="${officialBotContentStartUrl(content.id)}">打开同频 Bot 查看试看与完整内容</a>`,
+    `👉👉<a href="${officialBotContentStartUrl(content.id)}">打开【同频 Bot】 查看试看与完整内容</a>👈👈`,
   ].join("\n");
   return { caption, parseMode: "HTML" };
 }
