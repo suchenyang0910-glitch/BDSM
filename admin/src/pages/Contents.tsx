@@ -236,7 +236,7 @@ type LocalMultipartResumeRecord = {
 const MULTIPART_FINGERPRINT_SAMPLE_BYTES = 1024 * 1024;
 const MULTIPART_HASH_CHUNK_BYTES = 4 * 1024 * 1024;
 const MULTIPART_MAX_RETRIES = 5;
-const MULTIPART_DEFAULT_CONCURRENCY = 3;
+const MULTIPART_DEFAULT_CONCURRENCY = 8;
 const MULTIPART_RESUME_STORAGE_PREFIX = "vod_multipart_resume";
 
 function multipartResumeStorageKey(contentId: string): string {
@@ -2433,7 +2433,7 @@ const ContentsPage: React.FC = () => {
                       <Alert
                         type="info"
                         showIcon
-                        message="完整源视频必须走 Multipart Upload：默认 32MiB 分片、最多 3 并发、失败自动重试、刷新后可继续。"
+                        message="完整源视频必须走 Multipart Upload：默认 32MiB 分片、最多 8 并发、失败自动重试、刷新后可继续。"
                         description={`转码完成后系统会自动生成${form.getFieldValue("previewEnabled") === false ? "完整版 HLS" : `${form.getFieldValue("previewDurationSeconds") || 60} 秒试看 HLS + 完整版 HLS`}；前端不会拿到永久 Bucket 地址、对象 Key 或完整视频公开 URL；取消上传会调用 abort，旧会话不可恢复。`}
                       />
                       {(fullVideoSession || fullVideoResumeRecord) && (

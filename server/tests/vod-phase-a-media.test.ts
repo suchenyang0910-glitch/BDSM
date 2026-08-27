@@ -382,6 +382,7 @@ test("Phase A: multipart session syncs uploaded parts and supports pause, resume
       },
     });
     assert.equal(initResp.statusCode, 200, initResp.body);
+    assert.equal((initResp.json() as any).maxConcurrency, 8, "服务端必须向后台下发 8 路分片并发上限");
     uploadSessionId = (initResp.json() as any).uploadSessionId as string;
 
     const signResp = await app.inject({

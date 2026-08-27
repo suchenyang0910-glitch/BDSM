@@ -67,7 +67,8 @@ const BannerTargetTypeZ = z.enum(["content", "category", "package", "membership"
 const MAX_FULL_VIDEO_BYTES = 2n * 1024n * 1024n * 1024n;
 const VOD_SINGLE_UPLOAD_SESSION_TTL_MS = 15 * 60 * 1000;
 const VOD_MULTIPART_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-const VOD_MULTIPART_MAX_CONCURRENCY = 3;
+// 8 条并发分片：在大文件上传时更充分利用浏览器与对象存储带宽；单片大小、重试和断点续传策略保持不变。
+const VOD_MULTIPART_MAX_CONCURRENCY = 8;
 const SHA256_BASE64_RE = /^[A-Za-z0-9+/]{43}=$/;
 const VOD_ASSET_KIND_Z = z.enum(["cover", "preview_source", "full_source"]);
 const VOD_UPLOAD_SESSION_STATUS_Z = z.enum(["initiated", "uploading", "paused", "completing", "completed", "cancelled", "expired", "failed"]);
