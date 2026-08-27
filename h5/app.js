@@ -366,7 +366,9 @@
     if (name === "aborterror") {
       return {
         errorCode: "video_play_aborted",
-        message: "试看初始化被中断，请重新点击试看。",
+        message: state.player.deliveryVariant === "full"
+          ? "完整视频正在启动，请重新点击播放。"
+          : "试看正在启动，请重新点击播放。",
         stage: "player_runtime",
       };
     }
@@ -547,7 +549,7 @@
       video.src = manifestUrl;
       video.load();
       trackManagedAnalytics(detail, "playback_manifest_ready");
-      return;
+      return false;
     }
 
     const HlsCtor = window.Hls;
@@ -582,6 +584,7 @@
             state.player.currentQuality = "preview";
           }
           trackManagedAnalytics(detail, "playback_manifest_ready");
+          startVideoElementPlayback(video, detail);
         });
         hls.on(HlsCtor.Events.LEVEL_SWITCHED, function (_, data) {
           var fromQuality = state.player.currentQuality || "auto";
@@ -604,11 +607,12 @@
       }
       hls.loadSource(manifestUrl);
       hls.attachMedia(video);
-      return;
+      return true;
     }
 
     video.src = manifestUrl;
     video.load();
+    return false;
   }
 
   function postManagedPlayback(sessionId, endpointSuffix, payload, detail) {
@@ -659,6 +663,13 @@
     if (playback && typeof playback.catch === "function") playback.catch(function () {});
   }
 
+  function startVideoElementPlayback(video, detail) {
+    const playback = video.play();
+    if (playback && typeof playback.catch === "function") playback.catch(function (err) {
+      surfacePlaybackFailure(detail, classifyVideoPlayError(err));
+    });
+  }
+
   async function startManagedPlayback(detail) {
     const video = $("detailContent").querySelector(".detail-preview-video");
     if (!video) {
@@ -688,7 +699,7 @@
         return;
       }
       if (detail.unlocked) {
-        showInlineMessage("完整 Web 播放仍保持关闭，请先使用 Telegram 备用观看。");
+        showInlineMessage("完整视频暂时不可用，请稍后重试。");
         return;
       }
       showInlineMessage(classifiedApiError.message);
@@ -699,7 +710,7 @@
     state.player.playbackSessionId = created.sessionId || "";
     state.player.deliveryVariant = created.deliveryVariant || "";
     try {
-      loadManagedVideoSource(video, created.manifestUrl, detail);
+      const waitForManifest = loadManagedVideoSource(video, created.manifestUrl, detail);
     } catch (err) {
       surfacePlaybackFailure(detail, {
         errorCode: "player_init_threw",
@@ -710,10 +721,7 @@
     }
     const gate = $("previewUpgradeGate");
     if (gate) gate.classList.add("is-hidden");
-    const playback = video.play();
-    if (playback && typeof playback.catch === "function") playback.catch(function (err) {
-      surfacePlaybackFailure(detail, classifyVideoPlayError(err));
-    });
+    if (!waitForManifest) startVideoElementPlayback(video, detail);
   }
 
   function isStarsProduct(product) {
@@ -2020,10 +2028,12 @@
     const mediaLabel = playback && playback.action === "play_full"
       ? ""
       : '<div class="detail-media-label"><strong>免费试看</strong><span>试看不需要开通会员</span></div>';
+    // 已解锁内容不应在完整播放会话建立前先加载试看源，避免刷新时两个媒体源竞争。
+    const initialMediaUrl = playback && playback.action === "play_full" ? "" : detail.previewUrl;
     const mediaSlot = canRenderPlayer
       ? '<section class="detail-media detail-media-preview" aria-label="免费试看">' +
         '<video class="detail-preview-video" controls playsinline preload="metadata"' +
-          (detail.previewUrl ? ' src="' + escapeHtml(detail.previewUrl) + '"' : "") +
+          (initialMediaUrl ? ' src="' + escapeHtml(initialMediaUrl) + '"' : "") +
           (detail.coverUrl ? ' poster="' + escapeHtml(detail.coverUrl) + '"' : '') + '>' +
           '当前浏览器不支持视频在线播放。' +
         '</video>' +

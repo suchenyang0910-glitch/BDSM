@@ -54,6 +54,15 @@ test("full playback UI hides implementation-specific delivery wording", async ()
   assert.doesNotMatch(appSource, /已解锁，可直接受控播放/);
 });
 
+test("full playback refresh waits for the managed manifest instead of surfacing a preview abort", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  assert.match(appSource, /const initialMediaUrl = playback && playback\.action === "play_full" \? "" : detail\.previewUrl/);
+  assert.match(appSource, /const waitForManifest = loadManagedVideoSource\(video, created\.manifestUrl, detail\)/);
+  assert.match(appSource, /if \(!waitForManifest\) startVideoElementPlayback\(video, detail\)/);
+  assert.match(appSource, /MANIFEST_PARSED[\s\S]{0,900}startVideoElementPlayback\(video, detail\)/);
+  assert.doesNotMatch(appSource, /试看初始化被中断/);
+});
+
 test("h5 catalog UI uses whole-card navigation and server-backed library search", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
