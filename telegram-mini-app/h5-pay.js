@@ -227,13 +227,24 @@
     const p = new URLSearchParams(location.search);
     return p.get("paymentMethod") || "";
   }
+  function currentReturnToFromQs() {
+    const p = new URLSearchParams(location.search);
+    return p.get("returnTo") || "";
+  }
 
   function replaceCheckoutQuery(input) {
     const qs = new URLSearchParams(location.search);
     if (input.orderNo) qs.set("orderNo", input.orderNo); else qs.delete("orderNo");
     if (input.productId) qs.set("productId", input.productId); else qs.delete("productId");
     if (input.paymentMethod) qs.set("paymentMethod", input.paymentMethod); else qs.delete("paymentMethod");
+    if (input.returnTo) qs.set("returnTo", input.returnTo); else if (Object.prototype.hasOwnProperty.call(input, "returnTo")) qs.delete("returnTo");
     history.replaceState(null, "", `${location.pathname}?${qs.toString()}${location.hash || ""}`);
+  }
+
+  function resolvePostPaymentTarget() {
+    const returnTo = currentReturnToFromQs();
+    if (returnTo) return `./index.html${returnTo}`;
+    return "./index.html#view=entitlements";
   }
 
   function isUsdtOrder(order) {
@@ -419,18 +430,21 @@
     // 钱包 App 返回 H5 时，始终把已支付结果带回可见的支付详情页，避免停留在旧的待支付列表。
     showView("payDetail");
     const bound = currentIdentitySession?.telegramBound === true;
+    const hasReturnTo = !!currentReturnToFromQs();
     const message = $("activatedMessage");
     const button = $("btnBackMiniApp");
     if (message) {
       message.innerHTML = bound
-        ? "订单已确认支付成功，频道邀请已通过 Telegram Bot 私信发送给你。<br/>将在 3 秒后进入「我的权益」，你也可以立即查看。"
+        ? (hasReturnTo
+          ? "权益已确认发放，正在返回原内容详情页。<br/>你也可以立即回到内容继续观看完整视频。"
+          : "权益已确认发放，正在返回站内继续查看。<br/>已绑定 Telegram 的频道权益也会同步可用。")
         : "订单已确认支付成功。请先绑定 Telegram，以便合并权益并领取私密频道邀请。";
     }
-    if (button) button.textContent = bound ? "立即查看我的权益" : "绑定 Telegram 后领取频道";
+    if (button) button.textContent = bound ? (hasReturnTo ? "立即回到内容" : "立即查看我的权益") : "绑定 Telegram 后领取频道";
     card.style.display = "block";
     if (bound && !paidRedirectTimer) {
       paidRedirectTimer = window.setTimeout(() => {
-        window.location.assign("./index.html#view=entitlements");
+        window.location.assign(resolvePostPaymentTarget());
       }, 3000);
     }
   }
@@ -968,7 +982,11 @@
         );
       }
       applyOrderData(order);
-      replaceCheckoutQuery({ orderNo: order.orderNo, paymentMethod: order.paymentMethod === "telegram_stars" ? "stars" : "usdt" });
+      replaceCheckoutQuery({
+        orderNo: order.orderNo,
+        paymentMethod: order.paymentMethod === "telegram_stars" ? "stars" : "usdt",
+        returnTo: currentReturnToFromQs(),
+      });
       trackAnalytics("checkout_open", {
         orderNo: order.orderNo,
         productId: order.product?.id || null,
@@ -1007,7 +1025,12 @@
       });
       applyOrderData(order);
       if (order.orderNo) {
-        replaceCheckoutQuery({ orderNo: order.orderNo, productId, paymentMethod: "usdt" });
+        replaceCheckoutQuery({
+          orderNo: order.orderNo,
+          productId,
+          paymentMethod: "usdt",
+          returnTo: currentReturnToFromQs(),
+        });
         $("orderNo").value = order.orderNo;
         trackAnalytics("order_created", { orderNo: order.orderNo, productId: productId, paymentMethod: "usdt_trc20" });
       }
@@ -1046,7 +1069,12 @@
         return;
       }
       applyOrderData(order);
-      replaceCheckoutQuery({ orderNo: order.orderNo, productId, paymentMethod: "stars" });
+      replaceCheckoutQuery({
+        orderNo: order.orderNo,
+        productId,
+        paymentMethod: "stars",
+        returnTo: currentReturnToFromQs(),
+      });
       $("orderNo").value = order.orderNo;
       trackAnalytics("order_created", { orderNo: order.orderNo, productId: productId, paymentMethod: "telegram_stars" });
       if (tg && typeof tg.openInvoice === "function") {
@@ -1109,7 +1137,7 @@
         location.href = `/login.html?redirect=${returnTo}`;
         return;
       }
-      location.href = "./index.html#view=entitlements";
+      location.href = resolvePostPaymentTarget();
     });
   }
 

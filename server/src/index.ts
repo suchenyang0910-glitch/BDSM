@@ -235,13 +235,47 @@ async function main() {
     return reply.status(200).send({ ok: true, ...base, telegram: { ok: true, lastCheckMs: Date.now() - lastWebhookCheck.ts } });
   });
 
+  function getRawRequestQuery(req: any): string {
+    const rawUrl = typeof req?.raw?.url === "string" ? req.raw.url : "";
+    const queryIndex = rawUrl.indexOf("?");
+    return queryIndex >= 0 ? rawUrl.slice(queryIndex) : "";
+  }
+
+  function buildAliasRedirect(targetPath: string, req: any): string {
+    return `${targetPath}${getRawRequestQuery(req)}`;
+  }
+
+  function getRedirectFromRawRequest(req: any): string {
+    const rawQuery = getRawRequestQuery(req);
+    if (!rawQuery) return "";
+    const parts = rawQuery.slice(1).split("&");
+    const redirectIndex = parts.findIndex((part) => part.startsWith("redirect="));
+    if (redirectIndex < 0) return "";
+    const rawValue = parts.slice(redirectIndex).join("&").slice("redirect=".length);
+    const redirectTo = rawValue.trim();
+    if (!redirectTo) return "";
+    if (redirectTo.startsWith("/")) return redirectTo;
+    if (/^%2f/i.test(redirectTo)) {
+      try {
+        return decodeURIComponent(redirectTo).trim();
+      } catch {
+        return redirectTo;
+      }
+    }
+    return redirectTo;
+  }
+
   if (process.env.NODE_ENV === "development") {
     const DEV_DEMO_TOKEN = process.env.DEV_DEMO_TOKEN || "intune-dev-only";
     app.log.warn(`[DEV-ONLY] registering /api/__demo/* routes. DEV_DEMO_TOKEN length=${DEV_DEMO_TOKEN.length}`);
     app.get("/api/__demo/login/:userId", async (req, reply) => {
       const { userId } = (req.params || {}) as { userId: string };
+      const query = (req.query || {}) as { token?: string; redirect?: string };
       const tokenHeader = (req.headers as any)["x-demo-token"];
-      if (!tokenHeader || tokenHeader !== DEV_DEMO_TOKEN) {
+      const token = typeof tokenHeader === "string" && tokenHeader
+        ? tokenHeader
+        : (typeof query.token === "string" ? query.token : "");
+      if (!token || token !== DEV_DEMO_TOKEN) {
         return reply.status(403).header("x-dev-only", "demo-login").send({ error: "x-demo-token missing or invalid (development only)" });
       }
       const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, telegramUserId: true } });
@@ -249,6 +283,10 @@ async function main() {
       const sess = req.session as any;
       sess.userId = user.id;
       sess.telegramUserId = user.telegramUserId ? user.telegramUserId.toString() : null;
+      const redirectTo = getRedirectFromRawRequest(req) || (typeof query.redirect === "string" ? query.redirect.trim() : "");
+      if (redirectTo && redirectTo.startsWith("/") && !redirectTo.startsWith("//")) {
+        return reply.header("x-dev-only", "demo-login").code(302).redirect(redirectTo);
+      }
       return reply.header("x-dev-only", "demo-login").send({ ok: true, userId: user.id, telegramUserId: user.telegramUserId ? user.telegramUserId.toString() : null });
     });
     app.post("/api/__demo/logout", async (req, reply) => {
@@ -289,8 +327,8 @@ async function main() {
     index: false,
   });
 
-  app.get("/login.html", async (_req, reply) => reply.redirect("/mini-app/login.html"));
-  app.get("/h5-pay.html", async (_req, reply) => reply.redirect("/mini-app/h5-pay.html"));
+  app.get("/login.html", async (req, reply) => reply.redirect(buildAliasRedirect("/mini-app/login.html", req)));
+  app.get("/h5-pay.html", async (req, reply) => reply.redirect(buildAliasRedirect("/mini-app/h5-pay.html", req)));
 
   await app.register(telegramRoutes, { prefix: "/api/telegram" });
   // 【Phase 0-3】webhook 入口固定路径 POST /api/telegram/webhook（与 telegram 路由独立，不走 session / cookie）

@@ -139,6 +139,36 @@ async function preparePlayableContent(prisma: any, contentId: string) {
         byteSize: BigInt(98_765),
         readyAt: new Date(),
       },
+      {
+        contentId,
+        assetId: asset.id,
+        kind: "hls_720",
+        status: "ready",
+        manifestKey: `hls/${contentId}/${asset.id}/hls_720/index.m3u8`,
+        prefixKey: `hls/${contentId}/${asset.id}/hls_720`,
+        width: 1280,
+        height: 720,
+        bitrateKbps: 2500,
+        durationSeconds: 600,
+        segmentCount: 80,
+        byteSize: BigInt(128_765),
+        readyAt: new Date(),
+      },
+      {
+        contentId,
+        assetId: asset.id,
+        kind: "hls_1080",
+        status: "ready",
+        manifestKey: `hls/${contentId}/${asset.id}/hls_1080/index.m3u8`,
+        prefixKey: `hls/${contentId}/${asset.id}/hls_1080`,
+        width: 1920,
+        height: 1080,
+        bitrateKbps: 5500,
+        durationSeconds: 600,
+        segmentCount: 80,
+        byteSize: BigInt(228_765),
+        readyAt: new Date(),
+      },
     ],
   });
   return asset;
@@ -254,6 +284,70 @@ test("playback session issues preview manifest for unpaid user and full manifest
     assert.equal(events.length, 2);
     assert.deepEqual(events.map((row: any) => row.eventName), ["playback_start", "playback_start"]);
     assert.equal(events[0].source, "platform_playback");
+  } finally {
+    await app.close();
+  }
+});
+
+test("single-content entitlement unlocks full playback session", async () => {
+  const app = await createApp(prisma, {
+    VIDEO_DELIVERY_MODE: "poc",
+    VIDEO_CDN_BASE_URL: "https://video.example.com",
+    VIDEO_CDN_SIGNING_MODE: "signed_cookie",
+    VIDEO_CDN_SIGNING_KEY: "playback-signing-key-with-sufficient-length",
+    PLAYBACK_POC_CONTENT_IDS: "content-single-playback",
+    PLAYBACK_POC_USER_IDS: "user-playback-single",
+  });
+  const user = await prisma.user.create({
+    data: {
+      id: "user-playback-single",
+      telegramUserId: BigInt(910000000021),
+      displayName: "Playback Single",
+      status: "active",
+    },
+  });
+  const contentId = "content-single-playback";
+  const cookieHeader = await loginAsUser(app, user.id);
+  try {
+    await prisma.content.create({
+      data: {
+        id: contentId,
+        title: "单条解锁播放测试",
+        accessType: "single",
+        status: "published",
+        durationSeconds: 600,
+        productId: TEST_KNOWN_IDS.singleProductKey,
+      },
+    });
+    await preparePlayableContent(prisma, contentId);
+
+    const previewRes = await app.inject({
+      method: "POST",
+      url: `/api/contents/${contentId}/playback-session`,
+      headers: { cookie: cookieHeader, "user-agent": "Single Device A" },
+    });
+    assert.equal(previewRes.statusCode, 200, previewRes.body);
+    assert.equal((previewRes.json() as any).deliveryVariant, "preview");
+
+    await prisma.entitlement.create({
+      data: {
+        userId: user.id,
+        resourceType: "content",
+        resourceId: contentId,
+        status: "active",
+        startsAt: new Date(),
+      },
+    });
+
+    const fullRes = await app.inject({
+      method: "POST",
+      url: `/api/contents/${contentId}/playback-session`,
+      headers: { cookie: cookieHeader, "user-agent": "Single Device A" },
+    });
+    assert.equal(fullRes.statusCode, 200, fullRes.body);
+    const body = fullRes.json() as any;
+    assert.equal(body.deliveryVariant, "full");
+    assert.match(body.manifestUrl, /^https:\/\/video\.example\.com\/playback\/.*\/full\/master\.m3u8$/);
   } finally {
     await app.close();
   }

@@ -1,0 +1,78 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+test("h5/app.js keeps pending orders resumable from detail CTA and paywall", async () => {
+  const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  assert.match(source, /function continuePendingOrder\(order, detail\)/);
+  assert.match(source, /if \(pendingOrder\) \{\s*return \{ text: "继续支付"/);
+  assert.match(source, /if \(pendingOrder\) \{\s*continuePendingOrder\(pendingOrder, detail\);\s*return;\s*\}/);
+  assert.match(source, /previewUpgradeButton.*continuePendingOrder\(pendingOrder, detail\)/s);
+});
+
+test("h5/app.js auto-starts preview and enforces 50s hint plus 60s paywall", async () => {
+  const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  assert.match(source, /const shouldAutoPreview = !detail\.unlocked/);
+  assert.match(source, /trackAnalytics\("preview_upgrade_shown"/);
+  assert.match(source, /current >= previewDuration - 10/);
+  assert.match(source, /current >= previewDuration\) \{[\s\S]{0,240}showPreviewUpgradeGate\(detail, \{ trigger: "preview_limit"/);
+});
+
+test("h5/app.js distinguishes preview analytics from full playback analytics", async () => {
+  const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  assert.match(source, /function getPlaybackAnalyticsEventName\(prefix\)/);
+  assert.match(source, /trackAnalytics\(getPlaybackAnalyticsEventName\("started"\)/);
+  assert.match(source, /trackAnalytics\("preview_completed"/);
+  assert.match(source, /trackAnalytics\("playback_completed"/);
+});
+
+test("h5 catalog UI uses whole-card navigation and server-backed library search", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
+  assert.match(appSource, /card\.addEventListener\("click", openDetail\)/);
+  assert.match(appSource, /params\.set\("keyword", String\(state\.library\.search \|\| ""\)\.trim\(\)\)/);
+  assert.match(appSource, /loadLibrary\(\{ append: true \}\)/);
+  assert.doesNotMatch(htmlSource, /card-action/);
+  assert.match(htmlSource, /libraryLoadMoreButton/);
+});
+
+test("h5 library keeps primary categories visible and uses mobile infinite scroll", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
+  assert.match(appSource, /const primaryCategories = categories\.slice\(0, 6\)/);
+  assert.match(appSource, /const extraCategories = categories\.slice\(6\)/);
+  assert.match(appSource, /libraryCategoryMoreButton/);
+  assert.match(appSource, /function shouldUseLibraryInfiniteScroll\(\)/);
+  assert.match(appSource, /window\.addEventListener\("scroll", maybeLoadLibraryOnScroll/);
+  assert.match(htmlSource, /libraryCategoryExtras/);
+  assert.match(htmlSource, /libraryInfiniteSentinel/);
+});
+
+test("checkout flow preserves return target and payment success returns to content detail", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const paySource = await readFile(path.join(ROOT, "telegram-mini-app/h5-pay.js"), "utf8");
+  const serverSource = await readFile(path.join(ROOT, "server/src/index.ts"), "utf8");
+  assert.match(appSource, /function getCheckoutReturnTarget\(detail\)/);
+  assert.match(appSource, /openCheckoutPage\(\{ productId: product\.id, paymentMethod: "usdt", returnTo: getCheckoutReturnTarget\(detail\) \}\)/);
+  assert.match(paySource, /function currentReturnToFromQs\(\)/);
+  assert.match(paySource, /replaceCheckoutQuery\(\{\s*orderNo: order\.orderNo,[\s\S]{0,160}returnTo: currentReturnToFromQs\(\)/);
+  assert.match(paySource, /function resolvePostPaymentTarget\(\)/);
+  assert.match(paySource, /window\.location\.assign\(resolvePostPaymentTarget\(\)\)/);
+  assert.match(serverSource, /function buildAliasRedirect\(targetPath: string, req: any\)/);
+  assert.match(serverSource, /app\.get\("\/login\.html", async \(req, reply\) => reply\.redirect\(buildAliasRedirect\("\/mini-app\/login\.html", req\)\)\)/);
+  assert.match(serverSource, /app\.get\("\/h5-pay\.html", async \(req, reply\) => reply\.redirect\(buildAliasRedirect\("\/mini-app\/h5-pay\.html", req\)\)\)/);
+});
+
+test("detail purchase layer supports optional single unlock product", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const serverSource = await readFile(path.join(ROOT, "server/src/routes/contents.ts"), "utf8");
+  assert.match(serverSource, /unlockProduct:/);
+  assert.match(appSource, /function getDetailUnlockProduct\(detail\)/);
+  assert.match(appSource, /previewSecondaryUnlockButton/);
+  assert.match(appSource, /detailSecondaryUnlockButton/);
+  assert.match(appSource, /startPurchase\(detail, \{ product: unlockProduct \}\)/);
+});

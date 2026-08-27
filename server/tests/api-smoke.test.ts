@@ -152,6 +152,49 @@ test("legacy MediaAsset covers use the controlled route and never leak a durable
   }
 });
 
+test("membership detail can expose optional single unlock product beside default membership product", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    await prisma.content.update({
+      where: { id: TEST_KNOWN_IDS.contentMembership },
+      data: { productId: TEST_KNOWN_IDS.singleProductKey },
+    });
+
+    const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentMembership}` });
+    assert.equal(detail.statusCode, 200, detail.body);
+    const body = detail.json() as any;
+    assert.equal(body.product?.id, TEST_KNOWN_IDS.membershipProductKey, "membership detail should keep monthly membership as primary product");
+    assert.equal(body.unlockProduct?.id, TEST_KNOWN_IDS.singleProductKey, "membership detail should expose optional single unlock product");
+    assert.equal(body.unlockProduct?.type, "single");
+  } finally {
+    await prisma.content.update({
+      where: { id: TEST_KNOWN_IDS.contentMembership },
+      data: { productId: null },
+    });
+    await app.close();
+  }
+});
+
+test("contents list supports keyword search with server-side filtering", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/contents?pageSize=10&keyword=%E6%AD%A3%E5%BF%B5",
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const body = response.json() as { items: any[]; pagination: { total: number } };
+    assert.ok(body.items.length >= 1, "keyword search should return matching published content");
+    assert.ok(body.items.every((item) => {
+      const text = [item.title, item.description].join(" ");
+      return text.includes("正念");
+    }), "keyword search should be filtered server-side");
+    assert.ok(body.pagination.total >= body.items.length, "keyword search should keep pagination contract");
+  } finally {
+    await app.close();
+  }
+});
+
 test("access-link routes enforce POST and authenticated session", async () => {
   const app = await createTestApp(prisma);
   try {

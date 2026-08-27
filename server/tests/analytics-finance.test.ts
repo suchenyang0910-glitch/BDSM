@@ -12,6 +12,7 @@ import {
   computePaymentAddressIntegrityMac,
   verifyAndFreezePaymentAddressIntegrity,
 } from "../src/services/paymentAddressIntegrity.js";
+import { sanitizeAnalyticsEvent } from "../src/services/analytics.js";
 import {
   setupTestHarness,
   teardownTestHarness,
@@ -243,6 +244,26 @@ test("analytics events reject requests without an established account session", 
   } finally {
     await app.close();
   }
+});
+
+test("analytics sanitizer preserves library and single paywall semantics", () => {
+  const pageViewed = sanitizeAnalyticsEvent({
+    eventName: "page_viewed",
+    payload: { platform: "h5", pageName: "library", contentId: TEST_KNOWN_IDS.contentSingle },
+  });
+  assert.equal(pageViewed.propertiesJson.pageName, "library");
+
+  const watchHistoryViewed = sanitizeAnalyticsEvent({
+    eventName: "page_viewed",
+    payload: { platform: "h5", pageName: "watch_history" },
+  });
+  assert.equal(watchHistoryViewed.propertiesJson.pageName, "watch_history");
+
+  const paywallShown = sanitizeAnalyticsEvent({
+    eventName: "paywall_shown",
+    payload: { platform: "h5", contentId: TEST_KNOWN_IDS.contentSingle, accessType: "single" },
+  });
+  assert.equal(paywallShown.propertiesJson.accessType, "single");
 });
 
 test("admin analytics overview exposes aggregate funnel only and enforces analytics:view", async () => {

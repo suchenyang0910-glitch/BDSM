@@ -501,16 +501,6 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
   const { prisma, targetContentId, accessType, packageId, productId, coverAssetId, previewAssetId, fullVideoAssetId } = ctx;
   const fullVideoAssetIds = normalizeFullVideoAssetIds(ctx.fullVideoAssetIds, fullVideoAssetId);
 
-  if (accessType === "single") {
-    return {
-      ok: false,
-      status: 409,
-      error: "single_delivery_not_enabled",
-      message:
-        "单篇购买（single）首期不支持：共享 VIP 频道无法做到只开放单条内容，会造成权益越界。请改为 membership 或 package 类型。",
-    };
-  }
-
   // —— FK 基础校验：如传入 assetId，必须是存在且 status=ready（避免引用不存在/未完成上传的素材）
   const fkChecks: Array<{ key: "coverAssetId" | "previewAssetId"; id: string | null | undefined; expectedKind?: "cover_image" | "preview_video" }> = [
     { key: "coverAssetId", id: coverAssetId, expectedKind: "cover_image" },
@@ -607,6 +597,40 @@ async function validateContentAccessTypeConstraints(ctx: ContentAccessValidation
         error: "package_not_ready",
         message: "内容包暂不可交付",
         details: missing,
+      };
+    }
+  }
+
+  if (accessType === "single") {
+    if (!productId) {
+      return {
+        ok: false,
+        status: 400,
+        error: "single_product_required",
+        message: "single 类型必须绑定已启用的单篇商品。",
+      };
+    }
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true, type: true, status: true },
+    });
+    if (!product) {
+      return { ok: false, status: 404, error: "product_not_found", message: "指定的商品不存在" };
+    }
+    if (product.type !== "single") {
+      return {
+        ok: false,
+        status: 409,
+        error: "single_product_type_mismatch",
+        message: `single 类型必须绑定 single 商品，当前商品类型为 ${product.type}。`,
+      };
+    }
+    if (product.status !== "active") {
+      return {
+        ok: false,
+        status: 409,
+        error: "single_product_not_active",
+        message: "single 类型必须绑定已启用的单篇商品。",
       };
     }
   }
@@ -2877,8 +2901,8 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         return {
           ok: false,
           status: 409,
-          error: "single_delivery_not_enabled",
-          message: "single（单篇购买）首期不支持发布视频到频道；请改为 membership 或 package 类型。",
+          error: "single_channel_delivery_unavailable",
+          message: "single（单篇购买）仅支持站内 HLS 受控播放，不提供 Telegram 私密频道完整视频交付。",
         };
     }
     if (!ref) return { ok: false, status: 500, error: "internal", message: "解析目标频道失败" };

@@ -16,6 +16,7 @@
     stars_invoice_service_unavailable: "Stars 发票暂时不可用，请稍后重试。",
     stars_continue_expired: "Stars 续付窗口已过期，请重新下单。",
     single_delivery_not_available: "当前内容暂不支持单条购买，请选择内容包或月度会员。",
+    single_channel_delivery_unavailable: "单条购买内容当前仅支持站内 HLS 播放，不提供频道备用交付。",
   };
 
   const state = {
@@ -38,6 +39,8 @@
       categoryId: "all",
       search: "",
       sort: "newest",
+      pagination: { page: 1, pageSize: 8, total: 0, totalPages: 1 },
+      showExtraCategories: false,
     },
     orders: {
       loading: false,
@@ -74,6 +77,9 @@
       playRequestedAt: 0,
       prefetchContentId: "",
       prefetchedSession: null,
+      previewHintShown: false,
+      paywallShown: false,
+      previewCompletionTracked: false,
     },
     trafficEntry: null,
     resumeIntent: null,
@@ -90,6 +96,7 @@
   }
 
   const H5_INSTALL_GUIDE_STORAGE_KEY = "samewave_h5_install_guide_seen_v1";
+  let librarySearchTimer = 0;
 
   function isStandaloneH5() {
     return window.matchMedia && window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
@@ -258,6 +265,9 @@
     state.player.currentQuality = "auto";
     state.player.bufferStartedAt = 0;
     state.player.playRequestedAt = 0;
+    state.player.previewHintShown = false;
+    state.player.paywallShown = false;
+    state.player.previewCompletionTracked = false;
   }
 
   function reportPlaybackError(detail, errorCode) {
@@ -904,6 +914,7 @@
   function getAccessLabel(item) {
     if (item.unlocked) return "已解锁";
     if (item.accessType === "public") return "公开预览";
+    if (item.accessType === "single") return "单条解锁";
     if (item.accessType === "membership") return "会员内容";
     if (item.accessType === "package") return "内容包内容";
     return "查看详情";
@@ -968,20 +979,25 @@
         coverImage.classList.remove("is-hidden");
       }
       node.querySelector(".cover-duration").textContent = item.duration || "—";
-      node.querySelector(".card-tag").textContent = (item.tags || []).join(" · ") || getAccessLabel(item);
+      node.querySelector(".card-tag").textContent = item.categoryName || (item.tags || []).join(" · ") || getAccessLabel(item);
       node.querySelector(".card-title").textContent = item.title || "未命名内容";
-      node.querySelector(".card-desc").textContent = item.description || "暂无描述";
+      node.querySelector(".card-desc").textContent =
+        [item.categoryName, formatDateShort(item.publishedAt)].filter(Boolean).join(" · ")
+        || item.description
+        || "暂无描述";
       node.querySelector(".card-price").textContent = item.accessType === "public"
         ? "公开预览"
         : formatAvailablePrices(item);
       node.querySelector(".card-access").textContent = getAccessLabel(item);
-      node.querySelector(".cover-button").addEventListener("click", function () {
+      const card = node.querySelector(".content-card");
+      const openDetail = function () {
         openContentDetail(item.id, fromTab, { autoplay: false, resumePositionSec: 0 });
-      });
-      const action = node.querySelector(".card-action");
-      action.textContent = item.unlocked ? "查看详情" : "查看并了解权益";
-      action.addEventListener("click", function () {
-        openContentDetail(item.id, fromTab, { autoplay: false, resumePositionSec: 0 });
+      };
+      card.addEventListener("click", openDetail);
+      card.addEventListener("keydown", function (event) {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openDetail();
       });
       host.appendChild(node);
     });
@@ -990,11 +1006,13 @@
   function renderBannerList() {
     const home = state.home;
     const host = $("homeBannerList");
+    const section = document.querySelector(".home-banner-section");
     host.innerHTML = "";
     if (!home || !home.banners || home.banners.length === 0) {
-      host.innerHTML = '<div class="inline-state">当前没有 Banner 配置。</div>';
+      if (section) section.classList.add("is-hidden");
       return;
     }
+    if (section) section.classList.remove("is-hidden");
     home.banners.forEach(function (banner) {
       const card = document.createElement("article");
       card.className = "banner-card" + (banner.imageUrl ? " has-image" : "");
@@ -1011,11 +1029,14 @@
 
   function renderFeaturedCard() {
     const host = $("homeFeaturedCard");
+    const section = document.querySelector(".home-featured-section");
     const featured = state.home && state.home.featuredContent ? state.home.featuredContent : null;
     if (!featured) {
-      host.innerHTML = '<div class="inline-state">当前还没有配置今日精选。</div>';
+      if (section) section.classList.add("is-hidden");
+      host.innerHTML = "";
       return;
     }
+    if (section) section.classList.remove("is-hidden");
     host.innerHTML = "";
     renderContentCards("homeFeaturedCard", [featured], "home");
   }
@@ -1143,28 +1164,79 @@
     renderFeaturedCard();
     renderHomeResume();
     renderThemeCards();
-    renderContentCards("homeLatestGrid", state.home.latestContents || [], "home");
+    if (state.home.latestContents && state.home.latestContents.length) {
+      renderContentCards("homeLatestGrid", state.home.latestContents || [], "home");
+    } else {
+      $("homeLatestGrid").innerHTML = '<div class="empty-state">内容即将上线</div>';
+    }
     renderDesktopRail();
     updatePageSeo(state.home.seo || null);
     updateOgImage("");
     updateJsonLd(null);
   }
 
+  function getLibraryPageSize() {
+    return window.innerWidth >= 1024 ? 12 : 8;
+  }
+
+  function shouldUseLibraryInfiniteScroll() {
+    return window.innerWidth < 768;
+  }
+
+  function libraryHasMorePages() {
+    const pagination = state.library.pagination || { page: 1, totalPages: 1 };
+    return pagination.page < pagination.totalPages;
+  }
+
   function renderLibraryCategories() {
     const host = $("libraryCategoryList");
+    const extraHost = $("libraryCategoryExtras");
+    const moreButton = $("libraryCategoryMoreButton");
     const categories = (state.home && state.home.categories) || [];
     host.innerHTML = "";
-    categories.forEach(function (category) {
+    extraHost.innerHTML = "";
+
+    const primaryCategories = categories.slice(0, 6);
+    const extraCategories = categories.slice(6);
+    const activeExtraCategory = extraCategories.find(function (category) {
+      return state.library.categoryId === category.id;
+    }) || null;
+
+    const renderCategoryChip = function (category, targetHost, closeAfterSelect) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "chip" + (state.library.categoryId === category.id ? " is-active" : "");
       btn.textContent = category.name;
       btn.addEventListener("click", function () {
         state.library.categoryId = category.id;
+        if (closeAfterSelect) state.library.showExtraCategories = false;
         loadLibrary();
       });
-      host.appendChild(btn);
+      targetHost.appendChild(btn);
+    };
+
+    primaryCategories.forEach(function (category) {
+      renderCategoryChip(category, host, false);
     });
+    extraCategories.forEach(function (category) {
+      renderCategoryChip(category, extraHost, true);
+    });
+
+    if (!extraCategories.length) {
+      moreButton.classList.add("is-hidden");
+      moreButton.classList.remove("is-active");
+      moreButton.setAttribute("aria-expanded", "false");
+      extraHost.classList.add("is-hidden");
+      return;
+    }
+
+    moreButton.classList.remove("is-hidden");
+    moreButton.classList.toggle("is-active", !!activeExtraCategory || state.library.showExtraCategories);
+    moreButton.textContent = activeExtraCategory && !state.library.showExtraCategories
+      ? "更多筛选 · " + activeExtraCategory.name
+      : (state.library.showExtraCategories ? "收起筛选" : "更多筛选");
+    moreButton.setAttribute("aria-expanded", state.library.showExtraCategories ? "true" : "false");
+    extraHost.classList.toggle("is-hidden", !state.library.showExtraCategories);
   }
 
   function renderLibrary() {
@@ -1172,20 +1244,41 @@
     if (state.library.loading) {
       $("libraryState").textContent = "片库加载中…";
       $("libraryGrid").innerHTML = createSkeletonCards(6);
+      $("libraryLoadMoreButton").classList.add("is-hidden");
+      $("libraryInfiniteSentinel").classList.add("is-hidden");
       return;
     }
-    const items = state.library.items.filter(function (item) {
-      const keyword = String(state.library.search || "").trim().toLowerCase();
-      return !keyword
-        || String(item.title || "").toLowerCase().includes(keyword)
-        || String(item.description || "").toLowerCase().includes(keyword);
-    });
-    $("libraryState").textContent = items.length ? "共 " + items.length + " 条内容" : "没有匹配结果。";
+    const items = state.library.items || [];
+    const pagination = state.library.pagination || { page: 1, pageSize: getLibraryPageSize(), total: items.length, totalPages: 1 };
+    const hasMorePages = pagination.page < pagination.totalPages;
+    const useInfiniteScroll = shouldUseLibraryInfiniteScroll();
+    $("libraryState").textContent = items.length
+      ? "共 " + pagination.total + " 条内容" + (state.library.search ? " · 搜索“" + state.library.search + "”" : "")
+      : "没有匹配结果。";
     if (!items.length) {
       $("libraryGrid").innerHTML = '<div class="inline-state">当前没有匹配内容。</div>';
+      $("libraryLoadMoreButton").classList.add("is-hidden");
+      $("libraryInfiniteSentinel").classList.add("is-hidden");
       return;
     }
     renderContentCards("libraryGrid", items, "library");
+    $("libraryLoadMoreButton").classList.toggle("is-hidden", useInfiniteScroll || !hasMorePages);
+    $("libraryInfiniteSentinel").classList.toggle("is-hidden", !useInfiniteScroll || !hasMorePages);
+    if (useInfiniteScroll && hasMorePages) {
+      window.setTimeout(maybeLoadLibraryOnScroll, 0);
+    }
+  }
+
+  function maybeLoadLibraryOnScroll() {
+    if (!shouldUseLibraryInfiniteScroll()) return;
+    if (!state.route || state.route.view !== "tab" || state.route.tab !== "library") return;
+    if (state.library.loading || !libraryHasMorePages()) return;
+    const sentinel = $("libraryInfiniteSentinel");
+    if (!sentinel || sentinel.classList.contains("is-hidden")) return;
+    const rect = sentinel.getBoundingClientRect();
+    if (rect.top <= window.innerHeight + 120) {
+      loadLibrary({ append: true });
+    }
   }
 
   function groupPackageItems(items) {
@@ -1299,9 +1392,9 @@
         '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(item.title) + '</div>' +
         '<div class="stack-subtitle">' + escapeHtml(getAccessLabel(item)) + '</div></div>' +
         '<div class="status-badge">已解锁</div></div>' +
-        '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">前往频道</button></div>';
+        '<div class="channel-actions" style="margin-top:12px;"><button class="primary-button" type="button">查看内容</button></div>';
       card.querySelector("button").addEventListener("click", function () {
-        openChannelAccess(item.id);
+        openContentDetail(item.id, "me", { autoplay: item.accessType === "single" || item.accessType === "membership", resumePositionSec: 0 });
       });
       host.appendChild(card);
     });
@@ -1367,14 +1460,15 @@
       const primary = document.createElement("button");
       primary.type = "button";
       primary.className = order.status === "pending" ? "primary-button" : "ghost-button";
-      primary.textContent = order.status === "pending" && !state.env.isTelegram && order.product && !isStarsProduct(order.product)
-        ? "继续 USDT 支付"
+      primary.textContent = order.status === "pending"
+        ? "继续支付"
         : order.status === "paid"
-          ? "查看权益"
+          ? "查看内容"
           : "查看内容";
       primary.addEventListener("click", function () {
-        if (order.status === "pending" && !state.env.isTelegram && order.product && !isStarsProduct(order.product)) {
-          window.location.assign("/h5-pay.html?orderNo=" + encodeURIComponent(order.orderNo));
+        if (order.status === "pending") {
+          var paymentMethod = order.paymentMethod === "telegram_stars" ? "stars" : "usdt";
+          openCheckoutPage({ orderNo: order.orderNo, paymentMethod: paymentMethod });
           return;
         }
         if (order.product && order.product.id) {
@@ -1505,34 +1599,252 @@
 
   function pendingOrderForProduct(productId) {
     return (state.orders.items || []).find(function (order) {
-      return order.status === "pending" && order.product && order.product.id === productId;
+      return ["pending", "processing"].indexOf(order.status) >= 0 && order.product && order.product.id === productId;
     }) || null;
+  }
+
+  function getPreviewDurationSeconds(detail) {
+    const seconds = Number(detail && detail.previewDurationSeconds);
+    return seconds > 0 ? Math.floor(seconds) : 60;
+  }
+
+  function isPreviewPlaybackActive() {
+    return !state.player.deliveryVariant || state.player.deliveryVariant === "preview";
+  }
+
+  function getPlaybackAnalyticsEventName(prefix) {
+    return isPreviewPlaybackActive() ? "preview_" + prefix : "playback_" + prefix;
+  }
+
+  function getPurchaseActionText(detail) {
+    if (!detail) return "立即购买";
+    if (detail.accessType === "single") return "解锁本视频";
+    if (detail.accessType === "package") return "解锁内容包";
+    return "开通会员";
+  }
+
+  function getProductActionText(product, detail) {
+    if (product && product.type === "single") return "单条解锁";
+    if (product && product.type === "package") return "解锁内容包";
+    return getPurchaseActionText(detail);
+  }
+
+  function getDetailUnlockProduct(detail) {
+    return detail && detail.unlockProduct ? detail.unlockProduct : null;
+  }
+
+  function getCheckoutReturnTarget(detail) {
+    if (detail && detail.id) {
+      var params = new URLSearchParams();
+      params.set("view", "content");
+      params.set("id", detail.id);
+      params.set("from", state.route && state.route.fromTab ? state.route.fromTab : "home");
+      return "#" + params.toString();
+    }
+    return window.location.hash || "#tab=home";
+  }
+
+  function getPaywallGateNote(detail, pendingOrder) {
+    if (pendingOrder) {
+      return "检测到待支付订单，继续支付后即可立刻观看完整内容。";
+    }
+    if (!detail) return "完整内容仅对已解锁用户开放。";
+    if (detail.accessType === "membership") {
+      var unlockProduct = getDetailUnlockProduct(detail);
+      return detail.product && detail.product.usdtPriceMinor
+        ? "完整内容仅限会员观看。" + formatPriceMinor(detail.product.usdtPriceMinor, "USDT") + " / 月。"
+          + (unlockProduct && unlockProduct.usdtPriceMinor ? " 也可单条解锁：" + formatPriceMinor(unlockProduct.usdtPriceMinor, "USDT") + "。" : "")
+        : "完整内容仅限会员观看，开通后可继续播放。" + (unlockProduct ? " 如已配置，也可选择单条解锁。" : "");
+    }
+    if (detail.accessType === "single") {
+      return detail.product && detail.product.usdtPriceMinor
+        ? "解锁当前视频后即可继续完整播放。" + formatPriceMinor(detail.product.usdtPriceMinor, "USDT") + "。"
+        : "解锁当前视频后即可继续完整播放。";
+    }
+    if (detail.accessType === "package") {
+      return "解锁所属内容包后即可继续观看完整内容。";
+    }
+    return "完整内容仅对已解锁用户开放。";
+  }
+
+  function openCheckoutPage(query) {
+    var params = [];
+    Object.keys(query || {}).forEach(function (key) {
+      if (query[key] == null || query[key] === "") return;
+      params.push(encodeURIComponent(key) + "=" + encodeURIComponent(String(query[key])));
+    });
+    window.location.assign("/h5-pay.html" + (params.length ? "?" + params.join("&") : ""));
+  }
+
+  async function continueStarsOrderAndPay(order, detail) {
+    if (!order || !order.orderNo) {
+      showInlineMessage("待支付订单不存在或已失效。");
+      return;
+    }
+    var returnTo = getCheckoutReturnTarget(detail);
+    if (!tg || typeof tg.openInvoice !== "function") {
+      openCheckoutPage({ orderNo: order.orderNo, paymentMethod: "stars", returnTo: returnTo });
+      return;
+    }
+    try {
+      const resp = await apiCall("/api/orders/" + encodeURIComponent(order.orderNo) + "/continue-stars", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      const invoiceLink = resp && resp.invoiceLink ? resp.invoiceLink : null;
+      if (!invoiceLink) {
+        openCheckoutPage({ orderNo: order.orderNo, paymentMethod: "stars", returnTo: returnTo });
+        return;
+      }
+      tg.openInvoice(invoiceLink, function (status) {
+        loadOrders();
+        loadEntitlements();
+        if (status === "paid") {
+          showInlineMessage("Stars 支付成功，正在刷新权益。");
+          state.detailCache = {};
+          renderDetail(detail.id);
+          return;
+        }
+        if (status === "pending") {
+          showInlineMessage("Stars 支付处理中，请稍后查看订单状态。");
+          return;
+        }
+        if (status === "cancelled") {
+          showInlineMessage("已保留待支付订单，可稍后继续支付。");
+          return;
+        }
+        showInlineMessage("Stars 支付未完成，请稍后重试。");
+      });
+    } catch (err) {
+      showInlineMessage("继续 Stars 支付失败：" + apiText(err));
+    }
+  }
+
+  function continuePendingOrder(order, detail) {
+    if (!order || !order.orderNo) {
+      showInlineMessage("未找到可继续的订单。");
+      return;
+    }
+    var paymentMethod = order.paymentMethod === "telegram_stars" ? "telegram_stars" : "usdt_trc20";
+    trackAnalytics("checkout_open", {
+      contentId: detail && detail.id ? detail.id : null,
+      orderNo: order.orderNo,
+      productId: order.product && order.product.id ? order.product.id : null,
+      paymentMethod: paymentMethod,
+      reopen: true,
+    });
+    if (paymentMethod === "telegram_stars") {
+      void continueStarsOrderAndPay(order, detail);
+      return;
+    }
+    openCheckoutPage({ orderNo: order.orderNo, paymentMethod: "usdt", returnTo: getCheckoutReturnTarget(detail) });
+  }
+
+  function showPreviewUpgradeGate(detail, options) {
+    var gate = $("previewUpgradeGate");
+    var hint = $("previewEndingHint");
+    var note = $("previewUpgradeNote");
+    if (hint) hint.classList.add("is-hidden");
+    if (!gate || state.player.paywallShown) return;
+    state.player.paywallShown = true;
+    gate.classList.remove("is-hidden");
+    if (note) {
+      var pendingOrder = detail && detail.product ? pendingOrderForProduct(detail.product.id) : null;
+      note.textContent = getPaywallGateNote(detail, pendingOrder);
+    }
+    trackAnalytics("paywall_shown", {
+      contentId: detail && detail.id ? detail.id : null,
+      accessType: detail && detail.accessType ? detail.accessType : null,
+      trigger: options && options.trigger ? options.trigger : "preview_limit",
+      positionSec: options && options.positionSec != null ? options.positionSec : null,
+    });
+  }
+
+  function completePreviewPlayback(detail, positionSec, durationSec) {
+    if (state.player.previewCompletionTracked) return;
+    state.player.previewCompletionTracked = true;
+    trackAnalytics("preview_completed", {
+      contentId: detail && detail.id ? detail.id : null,
+      deliveryVariant: state.player.deliveryVariant || "preview",
+    });
+    writePlayerProgress(detail, {
+      eventName: "complete",
+      positionSec: positionSec || 0,
+      durationSec: durationSec || detail.durationSeconds || null,
+      quality: state.player.currentQuality || "auto",
+    });
   }
 
   function getPrimaryDetailAction(detail) {
     const playback = getDetailPlaybackStatus(detail);
+    const pendingOrder = detail && detail.product ? pendingOrderForProduct(detail.product.id) : null;
     if (playback && !playback.errorClass && playback.action === "play_full") {
-      return { text: "播放完整", handler: function () { startManagedPlayback(detail); } };
+      return { text: "观看完整视频", handler: function () { startManagedPlayback(detail); } };
     }
-    if (playback && !playback.errorClass && playback.action === "preview") {
-      return { text: "试看", handler: function () { startManagedPlayback(detail); } };
+    if (detail.unlocked && detail.accessType === "single") {
+      return {
+        text: playback && playback.action === "processing" ? "转码处理中" : "观看完整视频",
+        handler: function () {
+          if (playback && !playback.errorClass && playback.action === "play_full") {
+            startManagedPlayback(detail);
+            return;
+          }
+          showInlineMessage("完整视频正在准备中，请稍后再试。");
+        },
+      };
     }
-    if (detail.previewUrl) {
-      return { text: "试看", handler: function () { playInlineDetailVideo(); } };
+    if (detail.unlocked && detail.accessType !== "single") {
+      return { text: "前往频道观看", handler: function () { openChannelAccess(detail.id); } };
     }
-    if (detail.unlocked) {
-      return { text: "Telegram 备用观看", handler: function () { openChannelAccess(detail.id); } };
+    if (pendingOrder) {
+      return { text: "继续支付", handler: function () { continuePendingOrder(pendingOrder, detail); } };
     }
     if (playback && playback.action === "processing") {
       return { text: "转码处理中", handler: function () { showInlineMessage("视频转码处理中，请稍后再试。"); } };
     }
+    if (playback && !playback.errorClass && playback.action === "preview") {
+      return { text: getPurchaseActionText(detail), handler: function () { startPurchase(detail); } };
+    }
+    if (detail.previewUrl) {
+      return { text: getPurchaseActionText(detail), handler: function () { startPurchase(detail); } };
+    }
     if (detail.accessType === "membership") {
       return { text: "开通会员", handler: function () { startPurchase(detail); } };
+    }
+    if (detail.accessType === "single") {
+      return { text: "解锁本视频", handler: function () { startPurchase(detail); } };
     }
     if (detail.accessType === "package") {
       return { text: "解锁内容包", handler: function () { startPurchase(detail); } };
     }
     return { text: "查看频道预览", handler: function () { openChannelAccess(detail.id); } };
+  }
+
+  function renderDetailTags(detail) {
+    const tags = [];
+    if (detail && detail.accessType) tags.push(getAccessLabel(detail));
+    if (detail && Array.isArray(detail.tags)) {
+      detail.tags.forEach(function (tag) {
+        if (tag && tags.indexOf(tag) < 0) tags.push(tag);
+      });
+    }
+    if (detail && Array.isArray(detail.categories)) {
+      detail.categories.forEach(function (category) {
+        if (category && category.name && tags.indexOf(category.name) < 0) tags.push(category.name);
+      });
+    }
+    return tags.slice(0, 6).map(function (tag) {
+      return '<span class="detail-tag">' + escapeHtml(tag) + '</span>';
+    }).join("");
+  }
+
+  function renderDetailDescription(detail) {
+    const description = escapeHtml(detail && detail.description ? detail.description : "暂无内容介绍。");
+    const expandable = String(detail && detail.description || "").length > 72;
+    return '<div id="detailDescription" class="detail-description">' +
+      '<div class="detail-description-copy">' + description + '</div>' +
+      (expandable ? '<button id="detailDescriptionToggle" class="detail-description-toggle" type="button">展开简介</button>' : '') +
+      '</div>';
   }
 
   async function renderDetail(id) {
@@ -1562,13 +1874,15 @@
     const playback = getDetailPlaybackStatus(detail);
     const primaryAction = getPrimaryDetailAction(detail);
     const pendingOrder = detail.product ? pendingOrderForProduct(detail.product.id) : null;
+    const unlockProduct = getDetailUnlockProduct(detail);
+    const unlockPendingOrder = unlockProduct ? pendingOrderForProduct(unlockProduct.id) : null;
     // 详情页只保留一个 16:9 媒体位：有试看直接播放试看；无试看才展示封面。
     // 这样不会把同一张封面和同一段视频上下重复展示，首屏也更聚焦。
     const managedPlaybackEnabled = hasManagedPlayback(detail);
     const canRenderPlayer = !!detail.previewUrl || managedPlaybackEnabled;
     const previewUpgradeEnabled = !detail.unlocked && !!detail.product &&
-      (detail.accessType === "membership" || detail.accessType === "package");
-    const previewUpgradeText = detail.accessType === "membership" ? "开通会员" : "解锁内容包";
+      (detail.accessType === "membership" || detail.accessType === "package" || detail.accessType === "single");
+    const previewUpgradeText = pendingOrder ? "继续支付" : getPurchaseActionText(detail);
     const mediaSlot = canRenderPlayer
       ? '<section class="detail-media detail-media-preview" aria-label="免费试看">' +
         '<video class="detail-preview-video" controls playsinline preload="metadata"' +
@@ -1576,6 +1890,7 @@
           (detail.coverUrl ? ' poster="' + escapeHtml(detail.coverUrl) + '"' : '') + '>' +
           '当前浏览器不支持视频在线播放。' +
         '</video>' +
+        '<div id="previewEndingHint" class="detail-preview-hint is-hidden" role="status" aria-live="polite">完整内容将在 <strong id="previewEndingCountdown">10</strong> 秒后结束试看</div>' +
         '<div class="detail-media-label"><strong>' + escapeHtml(playback && playback.action === "play_full" ? "受控播放" : "免费试看") + '</strong><span>' +
           escapeHtml(playback && playback.action === "play_full"
             ? "完整播放走服务端会话与短时鉴权。"
@@ -1586,7 +1901,14 @@
         (previewUpgradeEnabled
           ? '<div id="previewUpgradeGate" class="detail-preview-gate is-hidden" role="status" aria-live="polite">' +
             '<div class="detail-preview-gate-copy"><span>试看结束</span><strong>开通后继续观看完整内容</strong>' +
-            '<button id="previewUpgradeButton" class="primary-button" type="button">' + escapeHtml(previewUpgradeText) + '</button></div>' +
+            '<p id="previewUpgradeNote" class="detail-preview-gate-note">' + escapeHtml(getPaywallGateNote(detail, pendingOrder)) + '</p>' +
+            '<button id="previewUpgradeButton" class="primary-button" type="button">' + escapeHtml(previewUpgradeText) + '</button>' +
+            (unlockProduct
+              ? '<button id="previewSecondaryUnlockButton" class="ghost-button" type="button">' +
+                escapeHtml(unlockPendingOrder ? "继续单条解锁" : getProductActionText(unlockProduct, detail)) +
+                '</button>'
+              : '') +
+            '</div>' +
             '</div>'
           : '') +
         '</section>'
@@ -1596,10 +1918,10 @@
     $("detailContent").innerHTML =
       mediaSlot +
       '<div class="detail-copy">' +
-      '<p class="eyebrow">' + escapeHtml((detail.tags || []).join(" · ") || getAccessLabel(detail)) + '</p>' +
       '<h2>' + escapeHtml(detail.title || "") + '</h2>' +
       '<div class="detail-meta"><span>' + escapeHtml(detail.duration || "—") + '</span><span>' + escapeHtml(detail.categories && detail.categories[0] ? detail.categories[0].name : "未分类") + '</span><span>' + escapeHtml(formatDateShort(detail.publishedAt)) + '</span></div>' +
-      '<div class="detail-description">' + escapeHtml(detail.description || "暂无内容介绍。") + '</div>' +
+      '<div class="detail-tags">' + renderDetailTags(detail) + '</div>' +
+      renderDetailDescription(detail) +
       '<div class="detail-status-card">' +
       '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(playback && playback.action === "play_full"
         ? "已解锁，可直接受控播放"
@@ -1611,17 +1933,19 @@
         : playback && playback.action === "preview" && !playback.errorClass
           ? "当前可直接试看；试看结束后可继续开通对应权益。"
           : detail.unlocked && playback && playback.errorClass
-            ? "完整 Web 播放仍保持关闭，当前请先使用 Telegram 备用观看。"
+            ? (detail.accessType === "single" ? "当前已解锁本视频，完整 Web 播放正在准备中。" : "完整 Web 播放仍保持关闭，当前请先使用 Telegram 备用观看。")
             : detail.unlocked
-        ? "该内容已归属到你当前账户的有效权益。"
+        ? (detail.accessType === "single" ? "该内容已归属到你当前账户，可直接请求完整播放。" : "该内容已归属到你当前账户的有效权益。")
         : detail.accessType === "membership"
           ? "该内容通过会员主频道交付。"
+          : detail.accessType === "single"
+            ? "可先试看，再解锁当前视频的完整内容。"
           : detail.accessType === "package"
             ? "该内容通过所属内容包频道交付。"
             : "该内容为公开预览，可直接查看。") + '</div></div>' +
       '<div class="status-badge' + ((playback && playback.action === "play_full") || detail.unlocked ? "" : " status-warning") + '">' +
       escapeHtml((playback && playback.action === "play_full") || detail.unlocked ? "已解锁" : "未解锁") + "</div></div>" +
-      (pendingOrder ? '<div class="stack-note">当前有待支付订单：' + escapeHtml(pendingOrder.orderNo) + '，可在「我的 > 我的订单」继续支付。</div>' : "") +
+      (pendingOrder ? '<div class="stack-note">当前有待支付订单：' + escapeHtml(pendingOrder.orderNo) + '，可直接点击「继续支付」恢复当前订单。</div>' : "") +
       '</div>' +
       (detail.accessType !== "public" ? '<div class="detail-purchase-list"></div>' : "") +
       '<div class="sticky-action-bar"><button id="detailPrimaryButton" class="primary-button" type="button">' + escapeHtml(primaryAction.text) + '</button><button id="detailBackButton" class="ghost-button" type="button">返回</button></div>' +
@@ -1637,6 +1961,25 @@
             : (detail.product && detail.product.usdtPriceMinor
               ? ' 站外 H5 支持 USDT-TRC20：' + escapeHtml(formatPriceMinor(detail.product.usdtPriceMinor, "USDT")) + '。'
               : '')) + '</p></div>';
+        if (unlockProduct) {
+          purchaseHost.innerHTML +=
+            '<div class="detail-purchase-item"><strong>或单条解锁</strong><p class="detail-note">' +
+            escapeHtml(unlockPendingOrder
+              ? "当前有待支付的单条解锁订单，可直接继续完成支付。"
+              : (unlockProduct.usdtPriceMinor
+                ? "如果你只想观看这一条内容，也可以单条解锁：" + formatPriceMinor(unlockProduct.usdtPriceMinor, "USDT") + "。"
+                : "如果你只想观看这一条内容，也可以直接单条解锁。")) +
+            '</p><button id="detailSecondaryUnlockButton" class="ghost-button" type="button">' +
+            escapeHtml(unlockPendingOrder ? "继续单条解锁" : "单条解锁") +
+            '</button></div>';
+        }
+      } else if (detail.accessType === "single") {
+        purchaseHost.innerHTML =
+          '<div class="detail-purchase-item"><strong>单条解锁</strong><p class="detail-note">' +
+          escapeHtml(pendingOrder
+            ? "当前已存在待支付订单，继续支付后即可观看完整视频，系统不会重复建单。"
+            : "先免费试看，再解锁当前视频的完整内容。") +
+          '</p></div>';
       } else if (detail.accessType === "package") {
         purchaseHost.innerHTML =
           '<div class="detail-purchase-item"><strong>推荐购买方式</strong><p class="detail-note">1. 解锁所属内容包；2. 若你已经拥有该包权益，可直接前往频道。</p></div>';
@@ -1645,12 +1988,52 @@
 
     $("detailPrimaryButton").addEventListener("click", primaryAction.handler);
     const previewUpgradeButton = $("previewUpgradeButton");
-    if (previewUpgradeButton) previewUpgradeButton.addEventListener("click", function () { startPurchase(detail); });
+    if (previewUpgradeButton) previewUpgradeButton.addEventListener("click", function () {
+      if (pendingOrder) {
+        continuePendingOrder(pendingOrder, detail);
+        return;
+      }
+      startPurchase(detail);
+    });
+    const previewSecondaryUnlockButton = $("previewSecondaryUnlockButton");
+    if (previewSecondaryUnlockButton) previewSecondaryUnlockButton.addEventListener("click", function () {
+      if (unlockPendingOrder) {
+        continuePendingOrder(unlockPendingOrder, detail);
+        return;
+      }
+      startPurchase(detail, { product: unlockProduct });
+    });
+    const detailSecondaryUnlockButton = $("detailSecondaryUnlockButton");
+    if (detailSecondaryUnlockButton) detailSecondaryUnlockButton.addEventListener("click", function () {
+      if (unlockPendingOrder) {
+        continuePendingOrder(unlockPendingOrder, detail);
+        return;
+      }
+      startPurchase(detail, { product: unlockProduct });
+    });
     $("detailBackButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
     });
+    const detailDescriptionToggle = $("detailDescriptionToggle");
+    if (detailDescriptionToggle) detailDescriptionToggle.addEventListener("click", function () {
+      const container = $("detailDescription");
+      if (!container) return;
+      const expanded = container.classList.toggle("is-expanded");
+      detailDescriptionToggle.textContent = expanded ? "收起简介" : "展开简介";
+    });
     attachDetailPlayer(detail);
     void prefetchDetailPreview(detail);
+    const shouldAutoPreview = !detail.unlocked && ((playback && !playback.errorClass && playback.action === "preview") || detail.previewUrl);
+    const shouldResumePlayback = !!(state.resumeIntent && state.resumeIntent.contentId === detail.id && state.resumeIntent.autoplay);
+    if (shouldAutoPreview || shouldResumePlayback) {
+      window.setTimeout(function () {
+        if (hasManagedPlayback(detail)) {
+          void startManagedPlayback(detail);
+          return;
+        }
+        playInlineDetailVideo();
+      }, 0);
+    }
   }
 
   function handleBannerAction(banner) {
@@ -1726,20 +2109,30 @@
     renderHome();
   }
 
-  async function loadLibrary() {
+  async function loadLibrary(options) {
     if (state.library.loading) return;
     state.library.loading = true;
     renderLibrary();
     try {
+      const append = !!(options && options.append);
+      const nextPage = append ? Math.max(1, Number(state.library.pagination.page || 1) + 1) : 1;
+      const pageSize = getLibraryPageSize();
       const params = new URLSearchParams({
-        page: "1",
-        pageSize: "50",
+        page: String(nextPage),
+        pageSize: String(pageSize),
         sort: state.library.sort,
       });
       if (state.library.categoryId) params.set("categoryId", state.library.categoryId);
+      if (String(state.library.search || "").trim()) params.set("keyword", String(state.library.search || "").trim());
       const data = await apiCall("/api/contents?" + params.toString());
-      state.library.items = data.items || [];
+      const items = data.items || [];
+      state.library.items = append
+        ? state.library.items.concat(items.filter(function (item) {
+            return !(state.library.items || []).some(function (existing) { return existing.id === item.id; });
+          }))
+        : items;
       state.library.loaded = true;
+      state.library.pagination = data.pagination || { page: nextPage, pageSize: pageSize, total: state.library.items.length, totalPages: 1 };
     } catch (err) {
       $("libraryState").textContent = "片库加载失败：" + apiText(err);
     } finally {
@@ -1906,6 +2299,9 @@
     state.player.managed = false;
     state.player.currentQuality = "auto";
     state.player.bufferStartedAt = 0;
+    state.player.previewHintShown = false;
+    state.player.paywallShown = false;
+    state.player.previewCompletionTracked = false;
 
     video.addEventListener("loadedmetadata", function () {
       if (resumePosition > 0 && Number.isFinite(video.duration) && resumePosition < Math.max(video.duration - 1, 1)) {
@@ -1921,7 +2317,7 @@
     video.addEventListener("play", function () {
       if (!state.player.started) {
         state.player.started = true;
-        trackAnalytics(state.player.managed ? "playback_started" : "preview_started", {
+        trackAnalytics(getPlaybackAnalyticsEventName("started"), {
           contentId: detail.id,
           deliveryVariant: state.player.deliveryVariant || "preview",
         });
@@ -1981,6 +2377,31 @@
     video.addEventListener("timeupdate", function () {
       const current = Math.floor(video.currentTime || 0);
       if (current <= 0) return;
+      const isPreviewPlayback = !detail.unlocked && isPreviewPlaybackActive();
+      if (isPreviewPlayback) {
+        const previewDuration = getPreviewDurationSeconds(detail);
+        const remainingSeconds = Math.max(0, previewDuration - current);
+        const hint = $("previewEndingHint");
+        const countdown = $("previewEndingCountdown");
+        if (!state.player.previewHintShown && previewDuration > 10 && current >= previewDuration - 10 && current < previewDuration) {
+          state.player.previewHintShown = true;
+          if (hint) hint.classList.remove("is-hidden");
+          if (countdown) countdown.textContent = String(Math.max(1, remainingSeconds));
+          trackAnalytics("preview_upgrade_shown", {
+            contentId: detail.id,
+            accessType: detail.accessType,
+            secondsRemaining: Math.max(1, remainingSeconds),
+          });
+        } else if (state.player.previewHintShown && !state.player.paywallShown && countdown) {
+          countdown.textContent = String(Math.max(0, remainingSeconds));
+        }
+        if (!state.player.paywallShown && current >= previewDuration) {
+          completePreviewPlayback(detail, Math.min(current, previewDuration), video.duration || detail.durationSeconds || previewDuration);
+          try { video.pause(); } catch (_) {}
+          showPreviewUpgradeGate(detail, { trigger: "preview_limit", positionSec: current });
+          return;
+        }
+      }
       if (!video.__debugReportedOverFive && current > 5) {
         video.__debugReportedOverFive = true;
       }
@@ -2009,22 +2430,25 @@
     });
 
     video.addEventListener("ended", function () {
-      trackAnalytics(state.player.managed ? "playback_completed" : "preview_completed", {
-        contentId: detail.id,
-        deliveryVariant: state.player.deliveryVariant || "preview",
-      });
-      writePlayerProgress(detail, {
-        eventName: "complete",
-        positionSec: video.duration || video.currentTime || detail.durationSeconds || 0,
-        durationSec: video.duration || detail.durationSeconds || null,
-        quality: state.player.currentQuality || "auto",
-      });
-      if (!detail.unlocked && detail.product && (detail.accessType === "membership" || detail.accessType === "package")) {
-        const gate = $("previewUpgradeGate");
-        if (gate) {
-          gate.classList.remove("is-hidden");
-          trackAnalytics("paywall_shown", { contentId: detail.id, accessType: detail.accessType });
-        }
+      if (isPreviewPlaybackActive()) {
+        completePreviewPlayback(detail, video.duration || video.currentTime || detail.durationSeconds || 0, video.duration || detail.durationSeconds || null);
+      } else {
+        trackAnalytics("playback_completed", {
+          contentId: detail.id,
+          deliveryVariant: state.player.deliveryVariant || "preview",
+        });
+        writePlayerProgress(detail, {
+          eventName: "complete",
+          positionSec: video.duration || video.currentTime || detail.durationSeconds || 0,
+          durationSec: video.duration || detail.durationSeconds || null,
+          quality: state.player.currentQuality || "auto",
+        });
+      }
+      if (!detail.unlocked && detail.product && (detail.accessType === "membership" || detail.accessType === "package" || detail.accessType === "single")) {
+        showPreviewUpgradeGate(detail, {
+          trigger: "ended",
+          positionSec: Math.floor(video.duration || video.currentTime || 0),
+        });
       }
     });
   }
@@ -2050,9 +2474,9 @@
     return product.usdtPriceMinor != null || String(product.currency || "").toUpperCase() === "USDT";
   }
 
-  function choosePurchaseMethod(detail) {
+  function choosePurchaseMethod(detail, productOverride) {
     return new Promise(function (resolve) {
-      const product = detail && detail.product ? detail.product : null;
+      const product = productOverride || (detail && detail.product ? detail.product : null);
       const starsAvailable = isStarsProduct(product);
       const usdtAvailable = hasUsdtCheckout(product);
       if (state.env.isTelegram && tg && typeof tg.showPopup === "function" && starsAvailable && usdtAvailable) {
@@ -2076,49 +2500,60 @@
     });
   }
 
-  async function startPurchase(detail) {
-    if (!detail || !detail.product) {
+  async function startPurchase(detail, options) {
+    const product = options && options.product ? options.product : (detail && detail.product ? detail.product : null);
+    if (!detail || !product) {
       showInlineMessage("当前内容没有可用商品。");
       return;
     }
-    const paymentMethod = await choosePurchaseMethod(detail);
+    const pendingOrder = pendingOrderForProduct(product.id);
+    if (pendingOrder) {
+      continuePendingOrder(pendingOrder, detail);
+      return;
+    }
+    const paymentMethod = await choosePurchaseMethod(detail, product);
     if (!paymentMethod) {
       showInlineMessage("当前内容暂时没有可用的支付方式。");
       return;
     }
     trackAnalytics("payment_method_selected", {
       contentId: detail.id,
-      productId: detail.product.id,
+      productId: product.id,
       paymentMethod: paymentMethod === "stars" ? "telegram_stars" : "usdt_trc20",
     });
-    trackAnalytics("unlock_clicked", { productId: detail.product.id, paymentMethod: paymentMethod === "stars" ? "telegram_stars" : "usdt_trc20" });
+    trackAnalytics("unlock_clicked", { productId: product.id, paymentMethod: paymentMethod === "stars" ? "telegram_stars" : "usdt_trc20" });
     if (paymentMethod === "stars") {
       trackAnalytics("checkout_open", {
         contentId: detail.id,
-        productId: detail.product.id,
+        productId: product.id,
         paymentMethod: "telegram_stars",
       });
-      await createStarsOrderAndPay(detail);
+      await createStarsOrderAndPay(detail, product);
       return;
     }
     trackAnalytics("checkout_open", {
       contentId: detail.id,
-      productId: detail.product.id,
+      productId: product.id,
       paymentMethod: "usdt_trc20",
     });
-    window.location.assign("/h5-pay.html?productId=" + encodeURIComponent(detail.product.id) + "&paymentMethod=usdt");
+    openCheckoutPage({ productId: product.id, paymentMethod: "usdt", returnTo: getCheckoutReturnTarget(detail) });
   }
 
-  async function createStarsOrderAndPay(detail) {
+  async function createStarsOrderAndPay(detail, productOverride) {
+    const product = productOverride || (detail && detail.product ? detail.product : null);
     if (!tg || typeof tg.openInvoice !== "function") {
       showInlineMessage("请在 Telegram Mini App 内使用 Stars 支付。");
+      return;
+    }
+    if (!product) {
+      showInlineMessage("当前内容没有可用商品。");
       return;
     }
     let created;
     try {
       created = await apiCall("/api/orders/stars", {
         method: "POST",
-        body: JSON.stringify({ productId: detail.product.id }),
+        body: JSON.stringify({ productId: product.id }),
       });
     } catch (err) {
       showInlineMessage("创建 Stars 订单失败：" + apiText(err));
@@ -2162,10 +2597,10 @@
     const isDetail = routeState.view === "detail";
     const isHistory = routeState.view === "history";
     const titleMap = {
-      home: ["同频", ""],
-      library: ["片库", "搜索、分类与筛选"],
-      membership: ["会员", "会员主频道与内容包"],
-      me: ["我的", "资产、订单、频道入口与绑定"],
+      home: ["同频", "免费试看，解锁后继续观看"],
+      library: ["片库", "按标题、简介与标签查找内容"],
+      membership: ["会员", "查看会员权益、内容包与续费入口"],
+      me: ["我的", "查看权益、订单和继续观看记录"],
     };
     const isHome = !isDetail && !isHistory && routeState.tab === "home";
 
@@ -2174,10 +2609,10 @@
     $("appHeader").classList.toggle("is-home", isHome);
     $("headerTitle").textContent = isDetail ? "视频详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]);
     $("headerSubtitle").textContent = isDetail
-      ? "查看权益与购买方式"
+      ? "试看后可直接解锁完整内容"
       : isHistory
         ? "按最近播放时间排序，可删除单条或清空记录"
-      : (isHome ? "真实表达，在理解与边界中被看见" : titleMap[routeState.tab][1]);
+      : titleMap[routeState.tab][1];
     $("headerSubtitle").hidden = false;
     $("headerEyebrow").hidden = isHome;
 
@@ -2287,6 +2722,14 @@
       if (state.watch.loading) return;
       loadWatchProgress((state.watch.pagination.page || 1) + 1, true);
     });
+    $("libraryCategoryMoreButton").addEventListener("click", function () {
+      state.library.showExtraCategories = !state.library.showExtraCategories;
+      renderLibraryCategories();
+    });
+    $("libraryLoadMoreButton").addEventListener("click", function () {
+      if (state.library.loading) return;
+      loadLibrary({ append: true });
+    });
     $("watchHistoryClearButton").addEventListener("click", function () {
       clearAllWatchHistory();
     });
@@ -2302,7 +2745,10 @@
     });
     $("librarySearchInput").addEventListener("input", function (event) {
       state.library.search = event.target.value || "";
-      renderLibrary();
+      if (librarySearchTimer) window.clearTimeout(librarySearchTimer);
+      librarySearchTimer = window.setTimeout(function () {
+        loadLibrary();
+      }, 300);
     });
     $("librarySortSegment").querySelectorAll(".segment-button").forEach(function (button) {
       button.addEventListener("click", function () {
@@ -2321,6 +2767,11 @@
     });
     window.addEventListener("hashchange", function () {
       routeTo(parseHash());
+    });
+    window.addEventListener("scroll", maybeLoadLibraryOnScroll, { passive: true });
+    window.addEventListener("resize", function () {
+      renderLibrary();
+      maybeLoadLibraryOnScroll();
     });
     document.addEventListener("visibilitychange", function () {
       if (document.visibilityState === "hidden" && state.player.video && state.player.contentId) {

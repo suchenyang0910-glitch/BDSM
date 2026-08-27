@@ -9,6 +9,7 @@ import { getPlaybackStatusSummary } from "../services/playbackSessions.js";
 
 const contentsQuerySchema = z.object({
   categoryId: z.string().optional(),
+  keyword: z.string().trim().max(80).optional(),
   type: z.enum(["public", "single", "package", "membership"]).optional(),
   sort: z.enum(["newest", "featured", "popular"]).default("newest"),
   page: z.coerce.number().int().min(1).default(1),
@@ -61,6 +62,12 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       where.categories = { some: { categoryId: query.categoryId } };
     }
     if (query.categoryId === "featured") where.isFeatured = true;
+    if (query.keyword) {
+      where.OR = [
+        { title: { contains: query.keyword, mode: "insensitive" } },
+        { description: { contains: query.keyword, mode: "insensitive" } },
+      ];
+    }
 
     const orderBy: any[] = [];
     if (query.sort === "featured") orderBy.push({ featuredSort: "asc" });
@@ -137,6 +144,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         coverUrl: resolvePublishedCoverUrl(c),
         description: c.description || "",
         previewUrl: c.previewUrl || null,
+        previewDurationSeconds: c.previewDurationSeconds ?? 60,
         duration: formatDuration(c.durationSeconds),
         durationSeconds: c.durationSeconds,
         accessType: c.accessType,
@@ -296,7 +304,26 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       platformSeoKeywords: platformMetadata?.seoKeywords,
       platformGeoKeywords: platformMetadata?.geoKeywords,
     });
-    const product = content.product || (content.accessType === "membership" ? defaultMembershipProduct : null);
+    const serializeProduct = (product: any) => product
+      ? {
+          id: product.id,
+          title: product.title,
+          priceMinor: product.priceMinor.toString(),
+          currency: product.currency,
+          usdtPriceMinor: product.usdtPriceMinor?.toString() ?? null,
+          type: product.type,
+          durationDays: product.durationDays,
+        }
+      : null;
+
+    const unlockProduct =
+      content.accessType === "membership" && content.product && content.product.type === "single"
+        ? content.product
+        : null;
+    const product =
+      content.accessType === "membership"
+        ? defaultMembershipProduct
+        : content.product;
     const playbackStatus = (await getPlaybackStatusSummary(prisma, playbackConfig, {
       contentId: content.id,
       userId: uid,
@@ -307,22 +334,15 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       coverUrl: resolvePublishedCoverUrl(content),
       description: content.description || "",
       previewUrl: content.previewUrl || null,
+      previewDurationSeconds: content.previewDurationSeconds ?? 60,
       duration: formatDuration(content.durationSeconds),
       durationSeconds: content.durationSeconds,
       accessType: content.accessType,
       tags,
       categories: content.categories.map((c: any) => c.category),
       package: content.package,
-      product: product
-        ? {
-            id: product.id,
-            priceMinor: product.priceMinor.toString(),
-            currency: product.currency,
-            usdtPriceMinor: product.usdtPriceMinor?.toString() ?? null,
-            type: product.type,
-            durationDays: product.durationDays,
-          }
-        : null,
+      product: serializeProduct(product),
+      unlockProduct: serializeProduct(unlockProduct),
       unlocked,
       ownedBy,
       playbackStatus,

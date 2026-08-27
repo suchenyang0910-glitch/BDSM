@@ -145,8 +145,9 @@ h3 {
 }
 
 .app-header.is-home .header-copy {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .app-header.is-home .header-subtitle {
@@ -494,6 +495,12 @@ img.is-image-unavailable {
 
 .content-card {
   overflow: hidden;
+  cursor: pointer;
+}
+
+.content-card:focus-visible {
+  outline: 2px solid rgba(166, 107, 255, 0.85);
+  outline-offset: 2px;
 }
 
 .cover-button {
@@ -549,7 +556,7 @@ img.is-image-unavailable {
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  min-height: 128px;
+  min-height: 116px;
 }
 
 .card-tag {
@@ -559,8 +566,12 @@ img.is-image-unavailable {
 }
 
 .card-title {
+  display: -webkit-box;
+  overflow: hidden;
   font-size: 15px;
   line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .card-desc {
@@ -578,10 +589,6 @@ img.is-image-unavailable {
   font-size: 12px;
 }
 
-.card-action {
-  margin-top: auto;
-}
-
 #homeView .content-card {
   border-radius: 14px;
 }
@@ -594,8 +601,7 @@ img.is-image-unavailable {
 
 #homeView .card-desc,
 #homeView .card-price,
-#homeView .card-tag,
-#homeView .card-meta {
+#homeView .card-tag {
   display: none;
 }
 
@@ -608,11 +614,21 @@ img.is-image-unavailable {
 }
 
 #homeView .card-meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: auto;
   font-size: 11px;
 }
 
-#homeView .card-action {
-  display: none;
+#homeView .card-access {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(166, 107, 255, 0.18);
+  color: var(--text-primary);
+  font-weight: 700;
 }
 
 .resume-card,
@@ -748,6 +764,27 @@ img.is-image-unavailable {
   padding-bottom: 4px;
 }
 
+.chip-row-secondary {
+  padding-top: 2px;
+}
+
+.library-filter-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.library-filter-actions .ghost-button {
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 999px;
+}
+
+.library-filter-actions .ghost-button.is-active {
+  border-color: rgba(166, 107, 255, 0.28);
+  background: rgba(166, 107, 255, 0.16);
+  color: var(--text-primary);
+}
+
 .chip {
   min-height: 40px;
   padding: 8px 12px;
@@ -877,6 +914,26 @@ img.is-image-unavailable {
   margin-top: 16px;
 }
 
+.detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.detail-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .detail-description {
   margin-top: 14px;
   padding: 14px;
@@ -885,6 +942,27 @@ img.is-image-unavailable {
   border: 1px solid var(--border);
   color: var(--text-secondary);
   white-space: pre-wrap;
+}
+
+.detail-description-copy {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.7;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.detail-description.is-expanded .detail-description-copy {
+  display: block;
+}
+
+.detail-description-toggle {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--brand-soft);
+  font-weight: 700;
 }
 
 .detail-media {
@@ -927,6 +1005,27 @@ img.is-image-unavailable {
   object-fit: contain;
 }
 
+.detail-preview-hint {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%);
+  padding: 8px 12px;
+  border: 1px solid rgba(244, 189, 106, 0.35);
+  border-radius: 999px;
+  background: rgba(26, 20, 35, 0.88);
+  color: var(--state-warning);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+.detail-preview-hint strong {
+  color: var(--text-primary);
+}
+
 /* This conversion layer only appears after the free preview has ended.
    It is kept inside the player so the next action is immediate and focused. */
 .detail-preview-gate {
@@ -963,6 +1062,12 @@ img.is-image-unavailable {
   color: var(--text-primary);
   font-size: clamp(17px, 3vw, 22px);
   line-height: 1.35;
+}
+
+.detail-preview-gate-note {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .detail-preview-gate-copy .primary-button {
@@ -1063,6 +1168,10 @@ img.is-image-unavailable {
   backdrop-filter: blur(18px);
 }
 
+.desktop-nav-brand {
+  display: none;
+}
+
 .nav-item {
   position: relative;
   min-height: 64px;
@@ -1099,6 +1208,18 @@ img.is-image-unavailable {
 .is-hidden,
 [hidden] {
   display: none !important;
+}
+
+#libraryLoadMoreButton {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.library-infinite-sentinel {
+  padding: 14px 0 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
 }
 
 .install-guide {
@@ -1221,6 +1342,26 @@ img.is-image-unavailable {
       linear-gradient(180deg, rgba(28, 25, 39, 0.98), rgba(18, 17, 26, 0.98)),
       var(--bg-surface);
     box-shadow: var(--shadow);
+  }
+
+  .desktop-nav-brand {
+    display: grid;
+    gap: 4px;
+    padding: 4px 12px 12px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .desktop-nav-brand-mark {
+    color: var(--text-primary);
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+  }
+
+  .desktop-nav-brand-copy {
+    color: var(--text-secondary);
+    font-size: 12px;
   }
 
   .nav-item {

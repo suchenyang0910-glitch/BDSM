@@ -159,9 +159,9 @@ test("[S1-0] GET /admin/contents 与详情包含商品 BigInt 金额时仍返回
 });
 
 // ============================================================
-// [A] single 内容全局禁止：CREATE 409
+// [A] single 内容允许创建：走站内 HLS 解锁，不再被 CMS 全局拦截
 // ============================================================
-test("[S1-A] single 类型内容 CREATE → 409 single_delivery_not_enabled，响应体无敏感泄露", async () => {
+test("[S1-A] single 类型内容 CREATE → 201，响应体无敏感泄露", async () => {
   const app = await buildTestApp(prisma);
   try {
     const editorCookie = await loginAdmin(app, "editor");
@@ -178,21 +178,53 @@ test("[S1-A] single 类型内容 CREATE → 409 single_delivery_not_enabled，�
         reason: "S1-A 创建单条内容",
       },
     });
-    assert.equal(resp.statusCode, 409, `single create expected 409, got ${resp.statusCode}: ${resp.body}`);
+    assert.equal(resp.statusCode, 201, `single create expected 201, got ${resp.statusCode}: ${resp.body}`);
     const body = resp.json();
-    assert.equal(body.error, "single_delivery_not_enabled");
-    assertNoSensitiveLeaks(resp.body, "single create 409 resp body");
+    assert.equal(body.ok, true);
+    assert.equal(typeof body.id, "string");
+    assertNoSensitiveLeaks(resp.body, "single create resp body");
   } finally {
     await app.close();
   }
 });
 
 // ============================================================
-// [B] 已有的 single 草稿：PUBLISH 409
+// [B] 已有的 single 草稿：可发布，并且只会创建免费流量入口任务
 // ============================================================
-test("[S1-B] 既有 single 草稿 (topic-03-draft) 发布 → 409 single_delivery_not_enabled", async () => {
+test("[S1-B] 既有 single 草稿 (topic-03-draft) 发布 → 200/202，且不创建私密完整频道任务", async () => {
   const app = await buildTestApp(prisma);
   try {
+    process.env.CRYPTO_CHAT_ID_AES_KEY = "12345678901234567890123456789012";
+    const managedFreeChannelId = BigInt("-1002000000001");
+    await prisma.adminManagedChannel.create({
+      data: {
+        chatIdHmac: chatIdIndexKey(managedFreeChannelId),
+        chatIdCiphertextB64: encryptChatIdAesGcm(managedFreeChannelId),
+        deprecatedChatIdBig: managedFreeChannelId,
+        chatType: "channel",
+        title: "S1-B Free Preview",
+        isPrivate: false,
+        purpose: "free_preview",
+        source: "manual_add",
+        publicUrl: "https://t.me/s1_b_free_preview",
+        botIsAdmin: true,
+        botCanPostMessages: true,
+      },
+    });
+    await prisma.videoAsset.create({
+      data: {
+        id: "s1b-cover-asset",
+        contentId: TEST_KNOWN_IDS.contentDraft,
+        kind: "cover",
+        objectKey: `covers/${TEST_KNOWN_IDS.contentDraft}/poster.jpg`,
+        originalFilename: "poster.jpg",
+        mimeType: "image/jpeg",
+        byteSize: BigInt(2048),
+        sha256: "b".repeat(64),
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
     const editorCookie = await loginAdmin(app, "editor");
     const resp = await app.inject({
       method: "POST",
@@ -200,10 +232,17 @@ test("[S1-B] 既有 single 草稿 (topic-03-draft) 发布 → 409 single_deliver
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
       payload: { reason: "[S1-B] 尝试发布 single" },
     });
-    assert.equal(resp.statusCode, 409, `single publish expected 409, got ${resp.statusCode}: ${resp.body}`);
+    assert.ok([200, 202].includes(resp.statusCode), `single publish expected 200/202, got ${resp.statusCode}: ${resp.body}`);
     const body = resp.json();
-    assert.equal(body.error, "single_delivery_not_enabled");
-    assertNoSensitiveLeaks(resp.body, "single publish 409 resp body");
+    assert.equal(body.ok, true);
+    assert.equal(body.status, "published");
+    const jobs = await prisma.telegramPublishJob.findMany({
+      where: { contentId: TEST_KNOWN_IDS.contentDraft },
+      select: { channelKind: true },
+    });
+    assert.ok(jobs.length >= 1, "single publish should create free preview distribution jobs");
+    assert.deepEqual([...new Set(jobs.map((job: any) => job.channelKind))], ["public_free_preview"]);
+    assertNoSensitiveLeaks(resp.body, "single publish resp body");
     await assertAuditLogsNoLeak(prisma, TEST_KNOWN_IDS.contentDraft);
   } finally {
     await app.close();

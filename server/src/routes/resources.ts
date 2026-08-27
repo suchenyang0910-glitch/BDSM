@@ -67,8 +67,8 @@ export default async function resourceRoutes(fastify: FastifyInstance) {
 
     if (content.accessType === "single") {
       return reply.status(409).send({
-        error: "single_delivery_not_enabled",
-        message: "单篇购买（single）首期不支持，共享 VIP 频道无法做到只开放单条内容。",
+        error: "single_channel_delivery_unavailable",
+        message: "单篇购买内容仅支持站内 HLS 受控播放，当前不提供 Telegram 频道备用交付。",
       });
     }
 

@@ -49,7 +49,7 @@ export const EVENT_BATCH_SCHEMA = z.object({
 
 const ENTRY_SOURCE_RE = /^[a-z0-9_\-]{1,32}$/i;
 const SOURCE_MODULE_RE = /^[a-z0-9_\-]{1,32}$/i;
-const PAGE_NAME_VALUES = ["home", "discover", "membership", "orders", "me", "detail"] as const;
+const PAGE_NAME_VALUES = ["home", "discover", "library", "membership", "orders", "me", "detail", "watch_history"] as const;
 const PAYMENT_METHOD_VALUES = ["telegram_stars", "usdt_trc20", "manual"] as const;
 const RESOURCE_TYPE_VALUES = ["content", "package", "membership_channel"] as const;
 const DELIVERY_TYPE_VALUES = ["redirect_302", "telegram_dm", "manual"] as const;
@@ -235,7 +235,7 @@ export function sanitizeAnalyticsEvent(input: {
         platform,
         propertiesJson: {
           contentIdHmac: analyticsIdHmac("content", payload.contentId),
-          accessType: normalizeEnumValue(payload.accessType, ["membership", "package"]) ?? "membership",
+          accessType: normalizeEnumValue(payload.accessType, ["membership", "package", "single"]) ?? "membership",
         },
       };
     case "playback_error":

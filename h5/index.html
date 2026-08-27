@@ -24,9 +24,9 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
           </button>
           <div class="header-copy">
-            <p id="headerEyebrow" class="eyebrow">INTUNE VOD</p>
+            <p id="headerEyebrow" class="eyebrow">SAMEWAVE</p>
             <h1 id="headerTitle">同频</h1>
-            <p id="headerSubtitle" class="header-subtitle">视频点播目录、会员权益与 Telegram 频道交付</p>
+            <p id="headerSubtitle" class="header-subtitle">免费试看，解锁后继续观看</p>
           </div>
         </div>
         <div class="header-actions">
@@ -113,6 +113,10 @@
               <input id="librarySearchInput" type="search" placeholder="搜索标题或描述" autocomplete="off" />
             </label>
             <div id="libraryCategoryList" class="chip-row"></div>
+            <div class="library-filter-actions">
+              <button id="libraryCategoryMoreButton" class="ghost-button is-hidden" type="button" aria-expanded="false" aria-controls="libraryCategoryExtras">更多筛选</button>
+            </div>
+            <div id="libraryCategoryExtras" class="chip-row chip-row-secondary is-hidden"></div>
             <div id="librarySortSegment" class="segment" role="tablist" aria-label="片库排序">
               <button type="button" class="segment-button is-active" data-sort="newest">最新</button>
               <button type="button" class="segment-button" data-sort="popular">最受欢迎</button>
@@ -121,6 +125,8 @@
           </div>
           <div id="libraryState" class="inline-state"></div>
           <div id="libraryGrid" class="content-grid"></div>
+          <div id="libraryInfiniteSentinel" class="library-infinite-sentinel is-hidden" aria-hidden="true">继续上拉加载更多</div>
+          <button id="libraryLoadMoreButton" class="ghost-button is-hidden" type="button">加载更多</button>
         </section>
 
         <section id="membershipView" class="tab-view is-hidden">
@@ -257,6 +263,10 @@
       </aside>
 
       <nav id="bottomNav" class="bottom-nav" aria-label="底部导航">
+        <div class="desktop-nav-brand" aria-hidden="true">
+          <span class="desktop-nav-brand-mark">同频</span>
+          <span class="desktop-nav-brand-copy">Samewave VOD</span>
+        </div>
         <button class="nav-item is-active" data-tab="home" type="button">
           <span class="nav-indicator"></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5L12 5l8 6.5V20a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z"></path></svg>
@@ -281,13 +291,13 @@
     </div>
 
     <template id="contentCardTemplate">
-      <article class="content-card">
-        <button class="cover-button" type="button">
+      <article class="content-card" tabindex="0" role="button">
+        <div class="cover-button">
           <div class="card-cover">
             <img class="cover-image is-hidden" alt="" loading="lazy" />
             <span class="cover-duration"></span>
           </div>
-        </button>
+        </div>
         <div class="card-body">
           <p class="card-tag"></p>
           <h3 class="card-title"></h3>
@@ -296,7 +306,6 @@
             <span class="card-price"></span>
             <span class="card-access"></span>
           </div>
-          <button class="card-action primary-button" type="button"></button>
         </div>
       </article>
     </template>

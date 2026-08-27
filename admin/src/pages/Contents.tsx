@@ -587,6 +587,7 @@ const STATUS_TAG: Record<ContentStatus, { color: string; label: string }> = {
 
 const ACCESS_TYPE_OPTIONS = [
   { value: "public", label: "公开免费" },
+  { value: "single", label: "单篇解锁" },
   { value: "membership", label: "会员专享" },
   { value: "package", label: "打包内含" },
 ];
@@ -761,8 +762,7 @@ const ContentsPage: React.FC = () => {
     checks.push({
       key: "accessType",
       label: "访问类型合法",
-      passed: accessTypeValue === "public" || accessTypeValue === "membership" || accessTypeValue === "package",
-      detail: accessTypeValue === "single" ? "single（单篇购买）首期不支持，需改为 membership 或 package" : undefined,
+      passed: accessTypeValue === "public" || accessTypeValue === "single" || accessTypeValue === "membership" || accessTypeValue === "package",
     });
     checks.push({
       key: "categories",
@@ -1502,11 +1502,6 @@ const ContentsPage: React.FC = () => {
   const onDrawerSubmit = async () => {
     try {
       const values = await form.validateFields();
-      const at: AccessTypeForSelect = values.accessType;
-      if (at === "single") {
-        message.error("单篇购买（single）首期不支持新建或编辑，请改为会员专享或内容包内含");
-        return;
-      }
       setSubmitting(true);
       // VOD 阶段的封面由 VideoAsset 按 contentId 归属，不能写进旧
       // MediaAsset 外键（否则会把一个有效的 VOD cover 误判为“不存在”）。
@@ -1651,9 +1646,6 @@ const ContentsPage: React.FC = () => {
 
   const confirmPublish = (row: ContentItem) => {
     const extraWarnings: string[] = [];
-    if (row.accessType === "single") {
-      extraWarnings.push("· 该内容为 single（单篇购买），首期已禁止发布此类型");
-    }
     if (row.accessType === "package") {
       if (!row.packageId) extraWarnings.push("· package 类型未绑定内容包");
     }
@@ -1878,7 +1870,7 @@ const ContentsPage: React.FC = () => {
               <Tag color="red">已锁定</Tag>
             </Tooltip>
           )}
-          {r.status === "draft" && canEdit && r.accessType !== "single" && (
+          {r.status === "draft" && canEdit && (
             <Button
               size="small"
               icon={<SendOutlined />}
@@ -1887,7 +1879,7 @@ const ContentsPage: React.FC = () => {
               提交审核
             </Button>
           )}
-          {(r.status === "draft" || r.status === "in_review" || r.status === "scheduled") && canPublish && r.accessType !== "single" && (
+          {(r.status === "draft" || r.status === "in_review" || r.status === "scheduled") && canPublish && (
             <Button
               size="small"
               type="primary"
@@ -1923,7 +1915,7 @@ const ContentsPage: React.FC = () => {
           <Space direction="vertical" size={4}>
             <span>· 每条内容只上传一份完整源视频；系统会自动生成独立私有试看 HLS，未付费不会拿到完整版播放资产。</span>
             <span>· Web 平台播放为主，Telegram 私密频道仍保留为备用完整交付链路。</span>
-            <span>· 单条售卖（single）首期关闭，避免共享频道造成权益越界。</span>
+            <span>· single（单篇解锁）走站内 HLS 权益校验；Telegram 私密频道不承载单条完整交付。</span>
           </Space>
         }
       />
@@ -1959,7 +1951,6 @@ const ContentsPage: React.FC = () => {
               {ACCESS_TYPE_OPTIONS.map((o) => (
                 <Option key={o.value} value={o.value}>{o.label}</Option>
               ))}
-              <Option value="single">单篇购买 · 旧数据</Option>
             </Select>
             <Segmented<OpsTagFilter>
               options={[
@@ -2017,7 +2008,7 @@ const ContentsPage: React.FC = () => {
             // ==================== Tab 1：基本信息（原 Form + 发布前检查） ====================
             {
               key: "basic",
-              label: <Space><span>① 视频信息</span>{accessTypeValue === "single" && <Tag color="red">single·硬禁</Tag>}</Space>,
+              label: <Space><span>① 视频信息</span>{accessTypeValue === "single" && <Tag color="blue">single·站内解锁</Tag>}</Space>,
               children: (
                 <Form form={form} layout="vertical" preserve={false}>
                   <Alert
@@ -2055,17 +2046,10 @@ const ContentsPage: React.FC = () => {
                       rules={[{ required: true }]}
                       style={{ flex: 1 }}
                     >
-                      <Select
-                        disabled={!!editing && editing.accessType === "single"}
-                      >
+                      <Select>
                         {ACCESS_TYPE_OPTIONS.map((o) => (
                           <Option key={o.value} value={o.value}>{o.label}</Option>
                         ))}
-                        <Option value="single" disabled>
-                          <Tooltip title="首期已硬禁 single，不能通过共享频道交付单条视频。请改用 membership 或 package。">
-                            <span style={{ color: "#999", textDecoration: "line-through" }}>单篇购买（single · 已禁用）</span>
-                          </Tooltip>
-                        </Option>
                       </Select>
                     </Form.Item>
                     <Form.Item name="durationSeconds" label="时长（秒）" style={{ flex: 1 }}>
@@ -2086,20 +2070,20 @@ const ContentsPage: React.FC = () => {
                     />
                   )}
 
-                  {accessTypeValue !== "single" && (
-                    <Space direction="vertical" size={12} style={{ width: "100%", marginBottom: 12 }}>
-                      <Alert
-                        type="info"
-                        showIcon
-                        icon={<InfoCircleOutlined />}
-                        message={
-                          accessTypeValue === "public"
-                            ? "公开内容会基于完整源视频自动生成试看 HLS；未付费用户不会拿到完整版播放会话。"
+                  <Space direction="vertical" size={12} style={{ width: "100%", marginBottom: 12 }}>
+                    <Alert
+                      type="info"
+                      showIcon
+                      icon={<InfoCircleOutlined />}
+                      message={
+                        accessTypeValue === "public"
+                          ? "公开内容会基于完整源视频自动生成试看 HLS；未付费用户不会拿到完整版播放会话。"
+                          : accessTypeValue === "single"
+                            ? "single 会走站内 HLS 单条权益校验；不会向 Telegram 私密频道投放单条完整视频。"
                             : "完整视频上传并转码后，未付费用户只会获得试看播放会话；已购/会员用户才会获得完整版会话。"
-                        }
-                      />
-                    </Space>
-                  )}
+                      }
+                    />
+                  </Space>
 
                   <Card
                     size="small"
@@ -2256,24 +2240,39 @@ const ContentsPage: React.FC = () => {
                         description="无需填写商品 ID。用户购买月度会员后即可观看全部会员专享内容。"
                         style={{ flex: 1 }}
                       />
+                    ) : accessTypeValue === "single" ? (
+                      <Form.Item
+                        name="productId"
+                        label="单篇商品 ID（必填）"
+                        rules={[{ required: true, message: "single 类型必须绑定单篇商品" }]}
+                        style={{ flex: 1 }}
+                      >
+                        <Input placeholder="绑定 type=single 的商品 ID" />
+                      </Form.Item>
                     ) : accessTypeValue === "public" ? (
                       <Form.Item name="productId" label="关联商品 ID（可选，分析用）" style={{ flex: 1 }}>
                         <Input placeholder="公开内容通常留空" />
                       </Form.Item>
                     ) : null}
 
-                    {accessTypeValue === "single" && editing && editing.accessType === "single" ? (
-                      <Alert type="error" showIcon message="single（单篇购买）首期已停止，请先将访问类型改为 membership 或 package" style={{ flex: 1 }} />
+                    {accessTypeValue === "single" ? (
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="single 将以站内完整播放为主"
+                        description="用户支付后会获得当前内容的 content entitlement；若 Web 完整播放异常，不会自动退回共享频道交付。"
+                        style={{ flex: 1 }}
+                      />
                     ) : null}
                   </Space>
 
                   {editing?.accessType === "single" && (
                     <Alert
-                      type="warning"
+                      type="info"
                       showIcon
                       icon={<InfoCircleOutlined />}
-                      message="该内容为历史 single 数据"
-                      description="为避免共享 VIP 频道造成权益越界，首期不再支持 single 交付。建议改为 membership 或 package 后重新发布。"
+                      message="该内容为 single 单篇解锁"
+                      description="当前版本支持站内 HLS 单条解锁；免费流量入口仍只投放封面、简介与详情页深链，不投放完整视频文件。"
                     />
                   )}
 
