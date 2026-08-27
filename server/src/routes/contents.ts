@@ -47,8 +47,21 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     // also bypass the site's image and privacy controls.
     const legacyCover = content.coverAsset?.kind === "cover_image" &&
       content.coverAsset?.status === "ready" &&
-      !!content.coverAsset?.storageKey;
+      (!!content.coverAsset?.storageKey || !!content.coverAsset?.storagePublicUrl);
     return cover || legacyCover ? `/api/contents/${encodeURIComponent(content.id)}/cover` : null;
+  }
+
+  function verifiedLegacyCoverPublicUrl(asset: any): string | null {
+    if (asset?.kind !== "cover_image" || asset?.status !== "ready") return null;
+    const raw = typeof asset.storagePublicUrl === "string" ? asset.storagePublicUrl.trim() : "";
+    // Historical cover images predate the controlled VOD key convention. The
+    // URL is read only from a verified database asset, never from a request.
+    try {
+      const parsed = new URL(raw);
+      return parsed.protocol === "https:" && parsed.hostname && !parsed.username && !parsed.password ? raw : null;
+    } catch {
+      return null;
+    }
   }
 
   fastify.get("/contents", async (req) => {
@@ -94,7 +107,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
             select: { id: true },
           },
           coverAsset: {
-            select: { id: true, kind: true, status: true, storageKey: true },
+            select: { id: true, kind: true, status: true, storageKey: true, storagePublicUrl: true },
           },
         },
       }),
@@ -211,17 +224,22 @@ export default async function contentRoutes(fastify: FastifyInstance) {
           select: { objectKey: true },
         },
         coverAsset: {
-          select: { kind: true, status: true, storageKey: true },
+          select: { kind: true, status: true, storageKey: true, storagePublicUrl: true },
         },
       },
     });
     const videoAsset = content?.videoAssets?.[0];
     const mediaAsset = content?.coverAsset;
+    const legacyPublicUrl = verifiedLegacyCoverPublicUrl(mediaAsset);
     const objectKey = videoAsset?.objectKey || (
       mediaAsset?.kind === "cover_image" && mediaAsset.status === "ready" ? mediaAsset.storageKey : null
     );
-    if (!content || content.status !== "published" || !objectKey) {
+    if (!content || content.status !== "published" || (!objectKey && !legacyPublicUrl)) {
       return reply.status(404).send({ error: "not_found" });
+    }
+    if (legacyPublicUrl) {
+      reply.header("Cache-Control", "public, max-age=300");
+      return reply.redirect(legacyPublicUrl);
     }
     try {
       const signed = await createPrivatePresignedReadUrl(objectKey, 5 * 60);
@@ -254,7 +272,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
             select: { id: true },
           },
           coverAsset: {
-            select: { id: true, kind: true, status: true, storageKey: true },
+            select: { id: true, kind: true, status: true, storageKey: true, storagePublicUrl: true },
           },
         },
       }),

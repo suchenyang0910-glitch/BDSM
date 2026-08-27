@@ -145,6 +145,13 @@ test("legacy MediaAsset covers use the controlled route and never leak a durable
 
     const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentPublic}` });
     assert.equal((detail.json() as any).coverUrl, `/api/contents/${TEST_KNOWN_IDS.contentPublic}/cover`);
+
+    // Historical public cover objects predate the private VOD key layout. The
+    // catalog still returns only its controlled route; that route must resolve
+    // the verified legacy cover instead of treating its old key as unavailable.
+    const cover = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentPublic}/cover` });
+    assert.equal(cover.statusCode, 302, cover.body);
+    assert.equal(cover.headers.location, "https://storage.invalid/durable-cover.jpg");
   } finally {
     await prisma.content.update({ where: { id: TEST_KNOWN_IDS.contentPublic }, data: { coverAssetId: null, coverUrl: null } });
     await prisma.mediaAsset.deleteMany({ where: { id: assetId } });

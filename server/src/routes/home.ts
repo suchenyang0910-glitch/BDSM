@@ -19,7 +19,7 @@ type RawContentRow = {
   productId: string | null;
   packageId: string | null;
   videoAssets?: Array<{ id: string }>;
-  coverAsset?: { id: string; kind: string; status: string; storageKey: string | null } | null;
+  coverAsset?: { id: string; kind: string; status: string; storageKey: string | null; storagePublicUrl?: string | null } | null;
   seoTitle?: string | null;
   seoDescription?: string | null;
   seoKeywords?: string[];
@@ -35,7 +35,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
   function resolvePublishedCoverUrl(row: RawContentRow) {
     const legacyCover = row.coverAsset?.kind === "cover_image" &&
       row.coverAsset?.status === "ready" &&
-      !!row.coverAsset?.storageKey;
+      (!!row.coverAsset?.storageKey || !!row.coverAsset?.storagePublicUrl);
     return row.videoAssets?.[0] || legacyCover
       ? `/api/contents/${encodeURIComponent(row.id)}/cover`
       : null;
@@ -166,7 +166,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
                 take: 1,
                 select: { id: true },
               },
-              coverAsset: { select: { id: true, kind: true, status: true, storageKey: true } },
+              coverAsset: { select: { id: true, kind: true, status: true, storageKey: true, storagePublicUrl: true } },
             },
           })
         : Promise.resolve([] as RawContentRow[]),
@@ -205,7 +205,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
             take: 1,
             select: { id: true },
           },
-          coverAsset: { select: { id: true, kind: true, status: true, storageKey: true } },
+          coverAsset: { select: { id: true, kind: true, status: true, storageKey: true, storagePublicUrl: true } },
         },
       }),
       prisma.content.findMany({
@@ -222,7 +222,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
             take: 1,
             select: { id: true },
           },
-          coverAsset: { select: { id: true, kind: true, status: true, storageKey: true } },
+          coverAsset: { select: { id: true, kind: true, status: true, storageKey: true, storagePublicUrl: true } },
         },
       }),
       tryGetPlatformMetadata(),
