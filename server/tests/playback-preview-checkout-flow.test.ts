@@ -88,6 +88,12 @@ test("h5 library exposes every configured category and keeps mobile infinite scr
   assert.match(cssSource, /#libraryCategoryList \{\s*flex-wrap: nowrap;\s*overflow-x: auto;/);
 });
 
+test("desktop library keeps its toolbar in the primary content row after filtering", async () => {
+  const cssSource = await readFile(path.join(ROOT, "h5/styles.css"), "utf8");
+  assert.match(cssSource, /\.app-header \{\s*grid-row: 1;/);
+  assert.match(cssSource, /\.app-main \{\s*grid-row: 2;\s*min-width: 0;/);
+});
+
 test("h5 home keeps continue watching compact and safely renders channel labels", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");

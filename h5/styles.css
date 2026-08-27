@@ -1669,6 +1669,18 @@ img.is-image-unavailable {
     grid-column: 1;
   }
 
+  /* Do not leave the main column to implicit grid placement. When the library
+     re-renders after a filter change, transient direct children must never
+     push its toolbar below a phantom empty grid row. */
+  .app-header {
+    grid-row: 1;
+  }
+
+  .app-main {
+    grid-row: 2;
+    min-width: 0;
+  }
+
   .desktop-rail {
     display: block;
     grid-column: 2;
