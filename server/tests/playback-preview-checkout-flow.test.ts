@@ -100,6 +100,7 @@ test("account avatar prefers Telegram profile photos and uses a generic device-s
   assert.match(appSource, /const DEFAULT_ACCOUNT_AVATAR/);
   assert.match(appSource, /function accountAvatarUrl\(session\)/);
   assert.match(appSource, /session\.identity === "telegram"/);
+  assert.match(appSource, /const profileName = session && session\.displayName \? session\.displayName : "同频成员"/);
   assert.match(appSource, /profileAvatar\.src = accountAvatarUrl\(session\)/);
   assert.match(appSource, /payload\.user && payload\.user\.photoUrl/);
   assert.match(htmlSource, /id="profileAvatar"/);

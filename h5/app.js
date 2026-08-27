@@ -1636,9 +1636,10 @@
   function renderMe() {
     const session = state.session;
     const isTelegram = session && session.identity === "telegram";
+    const profileName = session && session.displayName ? session.displayName : "同频成员";
     $("profileTitle").textContent = isTelegram
-      ? "我的昵称 · " + (session.displayName || "同频成员")
-      : (session.displayName || "同频成员");
+      ? "我的昵称 · " + profileName
+      : profileName;
     $("profileSubtitle").textContent = isTelegram
       ? "已连接 Telegram，可跨设备恢复订单与权益。"
       : "已自动登录；绑定 Telegram 后可跨设备恢复订单与权益。";
