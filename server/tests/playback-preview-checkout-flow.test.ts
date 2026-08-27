@@ -64,7 +64,8 @@ test("h5 home keeps continue watching compact and safely renders channel labels"
   assert.match(appSource, /resume-inline-actions/);
   assert.match(htmlSource, /id="homeRecentSection"[\s\S]{0,420}id="homeBannerList"/);
   assert.match(cssSource, /\.resume-card-compact \{/);
-  assert.match(cssSource, /\.bottom-nav \{[\s\S]{0,700}z-index: 100;/);
+  assert.match(cssSource, /\.app-shell \{[\s\S]{0,600}calc\(152px \+ env\(safe-area-inset-bottom\)\)/);
+  assert.match(cssSource, /\.bottom-nav \{[\s\S]{0,700}background: var\(--bg-surface\);[\s\S]{0,300}z-index: 1000;/);
 });
 
 test("h5 home separates a closable popup placement, popular types, and billing from custodial balance", async () => {

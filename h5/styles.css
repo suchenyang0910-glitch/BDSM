@@ -98,7 +98,10 @@ h3 {
   padding:
     max(var(--page-gutter), env(safe-area-inset-top))
     var(--page-gutter)
-    calc(112px + env(safe-area-inset-bottom))
+    /* Keep the final card wholly above the fixed mobile navigation, including
+       a device's home-indicator inset.  Content must never sit underneath the
+       navigation where duration badges can visually bleed through. */
+    calc(152px + env(safe-area-inset-bottom))
     var(--page-gutter);
 }
 
@@ -1344,10 +1347,13 @@ img.is-image-unavailable {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-  background: rgba(28, 25, 39, 0.94);
+  /* This is deliberately opaque. A translucent fixed nav lets the last
+     catalog row (especially its duration badge) show through on phones. */
+  background: var(--bg-surface);
   border-top: 1px solid var(--border);
-  backdrop-filter: blur(18px);
-  z-index: 100;
+  box-shadow: 0 -12px 28px rgba(0, 0, 0, 0.28);
+  isolation: isolate;
+  z-index: 1000;
 }
 
 .desktop-nav-brand {
