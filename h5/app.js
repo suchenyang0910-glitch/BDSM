@@ -2406,7 +2406,17 @@
         quality: "auto",
       });
     }
+    // A hidden detail view can otherwise keep its media element playing after
+    // the user taps Back. Pause first so audio stops synchronously, then tear
+    // down HLS and its source before the next route is rendered.
+    if (activeVideo) {
+      try { activeVideo.pause(); } catch (_) {}
+      try { activeVideo.muted = true; } catch (_) {}
+    }
     clearManagedPlaybackState();
+    if (activeVideo) {
+      try { activeVideo.removeAttribute("src"); activeVideo.load(); } catch (_) {}
+    }
     state.player.video = null;
     state.player.contentId = "";
     state.player.lastProgressSecond = -1;

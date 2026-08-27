@@ -30,6 +30,12 @@ test("h5/app.js distinguishes preview analytics from full playback analytics", a
   assert.match(source, /trackAnalytics\("playback_completed"/);
 });
 
+test("h5 back navigation synchronously stops and detaches the active video", async () => {
+  const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  assert.match(source, /function detachActivePlayer\(reason\) \{[\s\S]{0,1000}activeVideo\.pause\(\)[\s\S]{0,700}clearManagedPlaybackState\(\)[\s\S]{0,700}activeVideo\.removeAttribute\("src"\); activeVideo\.load\(\);/);
+  assert.match(source, /const leavingDetail = state\.route && state\.route\.view === "detail" && routeState\.view !== "detail";\s*if \(leavingDetail\) detachActivePlayer\("leave"\);/);
+});
+
 test("h5 catalog UI uses whole-card navigation and server-backed library search", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
