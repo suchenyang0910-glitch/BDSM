@@ -46,6 +46,14 @@ test("active membership uses web playback rather than mandatory channel delivery
   assert.doesNotMatch(paySource, /绑定 Telegram 后领取频道/);
 });
 
+test("full playback UI hides implementation-specific delivery wording", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  assert.match(appSource, /const mediaLabel = playback && playback\.action === "play_full"\s*\? ""/);
+  assert.match(appSource, /\? "你的会员权益已生效，可观看完整视频。"/);
+  assert.doesNotMatch(appSource, /完整播放走服务端会话与短时鉴权/);
+  assert.doesNotMatch(appSource, /已解锁，可直接受控播放/);
+});
+
 test("h5 catalog UI uses whole-card navigation and server-backed library search", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");

@@ -683,7 +683,7 @@
       var classifiedApiError = classifyPlaybackApiError(err);
       reportPlaybackError(detail, classifiedApiError.errorCode);
       if (detail.previewUrl) {
-        showInlineMessage("Web 受控播放尚未开放，先为你展示当前试看。");
+        showInlineMessage("完整播放暂时不可用，先为你展示当前试看。");
         playInlineDetailVideo();
         return;
       }
@@ -2017,6 +2017,9 @@
     const previewUpgradeEnabled = !detail.unlocked && !!detail.product &&
       (detail.accessType === "membership" || detail.accessType === "package" || detail.accessType === "single");
     const previewUpgradeText = pendingOrder ? "继续支付" : getPurchaseActionText(detail);
+    const mediaLabel = playback && playback.action === "play_full"
+      ? ""
+      : '<div class="detail-media-label"><strong>免费试看</strong><span>试看不需要开通会员</span></div>';
     const mediaSlot = canRenderPlayer
       ? '<section class="detail-media detail-media-preview" aria-label="免费试看">' +
         '<video class="detail-preview-video" controls playsinline preload="metadata"' +
@@ -2025,13 +2028,7 @@
           '当前浏览器不支持视频在线播放。' +
         '</video>' +
         '<div id="previewEndingHint" class="detail-preview-hint is-hidden" role="status" aria-live="polite">完整内容将在 <strong id="previewEndingCountdown">10</strong> 秒后结束试看</div>' +
-        '<div class="detail-media-label"><strong>' + escapeHtml(playback && playback.action === "play_full" ? "受控播放" : "免费试看") + '</strong><span>' +
-          escapeHtml(playback && playback.action === "play_full"
-            ? "完整播放走服务端会话与短时鉴权。"
-            : managedPlaybackEnabled
-              ? "试看将优先使用服务端签发的私有 HLS。"
-              : "试看不需要开通会员") +
-        '</span></div>' +
+        mediaLabel +
         (previewUpgradeEnabled
           ? '<div id="previewUpgradeGate" class="detail-preview-gate is-hidden" role="status" aria-live="polite">' +
             '<div class="detail-preview-gate-copy"><span>试看结束</span><strong>开通后继续观看完整内容</strong>' +
@@ -2058,12 +2055,12 @@
       renderDetailDescription(detail) +
       '<div class="detail-status-card">' +
       '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(playback && playback.action === "play_full"
-        ? "已解锁，可直接受控播放"
+        ? "已解锁，可直接观看"
         : detail.unlocked
           ? "已解锁，可直接观看"
           : getAccessLabel(detail)) + '</div>' +
       '<div class="stack-subtitle">' + escapeHtml(playback && playback.action === "play_full"
-        ? "当前账户已满足权益，可创建完整播放会话。"
+        ? "你的会员权益已生效，可观看完整视频。"
         : playback && playback.action === "preview" && !playback.errorClass
           ? "当前可直接试看；试看结束后可继续开通对应权益。"
           : detail.unlocked && playback && playback.errorClass
