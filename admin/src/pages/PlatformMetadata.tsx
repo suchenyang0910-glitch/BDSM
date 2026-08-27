@@ -1,7 +1,9 @@
 import React from "react";
-import { Alert, Button, Card, Form, Input, Select, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Form, Input, Space, Typography, message } from "antd";
 import { adminMe, errMsg, getAdminPlatformMetadata, updateAdminPlatformMetadata } from "../api/client";
 import type { AdminMe, PlatformMetadata } from "../api/types";
+import DelimitedTagInput from "../components/DelimitedTagInput";
+import type { DelimitedInputState } from "../utils/delimitedTagInput";
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -12,6 +14,7 @@ const PlatformMetadataPage: React.FC = () => {
   const [saving, setSaving] = React.useState(false);
   const [me, setMe] = React.useState<AdminMe | null>(null);
   const [metadata, setMetadata] = React.useState<PlatformMetadata | null>(null);
+  const [fieldStates, setFieldStates] = React.useState<Record<string, DelimitedInputState>>({});
 
   const canManage = React.useMemo(() => me?.role === "super_admin", [me]);
 
@@ -28,12 +31,17 @@ const PlatformMetadataPage: React.FC = () => {
         geoKeywords: meta.geoKeywords || [],
         reason: "",
       });
+      setFieldStates({});
     } catch (e) {
       message.error(errMsg(e, "加载平台 SEO / GEO 设置失败"));
     } finally {
       setLoading(false);
     }
   }, [form]);
+
+  const updateFieldState = React.useCallback((field: string, state: DelimitedInputState) => {
+    setFieldStates((prev) => ({ ...prev, [field]: state }));
+  }, []);
 
   React.useEffect(() => {
     load();
@@ -42,6 +50,11 @@ const PlatformMetadataPage: React.FC = () => {
   const onSubmit = async () => {
     try {
       const values = await form.validateFields();
+      const currentIssues = Object.values(fieldStates).flatMap((state) => state.errors);
+      if (currentIssues.length > 0) {
+        message.error("请先修正 SEO / GEO 关键词中的错误项");
+        return;
+      }
       setSaving(true);
       const resp = await updateAdminPlatformMetadata({
         seoTitle: values.seoTitle || null,
@@ -94,10 +107,22 @@ const PlatformMetadataPage: React.FC = () => {
             <TextArea rows={4} maxLength={300} placeholder="未填则前台回落到页面说明" disabled={!canManage} />
           </Form.Item>
           <Form.Item name="seoKeywords" label="平台默认 SEO 关键词">
-            <Select mode="tags" placeholder="输入关键词后回车" disabled={!canManage} />
+            <DelimitedTagInput
+              mode="keyword"
+              disabled={!canManage}
+              selectPlaceholder="输入 SEO 关键词后回车"
+              textareaPlaceholder="支持直接粘贴逗号分隔关键词；兼容中文逗号、换行、分号。"
+              onStateChange={(state) => updateFieldState("seoKeywords", state)}
+            />
           </Form.Item>
           <Form.Item name="geoKeywords" label="平台默认 GEO 主题词">
-            <Select mode="tags" placeholder="输入 GEO 主题词后回车" disabled={!canManage} />
+            <DelimitedTagInput
+              mode="keyword"
+              disabled={!canManage}
+              selectPlaceholder="输入 GEO 主题词后回车"
+              textareaPlaceholder="支持直接粘贴逗号分隔主题词；词组空格会保留。"
+              onStateChange={(state) => updateFieldState("geoKeywords", state)}
+            />
           </Form.Item>
           <Form.Item name="reason" label="变更原因">
             <TextArea rows={2} maxLength={500} placeholder="建议填写本次调整的业务原因，便于审计。" disabled={!canManage} />

@@ -59,6 +59,7 @@ import http, {
   startAdminTelegramPublish,
   errMsg,
 } from "../api/client";
+import DelimitedTagInput from "../components/DelimitedTagInput";
 import type {
   ContentItem,
   ContentStatus,
@@ -67,6 +68,7 @@ import type {
   AdminPackageItem,
   FreeChannelOption,
 } from "../api/types";
+import type { DelimitedInputState } from "../utils/delimitedTagInput";
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -618,6 +620,7 @@ const ContentsPage: React.FC = () => {
   const [freeChannels, setFreeChannels] = React.useState<FreeChannelOption[]>([]);
   const [me, setMe] = React.useState<AdminMe | null>(null);
   const [publishingTg, setPublishingTg] = React.useState(false);
+  const [inputStates, setInputStates] = React.useState<Record<string, DelimitedInputState>>({});
 
   // ================== 素材上传 state ==================
   const [coverAssetId, setCoverAssetId] = React.useState<string | null>(null);
@@ -661,11 +664,20 @@ const ContentsPage: React.FC = () => {
   const [publishJobs, setPublishJobs] = React.useState<TelegramPublishJobItem[]>([]);
   const [publishJobsLoading, setPublishJobsLoading] = React.useState(false);
   const [startPublishing, setStartPublishing] = React.useState(false);
+  const [lastNormalizedTelegramTags, setLastNormalizedTelegramTags] = React.useState<string[]>([]);
   const [publishJobsRefreshTimer, setPublishJobsRefreshTimer] = React.useState<number | null>(null);
   const [channelMessages, setChannelMessages] = React.useState<ChannelMessageItem[]>([]);
   const [currentChannelLink, setCurrentChannelLink] = React.useState<ChannelMessageItem | null>(null);
   const [channelMessagesLoading, setChannelMessagesLoading] = React.useState(false);
   const [linkingChannelMessageId, setLinkingChannelMessageId] = React.useState<string | null>(null);
+
+  const updateInputState = React.useCallback((field: string, state: DelimitedInputState) => {
+    setInputStates((prev) => ({ ...prev, [field]: state }));
+  }, []);
+
+  const hasInputErrors = React.useCallback((fields: string[]) => {
+    return fields.some((field) => (inputStates[field]?.errors?.length || 0) > 0);
+  }, [inputStates]);
 
   const fetchList = React.useCallback(async () => {
     setLoading(true);
@@ -949,6 +961,8 @@ const ContentsPage: React.FC = () => {
     setEditing(null);
     setEditorTab("basic");
     setChannelKinds([]);
+    setInputStates({});
+    setLastNormalizedTelegramTags([]);
     resetMediaState();
     form.resetFields();
     setCurrentChannelLink(null);
@@ -978,6 +992,8 @@ const ContentsPage: React.FC = () => {
     setEditorTab("basic");
     resetMediaState();
     setChannelKinds([]);
+    setInputStates({});
+    setLastNormalizedTelegramTags([]);
     setCurrentChannelLink(null);
     setChannelMessages([]);
     // 默认勾选与 accessType 匹配的 channel kinds
@@ -1502,6 +1518,10 @@ const ContentsPage: React.FC = () => {
   const onDrawerSubmit = async () => {
     try {
       const values = await form.validateFields();
+      if (hasInputErrors(["tags", "seoKeywords", "geoKeywords"])) {
+        message.error("请先修正标签或 SEO / GEO 字段中的错误项");
+        return;
+      }
       setSubmitting(true);
       // VOD 阶段的封面由 VideoAsset 按 contentId 归属，不能写进旧
       // MediaAsset 外键（否则会把一个有效的 VOD cover 误判为“不存在”）。
@@ -2125,7 +2145,13 @@ const ContentsPage: React.FC = () => {
                     </Select>
                   </Form.Item>
                   <Form.Item name="tags" label="标签">
-                    <Select mode="tags" placeholder="输入标签后回车" />
+                    <DelimitedTagInput
+                      mode="telegram"
+                      selectPlaceholder="输入标签后回车"
+                      textareaPlaceholder="支持直接粘贴逗号分隔标签；会按 Telegram 规则规范化。"
+                      previewLabel="发布到 Telegram 时将显示为"
+                      onStateChange={(state) => updateInputState("tags", state)}
+                    />
                   </Form.Item>
                   <Card
                     size="small"
@@ -2145,10 +2171,20 @@ const ContentsPage: React.FC = () => {
                         <TextArea rows={3} maxLength={300} placeholder="未填则继承平台默认 SEO 描述；再未填则回落到内容描述" />
                       </Form.Item>
                       <Form.Item name="seoKeywords" label="SEO 关键词">
-                        <Select mode="tags" placeholder="输入 SEO 关键词后回车，未填则继承平台默认关键词" />
+                        <DelimitedTagInput
+                          mode="keyword"
+                          selectPlaceholder="输入 SEO 关键词后回车，未填则继承平台默认关键词"
+                          textareaPlaceholder="支持直接粘贴逗号分隔关键词；词组空格会保留。"
+                          onStateChange={(state) => updateInputState("seoKeywords", state)}
+                        />
                       </Form.Item>
                       <Form.Item name="geoKeywords" label="GEO 主题词">
-                        <Select mode="tags" placeholder="输入生成式搜索主题词后回车，未填则继承平台默认主题词" />
+                        <DelimitedTagInput
+                          mode="keyword"
+                          selectPlaceholder="输入生成式搜索主题词后回车，未填则继承平台默认主题词"
+                          textareaPlaceholder="支持直接粘贴逗号分隔主题词；词组空格会保留。"
+                          onStateChange={(state) => updateInputState("geoKeywords", state)}
+                        />
                       </Form.Item>
                       {!!editing?.effectiveSeo && (
                         <Alert
@@ -2592,10 +2628,24 @@ const ContentsPage: React.FC = () => {
                             name="telegramTags"
                             label="Telegram 标签（可选，仅用于发布 caption）"
                             style={{ marginBottom: 0 }}
-                            extra="服务端会自动清洗、去重、限长，并与内容标签合并生成 #标签1 #标签2。内容 SEO/GEO 关键词优先；未配置时自动继承平台默认关键词。"
+                            extra="支持粘贴逗号分隔词组、#标签1 #标签2 或普通短语。仅会与内容标签合并，SEO / GEO 关键词不会自动公开为 Telegram 标签。"
                           >
-                            <Select mode="tags" placeholder="例如：夜间, calm_mode" />
+                            <DelimitedTagInput
+                              mode="telegram"
+                              selectPlaceholder="例如：夜间, calm_mode"
+                              textareaPlaceholder="支持粘贴逗号分隔词组、#标签1 #标签2 或普通短语。"
+                              previewLabel="当前预览"
+                              onStateChange={(state) => updateInputState("telegramTags", state)}
+                            />
                           </Form.Item>
+                          {lastNormalizedTelegramTags.length > 0 && (
+                            <Alert
+                              type="success"
+                              showIcon
+                              message="服务端最终标签预览"
+                              description={lastNormalizedTelegramTags.join(" ")}
+                            />
+                          )}
                           <Alert
                             type="info"
                             showIcon
@@ -2676,6 +2726,10 @@ const ContentsPage: React.FC = () => {
                               }
                               onClick={async () => {
                                 if (!editing?.id) return;
+                                if (hasInputErrors(["telegramTags"])) {
+                                  message.error("请先修正 Telegram 标签里的错误项");
+                                  return;
+                                }
                                 setStartPublishing(true);
                                 try {
                                   const rawTelegramTags = form.getFieldValue("telegramTags") || [];
@@ -2684,6 +2738,7 @@ const ContentsPage: React.FC = () => {
                                     telegramTags: rawTelegramTags,
                                     reason: `运营点击发布：${channelKinds.join("+")}`,
                                   });
+                                  setLastNormalizedTelegramTags(r.normalizedTelegramTags || []);
                                   message.success(`已入队 ${r.jobs.length} 条 Bot 发送任务${r.normalizedTelegramTags?.length ? ` · 标签：${r.normalizedTelegramTags.join(" ")}` : ""}`);
                                   refreshPublishJobs(editing.id);
                                 } catch (e) {

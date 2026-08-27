@@ -48,10 +48,13 @@ import {
   buildPreviewVideoCaption,
 } from "../services/telegramPublisher.js";
 import {
-  normalizeKeywordList,
+  validateKeywordList,
+  validateTelegramTagList,
+  normalizeTelegramTagValuesFromInputs,
   buildEffectiveSeo,
   normalizeTelegramHashtagsFromInputs,
   appendTelegramTagLine,
+  type ListNormalizationIssue,
 } from "../services/seoMetadata.js";
 import { revokePlaybackSessionsByContent } from "../services/playbackAdmin.js";
 import { randomBytes, createHash } from "node:crypto";
@@ -303,6 +306,25 @@ function stripSensitiveFields(v: any): any {
   return copy;
 }
 
+type FieldValidationFailure = {
+  field: string;
+  label: string;
+  issues: ListNormalizationIssue[];
+};
+
+function buildValidationErrorResponse(failures: FieldValidationFailure[]) {
+  const primary = failures[0];
+  return {
+    error: "validation_error",
+    message: primary ? `${primary.label}存在 ${primary.issues.length} 项无效输入，请按提示修正后再保存。` : "输入校验失败。",
+    details: failures.map((failure) => ({
+      field: failure.field,
+      label: failure.label,
+      issues: failure.issues,
+    })),
+  };
+}
+
 function normalizeSeoPayload(payload: {
   seoTitle?: string | null;
   seoDescription?: string | null;
@@ -311,11 +333,44 @@ function normalizeSeoPayload(payload: {
 }) {
   const seoTitle = String(payload.seoTitle || "").trim().slice(0, 120) || null;
   const seoDescription = String(payload.seoDescription || "").trim().slice(0, 300) || null;
+  const seoKeywords = validateKeywordList(payload.seoKeywords);
+  const geoKeywords = validateKeywordList(payload.geoKeywords);
+  const failures: FieldValidationFailure[] = [];
+  if (seoKeywords.errors.length > 0) failures.push({ field: "seoKeywords", label: "SEO 关键词", issues: seoKeywords.errors });
+  if (geoKeywords.errors.length > 0) failures.push({ field: "geoKeywords", label: "GEO 关键词", issues: geoKeywords.errors });
   return {
-    seoTitle,
-    seoDescription,
-    seoKeywords: normalizeKeywordList(payload.seoKeywords),
-    geoKeywords: normalizeKeywordList(payload.geoKeywords),
+    ok: failures.length === 0,
+    failures,
+    value: {
+      seoTitle,
+      seoDescription,
+      seoKeywords: seoKeywords.items,
+      geoKeywords: geoKeywords.items,
+    },
+  };
+}
+
+function normalizeContentTagsPayload(input: unknown) {
+  const tags = validateTelegramTagList(input, { prefixHash: false });
+  const failures: FieldValidationFailure[] = tags.errors.length > 0
+    ? [{ field: "tags", label: "内容标签", issues: tags.errors }]
+    : [];
+  return {
+    ok: failures.length === 0,
+    failures,
+    value: tags.items,
+  };
+}
+
+function normalizePublishTelegramTagsPayload(input: unknown) {
+  const tags = validateTelegramTagList(input, { prefixHash: false });
+  const failures: FieldValidationFailure[] = tags.errors.length > 0
+    ? [{ field: "telegramTags", label: "Telegram 标签", issues: tags.errors }]
+    : [];
+  return {
+    ok: failures.length === 0,
+    failures,
+    value: tags.items,
   };
 }
 
@@ -744,10 +799,20 @@ async function queueTelegramPublishForContent(input: {
   contentId: string;
   meta: ReturnType<typeof adminMeta>;
   channelKinds: TelegramPublishPlanKind[];
-  telegramTags?: string[];
+  telegramTags?: unknown;
   reason?: string | null;
 }): Promise<TelegramPublishQueueResult> {
   const { prisma, contentId, meta } = input;
+  const normalizedPublishTags = normalizePublishTelegramTagsPayload(input.telegramTags || []);
+  if (!normalizedPublishTags.ok) {
+    return {
+      ok: false,
+      status: 400,
+      error: "validation_error",
+      message: buildValidationErrorResponse(normalizedPublishTags.failures).message,
+      details: buildValidationErrorResponse(normalizedPublishTags.failures).details,
+    };
+  }
   const content = await prisma.content.findUnique({
     where: { id: contentId },
     include: {
@@ -870,24 +935,11 @@ async function queueTelegramPublishForContent(input: {
   }
   if (plans.length === 0) return { ok: false, status: 400, error: "publish_plan_empty", message: "没有任何合法的频道发布计划。" };
 
-  // 内容的 SEO/GEO 关键词优先；若单条内容未配置关键词，则继承平台默认关键词。
-  // 这些词经统一清洗后作为 Telegram Hashtag，不会泄露任何频道或支付信息。
-  const platformMetadata = await prisma.platformMetadata.findUnique({ where: { id: "default" } });
-  const contentKeywordSources = [
-    normalizeKeywordList(content.seoKeywords),
-    normalizeKeywordList(content.geoKeywords),
-  ];
-  const hasContentKeywords = contentKeywordSources.some((items) => items.length > 0);
-  const effectiveTelegramKeywordSources = hasContentKeywords
-    ? contentKeywordSources
-    : [
-      normalizeKeywordList(platformMetadata?.seoKeywords),
-      normalizeKeywordList(platformMetadata?.geoKeywords),
-    ];
+  // Telegram 公开标签只允许来自内容标签与本次发布时手填标签；
+  // SEO / GEO 关键词绝不能自动泄露为公开标签。
   const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([
-    content.tags,
-    input.telegramTags || [],
-    ...effectiveTelegramKeywordSources,
+    normalizeTelegramTagValuesFromInputs(content.tags || []),
+    normalizedPublishTags.value,
   ]);
   const createdJobs = await prisma.$transaction(async (tx: any) => {
     const jobs: any[] = [];
@@ -1003,13 +1055,16 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const meta = adminMeta(req);
       const before = await getPlatformMetadataRow(prisma);
       const normalized = normalizeSeoPayload(body);
+      if (!normalized.ok) {
+        return reply.status(400).send(buildValidationErrorResponse(normalized.failures));
+      }
       const after = await prisma.platformMetadata.update({
         where: { id: "default" },
         data: {
-          seoTitle: normalized.seoTitle,
-          seoDescription: normalized.seoDescription,
-          seoKeywords: normalized.seoKeywords,
-          geoKeywords: normalized.geoKeywords,
+          seoTitle: normalized.value.seoTitle,
+          seoDescription: normalized.value.seoDescription,
+          seoKeywords: normalized.value.seoKeywords,
+          geoKeywords: normalized.value.geoKeywords,
           updatedBy: meta.adminId,
         },
       });
@@ -1032,11 +1087,11 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     coverUrl: z.string().trim().url().max(500).optional().nullable(),
     thumbnailUrl: z.string().trim().url().max(500).optional().nullable(),
     description: z.string().max(2000).optional().nullable(),
-    tags: z.array(z.string().max(50)).optional().default([]),
+    tags: z.union([z.array(z.string().max(500)), z.string().max(5000)]).optional().default([]),
     seoTitle: z.string().trim().max(120).optional().nullable(),
     seoDescription: z.string().trim().max(300).optional().nullable(),
-    seoKeywords: z.array(z.string().max(40)).optional().default([]),
-    geoKeywords: z.array(z.string().max(40)).optional().default([]),
+    seoKeywords: z.union([z.array(z.string().max(500)), z.string().max(5000)]).optional().default([]),
+    geoKeywords: z.union([z.array(z.string().max(500)), z.string().max(5000)]).optional().default([]),
     previewUrl: z.string().trim().max(500).optional().nullable(),
     previewEnabled: z.boolean().optional().default(true),
     previewDurationSeconds: z.union([z.literal(30), z.literal(60), z.literal(90)]).optional().default(60),
@@ -1094,14 +1149,14 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     channelKinds: z.array(
       z.enum(["public_free_preview", "membership_full", "package_full"])
     ).min(1).max(6),
-    telegramTags: z.array(z.string().max(64)).optional().default([]),
+    telegramTags: z.union([z.array(z.string().max(500)), z.string().max(5000)]).optional().default([]),
     reason: z.string().max(500).optional(),
   });
   const ZPLATFORM_METADATA = z.object({
     seoTitle: z.string().trim().max(120).optional().nullable(),
     seoDescription: z.string().trim().max(300).optional().nullable(),
-    seoKeywords: z.array(z.string().max(40)).optional().default([]),
-    geoKeywords: z.array(z.string().max(40)).optional().default([]),
+    seoKeywords: z.union([z.array(z.string().max(500)), z.string().max(5000)]).optional().default([]),
+    geoKeywords: z.union([z.array(z.string().max(500)), z.string().max(5000)]).optional().default([]),
     reason: z.string().max(500).optional(),
   });
   const ZPUBLISH_JOBS_QP = z.object({
@@ -2416,6 +2471,14 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const fullVideoAssetIds = normalizeFullVideoAssetIds(payload.fullVideoAssetIds, payload.fullVideoAssetId);
       const parseDates = (d: any) => (d ? new Date(d) : null);
       const normalizedSeo = normalizeSeoPayload(payload);
+      const normalizedTags = normalizeContentTagsPayload(payload.tags);
+      const validationFailures = [
+        ...(normalizedSeo.ok ? [] : normalizedSeo.failures),
+        ...(normalizedTags.ok ? [] : normalizedTags.failures),
+      ];
+      if (validationFailures.length > 0) {
+        return reply.status(400).send(buildValidationErrorResponse(validationFailures));
+      }
 
       // 轻媒体继续从 MediaAsset 回填封面/试看冗余列；完整视频以 VideoAsset 为真源，不再从 MediaAsset 读。
       const lightAssetFk: Array<string | null> = [payload.coverAssetId ?? null, payload.previewAssetId ?? null];
@@ -2437,11 +2500,11 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         coverUrl: (payload.coverUrl != null ? payload.coverUrl : redundantCoverUrl) ?? null,
         thumbnailUrl: payload.thumbnailUrl ?? null,
         description: payload.description ?? null,
-        tags: payload.tags ?? [],
-        seoTitle: normalizedSeo.seoTitle,
-        seoDescription: normalizedSeo.seoDescription,
-        seoKeywords: normalizedSeo.seoKeywords,
-        geoKeywords: normalizedSeo.geoKeywords,
+        tags: normalizedTags.value,
+        seoTitle: normalizedSeo.value.seoTitle,
+        seoDescription: normalizedSeo.value.seoDescription,
+        seoKeywords: normalizedSeo.value.seoKeywords,
+        geoKeywords: normalizedSeo.value.geoKeywords,
         previewUrl: (payload.previewUrl != null ? payload.previewUrl : redundantPreviewUrl) ?? null,
         previewEnabled: previewPolicy.previewEnabled,
         previewDurationSeconds: previewPolicy.previewDurationSeconds,
@@ -2606,10 +2669,20 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           seoKeywords: payload.seoKeywords !== undefined ? payload.seoKeywords : before.seoKeywords,
           geoKeywords: payload.geoKeywords !== undefined ? payload.geoKeywords : before.geoKeywords,
         });
-        if (payload.seoTitle !== undefined) data.seoTitle = normalizedSeo.seoTitle;
-        if (payload.seoDescription !== undefined) data.seoDescription = normalizedSeo.seoDescription;
-        if (payload.seoKeywords !== undefined) data.seoKeywords = normalizedSeo.seoKeywords;
-        if (payload.geoKeywords !== undefined) data.geoKeywords = normalizedSeo.geoKeywords;
+        if (!normalizedSeo.ok) {
+          return reply.status(400).send(buildValidationErrorResponse(normalizedSeo.failures));
+        }
+        if (payload.seoTitle !== undefined) data.seoTitle = normalizedSeo.value.seoTitle;
+        if (payload.seoDescription !== undefined) data.seoDescription = normalizedSeo.value.seoDescription;
+        if (payload.seoKeywords !== undefined) data.seoKeywords = normalizedSeo.value.seoKeywords;
+        if (payload.geoKeywords !== undefined) data.geoKeywords = normalizedSeo.value.geoKeywords;
+      }
+      if (payload.tags !== undefined) {
+        const normalizedTags = normalizeContentTagsPayload(payload.tags);
+        if (!normalizedTags.ok) {
+          return reply.status(400).send(buildValidationErrorResponse(normalizedTags.failures));
+        }
+        data.tags = normalizedTags.value;
       }
 
       const result = await prisma.$transaction(async (tx: any) => {

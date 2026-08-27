@@ -1,8 +1,23 @@
 const MAX_KEYWORD_COUNT = 20;
-const MAX_KEYWORD_LENGTH = 40;
+const MAX_KEYWORD_LENGTH = 80;
 const MAX_TG_TAG_COUNT = 10;
 const MAX_TG_TAG_LENGTH = 32;
 const TELEGRAM_CAPTION_LIMIT = 1024;
+
+const KEYWORD_SPLIT_RE = /[,\n，;；]+/;
+const INVISIBLE_CHAR_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200D\u2060\uFEFF]/g;
+
+export type ListNormalizationIssue = {
+  index: number;
+  input: string;
+  code: "too_long" | "too_many";
+  message: string;
+};
+
+export type ListNormalizationResult = {
+  items: string[];
+  errors: ListNormalizationIssue[];
+};
 
 export type EffectiveSeo = {
   title: string | null;
@@ -17,27 +32,118 @@ export type EffectiveSeo = {
   };
 };
 
-export function normalizeKeywordList(input: unknown, opts?: { maxCount?: number; maxLength?: number }): string[] {
+function stripInvisibleChars(input: unknown): string {
+  return String(input ?? "").replace(INVISIBLE_CHAR_RE, "");
+}
+
+function normalizePhrase(input: unknown): string {
+  return stripInvisibleChars(input).normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+function normalizePhraseKey(input: string): string {
+  return input.normalize("NFKC").toLocaleLowerCase("zh-CN").trim();
+}
+
+function flattenDelimitedEntries(input: unknown): Array<{ index: number; raw: string }> {
+  const entries: Array<{ index: number; raw: string }> = [];
+  let index = 0;
+  const visit = (seed: unknown) => {
+    if (Array.isArray(seed)) {
+      for (const nested of seed) visit(nested);
+      return;
+    }
+    const parts = typeof seed === "string" ? seed.split(KEYWORD_SPLIT_RE) : [String(seed ?? "")];
+    for (const part of parts) {
+      entries.push({ index, raw: String(part ?? "") });
+      index += 1;
+    }
+  };
+  visit(input);
+  return entries;
+}
+
+function flattenTelegramEntries(input: unknown): Array<{ index: number; raw: string }> {
+  const baseEntries = flattenDelimitedEntries(input);
+  const entries: Array<{ index: number; raw: string }> = [];
+  for (const entry of baseEntries) {
+    const cleaned = stripInvisibleChars(entry.raw).trim();
+    if (!cleaned) {
+      entries.push(entry);
+      continue;
+    }
+    if (cleaned.includes("#")) {
+      const pieces = cleaned.split(/\s+/).filter(Boolean);
+      if (pieces.length > 0) {
+        for (const piece of pieces) {
+          entries.push({ index: entry.index, raw: piece });
+        }
+        continue;
+      }
+    }
+    entries.push({ index: entry.index, raw: cleaned });
+  }
+  return entries;
+}
+
+function sanitizeTelegramTag(input: unknown): string {
+  const normalized = stripInvisibleChars(input).normalize("NFKC").replace(/^#+/g, "").trim();
+  if (!normalized) return "";
+  return normalized
+    .replace(/\s+/g, "")
+    .replace(/[^\p{L}\p{N}_]+/gu, "")
+    .trim();
+}
+
+type NormalizeKeywordOptions = {
+  maxCount?: number;
+  maxLength?: number;
+};
+
+type NormalizeTelegramOptions = {
+  maxCount?: number;
+  maxLength?: number;
+  prefixHash?: boolean;
+};
+
+export function validateKeywordList(input: unknown, opts?: NormalizeKeywordOptions): ListNormalizationResult {
   const maxCount = opts?.maxCount ?? MAX_KEYWORD_COUNT;
   const maxLength = opts?.maxLength ?? MAX_KEYWORD_LENGTH;
-  const source = Array.isArray(input)
-    ? input
-    : typeof input === "string"
-      ? input.split(/[\n,，;；]+/)
-      : [];
   const out: string[] = [];
+  const errors: ListNormalizationIssue[] = [];
   const seen = new Set<string>();
-  for (const raw of source) {
-    const normalized = String(raw ?? "").trim().replace(/\s+/g, " ");
+
+  for (const entry of flattenDelimitedEntries(input)) {
+    const normalized = normalizePhrase(entry.raw);
     if (!normalized) continue;
-    const clipped = normalized.slice(0, maxLength);
-    const key = clipped.toLocaleLowerCase("zh-CN");
+    if (normalized.length > maxLength) {
+      errors.push({
+        index: entry.index,
+        input: normalized,
+        code: "too_long",
+        message: `单项最多 ${maxLength} 个字符`,
+      });
+      continue;
+    }
+    const key = normalizePhraseKey(normalized);
     if (seen.has(key)) continue;
+    if (out.length >= maxCount) {
+      errors.push({
+        index: entry.index,
+        input: normalized,
+        code: "too_many",
+        message: `最多允许 ${maxCount} 项`,
+      });
+      continue;
+    }
     seen.add(key);
-    out.push(clipped);
-    if (out.length >= maxCount) break;
+    out.push(normalized);
   }
-  return out;
+
+  return { items: out, errors };
+}
+
+export function normalizeKeywordList(input: unknown, opts?: NormalizeKeywordOptions): string[] {
+  return validateKeywordList(input, opts).items;
 }
 
 export function keywordListIsEmpty(input: unknown): boolean {
@@ -86,37 +192,50 @@ export function buildEffectiveSeo(input: {
   };
 }
 
-export function normalizeTelegramHashtagsFromInputs(inputs: unknown[]): string[] {
-  const flattened: string[] = [];
-  for (const source of inputs) {
-    if (Array.isArray(source)) {
-      for (const item of source) flattened.push(String(item ?? ""));
+export function validateTelegramTagList(input: unknown, opts?: NormalizeTelegramOptions): ListNormalizationResult {
+  const maxCount = opts?.maxCount ?? MAX_TG_TAG_COUNT;
+  const maxLength = opts?.maxLength ?? MAX_TG_TAG_LENGTH;
+  const prefixHash = opts?.prefixHash !== false;
+  const out: string[] = [];
+  const errors: ListNormalizationIssue[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of flattenTelegramEntries(input)) {
+    const sanitized = sanitizeTelegramTag(entry.raw);
+    if (!sanitized) continue;
+    if (sanitized.length > maxLength) {
+      errors.push({
+        index: entry.index,
+        input: normalizePhrase(entry.raw),
+        code: "too_long",
+        message: `单个标签最多 ${maxLength} 个字符`,
+      });
       continue;
     }
-    flattened.push(String(source ?? ""));
+    const key = sanitized.normalize("NFKC").toLocaleLowerCase("en-US");
+    if (seen.has(key)) continue;
+    if (out.length >= maxCount) {
+      errors.push({
+        index: entry.index,
+        input: normalizePhrase(entry.raw),
+        code: "too_many",
+        message: `最多允许 ${maxCount} 个标签`,
+      });
+      continue;
+    }
+    seen.add(key);
+    out.push(prefixHash ? `#${sanitized}` : sanitized);
   }
 
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of flattened) {
-    const parts = raw.split(/[\s,，;；]+/);
-    for (const part of parts) {
-      const sanitized = String(part || "")
-        .replace(/^#+/g, "")
-        .replace(/[\u200B-\u200D\uFEFF]/g, "")
-        .replace(/[^\p{L}\p{N}_]+/gu, "")
-        .trim();
-      if (!sanitized) continue;
-      const clipped = sanitized.slice(0, MAX_TG_TAG_LENGTH);
-      if (!clipped) continue;
-      const key = clipped.toLocaleLowerCase("en-US");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(`#${clipped}`);
-      if (out.length >= MAX_TG_TAG_COUNT) return out;
-    }
-  }
-  return out;
+  return { items: out, errors };
+}
+
+export function normalizeTelegramTagValuesFromInputs(inputs: unknown[]): string[] {
+  return validateTelegramTagList(inputs, { prefixHash: false }).items;
+}
+
+export function normalizeTelegramHashtagsFromInputs(inputs: unknown[]): string[] {
+  return validateTelegramTagList(inputs, { prefixHash: true }).items;
 }
 
 export function buildTelegramTagLine(inputs: unknown[]): string {

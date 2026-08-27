@@ -181,12 +181,60 @@ test("平台 SEO 设置遵循读写权限：operator 可读，auditor 可读，e
     const updated = (superWrite.json() as any).platformMetadata;
     assert.deepEqual(updated.seoKeywords, ["平台词", "搜索词"]);
     assert.deepEqual(updated.geoKeywords, ["主题A"]);
+
+    const pastedKeywords = await app.inject({
+      method: "PUT",
+      url: "/api/admin/platform-metadata",
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        seoKeywords: "trueanal, true anal, adult video, anal scene",
+        geoKeywords: "adult video；relationship topic\nanswer engine",
+        reason: "验证逗号粘贴词组保留规则",
+      },
+    });
+    assert.equal(pastedKeywords.statusCode, 200, pastedKeywords.body);
+    const pastedMetadata = (pastedKeywords.json() as any).platformMetadata;
+    assert.deepEqual(
+      pastedMetadata.seoKeywords,
+      ["trueanal", "true anal", "adult video", "anal scene"],
+      "SEO 关键词必须保留词组空格，trueanal 与 true anal 不能误合并",
+    );
+    assert.deepEqual(pastedMetadata.geoKeywords, ["adult video", "relationship topic", "answer engine"]);
+
+    const rejectedTooMany = await app.inject({
+      method: "PUT",
+      url: "/api/admin/platform-metadata",
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        seoKeywords: Array.from({ length: 21 }, (_, index) => `关键词${index + 1}`),
+        reason: "验证 SEO 超过 20 项时必须报错",
+      },
+    });
+    assert.equal(rejectedTooMany.statusCode, 400, rejectedTooMany.body);
+    const rejectedTooManyBody = rejectedTooMany.json() as any;
+    assert.equal(rejectedTooManyBody.error, "validation_error");
+    assert.equal(rejectedTooManyBody.details?.[0]?.field, "seoKeywords");
+    assert.match(String(rejectedTooManyBody.details?.[0]?.issues?.[0]?.message || ""), /20 项/);
+
+    const rejectedTooLong = await app.inject({
+      method: "PUT",
+      url: "/api/admin/platform-metadata",
+      headers: { cookie: superCookie, "Content-Type": "application/json" },
+      payload: {
+        seoKeywords: ["a".repeat(81)],
+        reason: "验证 SEO 单词超长时必须报错",
+      },
+    });
+    assert.equal(rejectedTooLong.statusCode, 400, rejectedTooLong.body);
+    const rejectedTooLongBody = rejectedTooLong.json() as any;
+    assert.equal(rejectedTooLongBody.details?.[0]?.field, "seoKeywords");
+    assert.match(String(rejectedTooLongBody.details?.[0]?.issues?.[0]?.message || ""), /80 个字符/);
   } finally {
     await app.close();
   }
 });
 
-test("start-telegram-publish 优先使用内容关键词，并在内容未配置时继承平台关键词", async () => {
+test("start-telegram-publish 只合并内容标签与手填 Telegram 标签，不自动泄露 SEO/GEO 关键词", async () => {
   const mainKey = "TELEGRAM_FREE_CHANNEL_PREVIEW_MAIN_CHAT_ID";
   const tutorialKey = "TELEGRAM_FREE_CHANNEL_TUTORIAL_BASICS_CHAT_ID";
   const before = [process.env[mainKey], process.env[tutorialKey]];
@@ -238,8 +286,8 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
     const startBody = startResp.json() as any;
     assert.deepEqual(
       startBody.normalizedTelegramTags,
-      ["#睡眠", "#夜间", "#calmmode", "#默认词", "#内容关键词"],
-      "内容标签、手填标签和内容 SEO/GEO 关键词均应清洗后写入 Telegram tags",
+      ["#睡眠", "#夜间", "#calmmode", "#默认词"],
+      "Telegram 公开标签只能来自内容标签与本次手填标签",
     );
 
     const jobsResp = await app.inject({
@@ -249,7 +297,7 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
     });
     assert.equal(jobsResp.statusCode, 200, jobsResp.body);
     const firstJob = (jobsResp.json() as any).items[0];
-    assert.deepEqual(firstJob.telegramTags, ["#睡眠", "#夜间", "#calmmode", "#默认词", "#内容关键词"]);
+    assert.deepEqual(firstJob.telegramTags, ["#睡眠", "#夜间", "#calmmode", "#默认词"]);
 
     await prisma.platformMetadata.upsert({
       where: { id: "default" },
@@ -290,7 +338,20 @@ test("start-telegram-publish 优先使用内容关键词，并在内容未配置
       payload: { channelKinds: ["membership_full"], reason: "验证平台关键词回退" },
     });
     assert.equal(fallbackResp.statusCode, 201, fallbackResp.body);
-    assert.deepEqual((fallbackResp.json() as any).normalizedTelegramTags, ["#平台关键词", "#平台主题"]);
+    assert.deepEqual((fallbackResp.json() as any).normalizedTelegramTags, []);
+
+    const dedupeResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${fallbackContentId}/start-telegram-publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        channelKinds: ["membership_full"],
+        telegramTags: ["trueanal, true anal, adult video"],
+        reason: "验证 Telegram 标签规范化去重",
+      },
+    });
+    assert.equal(dedupeResp.statusCode, 201, dedupeResp.body);
+    assert.deepEqual((dedupeResp.json() as any).normalizedTelegramTags, ["#trueanal", "#adultvideo"]);
   } finally {
     await app.close();
     if (before[0] === undefined) delete process.env[mainKey]; else process.env[mainKey] = before[0];
