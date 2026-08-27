@@ -125,6 +125,7 @@ const BannersPage: React.FC = () => {
     form.setFieldsValue({
       targetType: "content",
       title: "首页运营图",
+      slot: "home_primary",
     });
     setDrawerOpen(true);
   };
@@ -137,6 +138,7 @@ const BannersPage: React.FC = () => {
       targetType: row.targetType,
       targetId: row.targetId,
       externalUrl: row.externalUrl,
+      slot: row.slot || "home_primary",
     });
     setDrawerOpen(true);
   };
@@ -203,11 +205,11 @@ const BannersPage: React.FC = () => {
         targetType: values.targetType,
         targetId: values.targetId || null,
         externalUrl: values.externalUrl || null,
+        slot: values.slot || "home_primary",
         reason: editing ? `编辑 Banner：${editing.title}` : `新建 Banner：${values.title}`,
       };
       if (!editing) Object.assign(payload, {
         actionLabel: "查看详情",
-        slot: "home_primary",
         status: "active",
         sortOrder: 0,
       });
@@ -288,6 +290,13 @@ const BannersPage: React.FC = () => {
       ),
     },
     {
+      title: "投放位",
+      dataIndex: "slot",
+      key: "slot",
+      width: 130,
+      render: (slot: string) => <Tag color={slot === "home_popup" ? "purple" : "blue"}>{slot === "home_popup" ? "首页首屏弹窗" : "首页轮播"}</Tag>,
+    },
+    {
       title: "更新",
       dataIndex: "updatedAt",
       key: "updatedAt",
@@ -326,7 +335,7 @@ const BannersPage: React.FC = () => {
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card>
-        只需三步：上传或选择封面图片 → 选择站内视频，或填写外网链接 → 创建即显示在首页。最多保留 3 张；私密邀请与支付链接不能作为 Banner 跳转目标。
+        只需三步：上传或选择封面图片 → 选择站内视频，或填写外网链接 → 选择投放位。首页轮播最多保留 3 张；首屏弹窗同一时间仅展示 1 张。私密邀请与支付链接不能作为 Banner 跳转目标。
       </Card>
       <Card
         title={<Title level={5} style={{ margin: 0 }}>Banner 运营位</Title>}
@@ -365,6 +374,12 @@ const BannersPage: React.FC = () => {
         <Form form={form} layout="vertical" preserve={false}>
           <Form.Item name="title" label="后台备注名称" rules={[{ required: true, message: "请输入便于识别的名称" }]} extra="仅用于后台识别；前台以图片为主展示。">
             <Input placeholder="例如：本周主推视频" maxLength={200} />
+          </Form.Item>
+          <Form.Item name="slot" label="投放位置" rules={[{ required: true }]} extra="首屏弹窗仅在用户首次进入首页时出现一次；用户可随时关闭。">
+            <Radio.Group>
+              <Radio value="home_primary">首页轮播 Banner</Radio>
+              <Radio value="home_popup">首页首屏弹窗</Radio>
+            </Radio.Group>
           </Form.Item>
           <Form.Item
             name="imageAssetId"

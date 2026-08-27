@@ -12,7 +12,7 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="" />
     <title>Samewave 同频 · 点播</title>
-    <link rel="stylesheet" href="./styles.css?v=20260827-catalog-p0-1" />
+    <link rel="stylesheet" href="./styles.css?v=20260827-vod-home-wallet-1" />
     <script src="/api/vendor/hls/hls.min.js"></script>
     <script id="videoObjectJsonLd" type="application/ld+json"></script>
   </head>
@@ -70,6 +70,17 @@
         </div>
       </section>
 
+      <section id="homePromoModal" class="home-promo-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="homePromoTitle">
+        <div class="home-promo-backdrop"></div>
+        <article class="home-promo-card">
+          <button id="homePromoClose" class="home-promo-close" type="button" aria-label="关闭广告">×</button>
+          <button id="homePromoAction" class="home-promo-action" type="button">
+            <span id="homePromoImage" class="home-promo-image"></span>
+            <span class="home-promo-copy"><strong id="homePromoTitle"></strong><small id="homePromoLabel">查看详情</small></span>
+          </button>
+        </article>
+      </section>
+
       <main id="appMain" class="app-main">
         <section id="homeView" class="tab-view">
           <section id="homeRecentSection" class="section-block home-recent-section is-hidden">
@@ -97,9 +108,10 @@
 
           <section id="homeThemesSection" class="section-block is-hidden">
             <div class="section-head">
-              <h3>按主题探索</h3>
+              <h3>热门类型</h3>
+              <button id="jumpPopularLibraryButton" class="text-button" type="button">查看全部</button>
             </div>
-            <div id="homeThemesList" class="topic-rail"></div>
+            <div id="homeThemesList" class="popular-type-grid"></div>
           </section>
         </section>
 
@@ -194,6 +206,16 @@
             </article>
           </div>
 
+          <section class="section-block account-shortcuts-section">
+            <div class="section-head"><div><p class="eyebrow">ACCOUNT</p><h3>账户服务</h3></div></div>
+            <div class="account-shortcut-grid">
+              <button id="walletShortcutButton" class="account-shortcut" type="button"><span>账</span><strong>支付与账单</strong><small>订单、支付方式与记录</small></button>
+              <button id="accountHistoryShortcutButton" class="account-shortcut" type="button"><span>播</span><strong>观看历史</strong><small>继续观看与播放进度</small></button>
+              <button id="accountPreferencesShortcutButton" class="account-shortcut" type="button"><span>偏</span><strong>内容偏好</strong><small>推荐设置即将开放</small></button>
+              <button id="accountHelpShortcutButton" class="account-shortcut" type="button"><span>帮</span><strong>帮助与规则</strong><small>边界、隐私与反馈</small></button>
+            </div>
+          </section>
+
           <section class="section-block">
             <div class="section-head">
               <div>
@@ -233,6 +255,12 @@
             </div>
             <div id="mePreferenceList" class="stack-list"></div>
           </section>
+        </section>
+
+        <section id="walletView" class="tab-view is-hidden">
+          <div class="panel-card wallet-hero"><div><p class="eyebrow">PAYMENT &amp; BILLING</p><h2>支付与账单</h2><p id="walletMembershipCopy" class="muted-copy">正在读取会员权益与订单记录…</p></div><button id="walletMembershipButton" class="primary-button" type="button">查看会员</button></div>
+          <div class="wallet-summary-grid"><article class="info-card"><p class="info-label">会员状态</p><strong id="walletMembershipStatus">加载中</strong><p id="walletMembershipExpiry" class="muted-copy">—</p></article><article class="info-card"><p class="info-label">支付方式</p><strong>Stars / USDT</strong><p class="muted-copy">按订单选择；平台不保存余额。</p></article></div>
+          <section class="section-block"><div class="section-head"><div><p class="eyebrow">ORDERS</p><h3>账单记录</h3></div></div><div id="walletOrdersList" class="stack-list"></div></section>
         </section>
 
         <section id="detailView" class="tab-view is-hidden">

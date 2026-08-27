@@ -342,6 +342,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       brandHint: "真实表达，在理解与边界中被看见",
       banners: banners.map((banner: any) => ({
         id: banner.id,
+        slot: banner.slot || "home_primary",
         eyebrow: banner.actionLabel || "查看详情",
         title: banner.title || "",
         description: banner.description || "",

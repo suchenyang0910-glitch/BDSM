@@ -96,6 +96,7 @@
   }
 
   const H5_INSTALL_GUIDE_STORAGE_KEY = "samewave_h5_install_guide_seen_v1";
+  const HOME_PROMO_DISMISS_PREFIX = "samewave_home_promo_dismissed_";
   let librarySearchTimer = 0;
 
   function isStandaloneH5() {
@@ -834,6 +835,9 @@
         fromTab: params.get("from") || "me",
       };
     }
+    if (params.get("view") === "wallet") {
+      return { view: "wallet", id: "", tab: "me", fromTab: "me" };
+    }
     if (params.get("view") === "content" && params.get("id")) {
       return {
         view: "detail",
@@ -870,6 +874,13 @@
     window.location.hash = params.toString();
   }
 
+  function setHashForWallet() {
+    clearLandingQueryParams();
+    const params = new URLSearchParams();
+    params.set("view", "wallet");
+    window.location.hash = params.toString();
+  }
+
   function openContentDetail(id, fromTab, options) {
     const opts = options || {};
     state.resumeIntent = {
@@ -903,6 +914,24 @@
     state.inlineToastTimer = window.setTimeout(function () {
       toast.classList.add("is-hidden");
     }, 5000);
+  }
+
+  function copyText(value, successMessage) {
+    const text = String(value || "");
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { showInlineMessage(successMessage || "已复制"); }).catch(function () { showInlineMessage("复制失败，请长按选择复制。"); });
+      return;
+    }
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.setAttribute("readonly", "readonly");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    try { document.execCommand("copy"); showInlineMessage(successMessage || "已复制"); } catch (_) { showInlineMessage("复制失败，请长按选择复制。"); }
+    document.body.removeChild(input);
   }
 
   function createSkeletonCards(count) {
@@ -1008,12 +1037,13 @@
     const host = $("homeBannerList");
     const section = document.querySelector(".home-banner-section");
     host.innerHTML = "";
-    if (!home || !home.banners || home.banners.length === 0) {
+    const banners = home && home.banners ? home.banners.filter(function (banner) { return banner.slot !== "home_popup"; }) : [];
+    if (!banners.length) {
       if (section) section.classList.add("is-hidden");
       return;
     }
     if (section) section.classList.remove("is-hidden");
-    home.banners.forEach(function (banner) {
+    banners.forEach(function (banner) {
       const card = document.createElement("article");
       card.className = "banner-card" + (banner.imageUrl ? " has-image" : "");
       card.innerHTML =
@@ -1025,6 +1055,38 @@
       });
       host.appendChild(card);
     });
+  }
+
+  function renderHomePopup() {
+    const modal = $("homePromoModal");
+    const popup = state.home && state.home.banners
+      ? state.home.banners.find(function (banner) { return banner.slot === "home_popup"; })
+      : null;
+    const isHome = state.route && state.route.view === "tab" && state.route.tab === "home";
+    if (!popup || !isHome) {
+      modal.classList.add("is-hidden");
+      return;
+    }
+    const storageKey = HOME_PROMO_DISMISS_PREFIX + popup.id;
+    try {
+      if (window.sessionStorage.getItem(storageKey) === "1") {
+        modal.classList.add("is-hidden");
+        return;
+      }
+    } catch (_) {}
+    $("homePromoImage").innerHTML = imageTag(popup.imageUrl, "home-promo-cover", popup.title || "首页活动", true);
+    $("homePromoTitle").textContent = popup.title || "发现本周精选";
+    $("homePromoLabel").textContent = popup.actionLabel || "查看详情";
+    modal.classList.remove("is-hidden");
+    $("homePromoClose").onclick = function () {
+      try { window.sessionStorage.setItem(storageKey, "1"); } catch (_) {}
+      modal.classList.add("is-hidden");
+    };
+    $("homePromoAction").onclick = function () {
+      try { window.sessionStorage.setItem(storageKey, "1"); } catch (_) {}
+      modal.classList.add("is-hidden");
+      handleBannerAction(popup);
+    };
   }
 
   function renderFeaturedCard() {
@@ -1127,7 +1189,7 @@
       .filter(function (theme) {
         return Number(theme.publishedContentCount || 0) > 0 && String(theme.name || "") !== "全部";
       })
-      .slice(0, 4);
+      .slice(0, 6);
     const section = $("homeThemesSection");
     const host = $("homeThemesList");
     host.innerHTML = "";
@@ -1141,8 +1203,15 @@
     themes.forEach(function (theme) {
       const card = document.createElement("button");
       card.type = "button";
-      card.className = "topic-chip";
-      card.innerHTML = '<strong>' + escapeHtml(theme.name) + '</strong>';
+      const sample = ((state.home.latestContents || []).concat(state.home.contents || [])).find(function (item) {
+        return item.categoryId === theme.id || (item.categories || []).some(function (category) { return category.id === theme.id; });
+      });
+      card.className = "popular-type-card" + (sample && sample.coverUrl ? " has-image" : "");
+      card.innerHTML =
+        imageTag(sample && sample.coverUrl, "popular-type-image", theme.name || "热门类型", true) +
+        '<span class="popular-type-shade"></span>' +
+        '<span class="popular-type-copy"><strong>' + escapeHtml(theme.name) + '</strong><small>' +
+          escapeHtml(String(theme.publishedContentCount || 0)) + ' 条内容</small></span>';
       card.addEventListener("click", function () {
         state.library.categoryId = theme.id;
         setHashForTab("library");
@@ -1168,6 +1237,7 @@
       $("homeLatestGrid").innerHTML = '<div class="empty-state">内容即将上线</div>';
     }
     renderDesktopRail();
+    renderHomePopup();
     updatePageSeo(state.home.seo || null);
     updateOgImage("");
     updateJsonLd(null);
@@ -1573,6 +1643,61 @@
     renderChannelCards();
     renderOrdersList();
     renderPreferenceCards();
+  }
+
+  function renderWallet() {
+    const membershipSummary = state.entitlements.data && state.entitlements.data.summary
+      ? state.entitlements.data.summary.membership
+      : { status: "none", expiresAt: null };
+    const active = membershipSummary.status === "active";
+    $("walletMembershipStatus").textContent = active ? "已开通" : "未开通";
+    $("walletMembershipExpiry").textContent = active
+      ? (membershipSummary.expiresAt ? "有效至 " + formatDateShort(membershipSummary.expiresAt) : "会员权益有效")
+      : "开通后即可观看会员完整内容。";
+    $("walletMembershipCopy").textContent = active
+      ? "会员已生效。支付记录与待处理订单统一保存在这里。"
+      : "在这里查看订单、继续支付待完成订单，或前往会员页开通权益。";
+
+    const host = $("walletOrdersList");
+    host.innerHTML = "";
+    if (state.orders.loading) {
+      host.innerHTML = createSkeletonCards(2);
+      return;
+    }
+    if (!state.orders.items.length) {
+      host.innerHTML = '<div class="inline-state">暂无支付记录。开通会员或解锁一条内容后，账单会显示在这里。</div>';
+      return;
+    }
+    state.orders.items.slice(0, 20).forEach(function (order) {
+      const card = document.createElement("article");
+      card.className = "stack-card wallet-order-card";
+      const method = order.paymentMethod === "telegram_stars" ? "Telegram Stars" : "USDT-TRC20";
+      const statusText = order.status === "paid" ? "已支付" : order.status === "pending" ? "待支付" : order.status;
+      card.innerHTML =
+        '<div class="stack-head"><div><div class="stack-title">' + escapeHtml(order.product && order.product.title ? order.product.title : "内容订单") +
+        '</div><div class="stack-subtitle">' + escapeHtml(method) + ' · ' + escapeHtml(formatDate(order.createdAt)) +
+        '</div></div><div class="status-badge' + (order.status === "pending" ? " status-warning" : "") + '">' + escapeHtml(statusText) +
+        '</div></div><div class="stack-meta"><span>' + escapeHtml(formatPriceMinor(order.amountMinor, order.currency)) + '</span><span>订单号 ' + escapeHtml(order.orderNo) +
+        '</span></div><div class="wallet-order-actions"></div>';
+      const actions = card.querySelector(".wallet-order-actions");
+      const copyButton = document.createElement("button");
+      copyButton.type = "button";
+      copyButton.className = "ghost-button";
+      copyButton.textContent = "复制订单号";
+      copyButton.addEventListener("click", function () { copyText(order.orderNo, "订单号已复制"); });
+      actions.appendChild(copyButton);
+      if (order.status === "pending") {
+        const payButton = document.createElement("button");
+        payButton.type = "button";
+        payButton.className = "primary-button";
+        payButton.textContent = "继续支付";
+        payButton.addEventListener("click", function () {
+          openCheckoutPage({ orderNo: order.orderNo, paymentMethod: order.paymentMethod === "telegram_stars" ? "stars" : "usdt" });
+        });
+        actions.appendChild(payButton);
+      }
+      host.appendChild(card);
+    });
   }
 
   function pendingOrderForProduct(productId) {
@@ -2134,6 +2259,7 @@
       state.orders.loading = false;
       renderNotifyBadge();
       renderMe();
+      if (state.route && state.route.view === "wallet") renderWallet();
     }
   }
 
@@ -2149,6 +2275,7 @@
       state.entitlements.loading = false;
       renderMembership();
       renderMe();
+      if (state.route && state.route.view === "wallet") renderWallet();
     }
   }
 
@@ -2571,39 +2698,44 @@
     if (leavingDetail) detachActivePlayer("leave");
     state.route = routeState;
     if (routeState.categoryId) state.library.categoryId = routeState.categoryId;
-    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "history" ? "watch_history" : routeState.tab });
+    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "history" ? "watch_history" : routeState.view === "wallet" ? "wallet" : routeState.tab });
     const isDetail = routeState.view === "detail";
     const isHistory = routeState.view === "history";
+    const isWallet = routeState.view === "wallet";
+    if (isDetail || isHistory || isWallet || routeState.tab !== "home") $("homePromoModal").classList.add("is-hidden");
     const titleMap = {
       home: ["同频", "免费试看，解锁后继续观看"],
       library: ["片库", "按标题、简介与标签查找内容"],
       membership: ["会员", "查看会员权益、内容包与续费入口"],
       me: ["我的", "查看权益、订单和继续观看记录"],
     };
-    const isHome = !isDetail && !isHistory && routeState.tab === "home";
+    const isHome = !isDetail && !isHistory && !isWallet && routeState.tab === "home";
 
-    $("backButton").hidden = !(isDetail || isHistory);
-    $("bottomNav").classList.toggle("is-hidden", isDetail || isHistory);
+    $("backButton").hidden = !(isDetail || isHistory || isWallet);
+    $("bottomNav").classList.toggle("is-hidden", isDetail || isHistory || isWallet);
     $("appHeader").classList.toggle("is-home", isHome);
-    $("headerTitle").textContent = isDetail ? "视频详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]);
+    $("headerTitle").textContent = isDetail ? "视频详情" : (isHistory ? "观看历史" : (isWallet ? "支付与账单" : titleMap[routeState.tab][0]));
     $("headerSubtitle").textContent = isDetail
       ? "试看后可直接解锁完整内容"
       : isHistory
         ? "按最近播放时间排序，可删除单条或清空记录"
-      : titleMap[routeState.tab][1];
+      : isWallet
+        ? "查看会员状态、订单与支付记录"
+        : titleMap[routeState.tab][1];
     $("headerSubtitle").hidden = false;
     $("headerEyebrow").hidden = isHome;
 
     ["home", "library", "membership", "me"].forEach(function (tab) {
-      $(tab + "View").classList.toggle("is-hidden", isDetail || isHistory || routeState.tab !== tab);
+      $(tab + "View").classList.toggle("is-hidden", isDetail || isHistory || isWallet || routeState.tab !== tab);
     });
     $("detailView").classList.toggle("is-hidden", !isDetail);
     $("watchHistoryView").classList.toggle("is-hidden", !isHistory);
-    $("desktopRail").classList.toggle("is-hidden", isDetail || isHistory);
-    if (!isDetail && !isHistory) renderDesktopRail();
+    $("walletView").classList.toggle("is-hidden", !isWallet);
+    $("desktopRail").classList.toggle("is-hidden", isDetail || isHistory || isWallet);
+    if (!isDetail && !isHistory && !isWallet) renderDesktopRail();
 
     document.querySelectorAll(".nav-item").forEach(function (button) {
-      button.classList.toggle("is-active", !isDetail && !isHistory && button.getAttribute("data-tab") === routeState.tab);
+      button.classList.toggle("is-active", !isDetail && !isHistory && !isWallet && button.getAttribute("data-tab") === routeState.tab);
     });
 
     if (isDetail) {
@@ -2613,6 +2745,12 @@
     if (isHistory) {
       if (!state.watch.loaded) loadWatchProgress(1, false);
       renderWatchHistory();
+      return;
+    }
+    if (isWallet) {
+      loadOrders();
+      loadEntitlements();
+      renderWallet();
       return;
     }
 
@@ -2631,6 +2769,7 @@
       loadChannels();
       if (!state.watch.loaded) loadWatchProgress(1, false);
     }
+    renderHomePopup();
   }
 
   async function bootstrapApp() {
@@ -2696,6 +2835,12 @@
     $("meWatchHistoryButton").addEventListener("click", function () {
       setHashForHistory("me");
     });
+    $("walletShortcutButton").addEventListener("click", setHashForWallet);
+    $("accountHistoryShortcutButton").addEventListener("click", function () { setHashForHistory("me"); });
+    $("accountPreferencesShortcutButton").addEventListener("click", function () { showInlineMessage("内容偏好设置正在完善中，当前推荐会根据你的观看与解锁记录逐步优化。"); });
+    $("accountHelpShortcutButton").addEventListener("click", function () { showInlineMessage("请遵守社区规则、尊重边界并保护隐私；如需帮助，请联系官方 Bot。 "); });
+    $("walletMembershipButton").addEventListener("click", function () { setHashForTab("membership"); });
+    $("jumpPopularLibraryButton").addEventListener("click", function () { state.library.categoryId = "all"; setHashForTab("library"); });
     $("watchHistoryLoadMore").addEventListener("click", function () {
       if (state.watch.loading) return;
       loadWatchProgress((state.watch.pagination.page || 1) + 1, true);

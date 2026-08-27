@@ -481,6 +481,40 @@ img.is-image-unavailable {
   display: none;
 }
 
+.popular-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.popular-type-card {
+  position: relative;
+  display: flex;
+  min-height: 104px;
+  overflow: hidden;
+  align-items: flex-end;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, rgba(166, 107, 255, 0.34), rgba(38, 34, 54, 0.96));
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.popular-type-image,
+.popular-type-shade {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.popular-type-image { object-fit: cover; }
+.popular-type-shade { background: linear-gradient(180deg, rgba(14, 12, 22, 0.04), rgba(14, 12, 22, 0.78)); }
+.popular-type-copy { position: relative; z-index: 1; display: grid; gap: 2px; }
+.popular-type-copy strong { font-size: 16px; }
+.popular-type-copy small { color: rgba(255,255,255,.74); font-size: 12px; }
+
 .topic-chip {
   flex: 0 0 auto;
   min-width: 104px;
@@ -1002,6 +1036,45 @@ img.is-image-unavailable {
   margin-top: 12px;
 }
 
+.account-shortcut-grid,
+.wallet-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-shortcut {
+  display: grid;
+  min-height: 110px;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: linear-gradient(145deg, rgba(51, 43, 73, 0.94), rgba(31, 28, 43, 0.94));
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.account-shortcut > span {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: rgba(166, 107, 255, 0.2);
+  color: var(--brand-soft);
+  font-size: 13px;
+  font-weight: 800;
+}
+.account-shortcut strong { font-size: 14px; }
+.account-shortcut small { color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
+
+.wallet-hero { margin-bottom: 12px; }
+.wallet-order-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.wallet-order-actions .ghost-button,
+.wallet-order-actions .primary-button { min-height: 36px; padding: 6px 12px; }
+
 .detail-tag {
   display: inline-flex;
   align-items: center;
@@ -1312,6 +1385,24 @@ img.is-image-unavailable {
   place-items: center;
   padding: 24px;
 }
+
+.home-promo-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.home-promo-backdrop { position: absolute; inset: 0; background: rgba(8, 7, 12, .74); backdrop-filter: blur(8px); }
+.home-promo-card { position: relative; z-index: 1; width: min(100%, 440px); overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 22px; background: var(--bg-surface); box-shadow: 0 28px 80px rgba(0,0,0,.56); }
+.home-promo-close { position: absolute; z-index: 2; top: 10px; right: 10px; width: 36px; height: 36px; border-radius: 50%; border: 1px solid rgba(255,255,255,.18); background: rgba(16,14,24,.74); color: #fff; font-size: 26px; line-height: 1; }
+.home-promo-action { position: relative; display: block; width: 100%; overflow: hidden; padding: 0; border: 0; background: var(--bg-elevated); color: var(--text-primary); text-align: left; }
+.home-promo-image { display: block; aspect-ratio: 16 / 10; background: linear-gradient(135deg, rgba(166,107,255,.38), rgba(38,34,54,.9)); }
+.home-promo-cover { width: 100%; height: 100%; object-fit: cover; }
+.home-promo-copy { display: grid; gap: 4px; padding: 15px 16px 17px; }
+.home-promo-copy strong { font-size: 18px; }
+.home-promo-copy small { color: var(--brand-soft); font-size: 13px; font-weight: 700; }
 
 .install-guide-backdrop {
   position: absolute;
