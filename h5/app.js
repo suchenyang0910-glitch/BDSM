@@ -804,10 +804,15 @@
     const fallbackDescription = "同频 H5 点播：免费试看、单条购买、内容包与月度会员。";
     const title = seo && seo.title ? seo.title : fallbackTitle;
     const description = seo && seo.description ? seo.description : fallbackDescription;
-    const keywords = seo && Array.isArray(seo.keywords) ? seo.keywords.join(",") : "";
+    const keywordItems = [];
+    if (seo && Array.isArray(seo.keywords)) keywordItems.push.apply(keywordItems, seo.keywords);
+    if (seo && Array.isArray(seo.geoKeywords)) keywordItems.push.apply(keywordItems, seo.geoKeywords);
+    const keywords = Array.from(new Set(keywordItems.map(function (item) { return String(item || "").trim(); }).filter(Boolean))).join(",");
+    const geoKeywords = seo && Array.isArray(seo.geoKeywords) ? seo.geoKeywords.join(",") : "";
     document.title = title;
     setMetaContent('meta[name="description"]', { name: "description" }, description);
     setMetaContent('meta[name="keywords"]', { name: "keywords" }, keywords);
+    setMetaContent('meta[name="geo.keywords"]', { name: "geo.keywords" }, geoKeywords);
     setMetaContent('meta[name="robots"]', { name: "robots" }, "noindex,nofollow");
     setMetaContent('meta[property="og:title"]', { property: "og:title" }, title);
     setMetaContent('meta[property="og:description"]', { property: "og:description" }, description);
@@ -2008,9 +2013,10 @@
     }
     const detail = state.detailCache[id];
     trackAnalytics("content_opened", { contentId: detail.id, sourceModule: state.route.fromTab || "home" });
-    // 应用详情页不输出付费内容元数据给 OG/JSON-LD；公开发现只由首页和片库承担。
-    updatePageSeo(null);
-    updateOgImage("");
+    // 单条内容的 SEO/GEO 优先；服务端只会在该条内容未设置时回退平台默认值。
+    // 应用页仍不输出付费内容的 VideoObject JSON-LD，避免预取媒体地址。
+    updatePageSeo(detail.effectiveSeo || null);
+    updateOgImage(detail.coverUrl || "");
     updateJsonLd(null);
 
     const playback = getDetailPlaybackStatus(detail);

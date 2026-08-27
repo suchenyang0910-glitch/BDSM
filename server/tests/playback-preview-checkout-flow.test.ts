@@ -30,6 +30,15 @@ test("h5/app.js distinguishes preview analytics from full playback analytics", a
   assert.match(source, /trackAnalytics\("playback_completed"/);
 });
 
+test("h5 detail applies the server-resolved per-content SEO and GEO metadata", async () => {
+  const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  assert.match(source, /keywordItems\.push\.apply\(keywordItems, seo\.geoKeywords\)/);
+  assert.match(source, /meta\[name="geo\.keywords"\]/);
+  assert.match(source, /updatePageSeo\(detail\.effectiveSeo \|\| null\)/);
+  assert.match(source, /updateOgImage\(detail\.coverUrl \|\| ""\)/);
+  assert.doesNotMatch(source, /renderDetail\(id\)[\s\S]{0,1800}updatePageSeo\(null\)/);
+});
+
 test("h5 back navigation synchronously stops and detaches the active video", async () => {
   const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   assert.match(source, /function detachActivePlayer\(reason\) \{[\s\S]{0,1000}activeVideo\.pause\(\)[\s\S]{0,700}clearManagedPlaybackState\(\)[\s\S]{0,700}activeVideo\.removeAttribute\("src"\); activeVideo\.load\(\);/);
