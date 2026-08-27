@@ -975,8 +975,8 @@ async function queueTelegramPublishForContent(input: {
       const jobToken = `tgj_${createHash("sha256").update(jobSeed).digest("hex").slice(0, 48)}`;
       let captionBundle: { captionText?: string | null; parseMode?: string | null } = {};
       if (plan.channelKindDb === "public_free_preview") {
-        const { caption, parseMode } = buildPreviewVideoCaption(content);
-        captionBundle = { captionText: appendTelegramTagLine(caption, normalizedTelegramTags), parseMode };
+        const { caption, parseMode } = buildPreviewVideoCaption(content, normalizedTelegramTags);
+        captionBundle = { captionText: caption, parseMode };
       } else if (plan.channelKindDb === "membership_full" || plan.channelKindDb === "package_full") {
         // 私密频道完整视频不再只显示标签；worker 会以标题、简介为主体并追加这些标签。
         captionBundle = { captionText: null, parseMode: "HTML" };

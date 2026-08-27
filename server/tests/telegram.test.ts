@@ -86,6 +86,19 @@ test("免费频道试看文案只导向官方 Bot 对话，不直跳站外收银
   });
   assert.match(withoutProduct.caption, /https:\/\/t\.me\/InTune_bdsm_bot/);
   assert.doesNotMatch(withoutProduct.caption, /h5-pay\.html|\?content=/);
+
+  const withTags = buildPreviewVideoCaption({
+    id: "content-test-003",
+    productId: "product-test-003",
+    title: "标签顺序",
+    description: "测试说明",
+  }, ["#标签一", "#标签二"]);
+  assert.match(
+    withTags.caption,
+    /#标签一 #标签二\n\n👉👉<a href="https:\/\/t\.me\/InTune_bdsm_bot\?start=content_content-test-003">打开【同频 Bot】 查看试看与完整内容<\/a>👈👈/,
+    "标签后必须空一行再显示 Bot CTA",
+  );
+  assert.equal((withTags.caption.match(/#标签一/g) || []).length, 1, "标签不得重复追加");
 });
 
 test("Bot /start content payload 只接受私聊 UUID，并生成直达内容详情的 Mini App 地址", () => {

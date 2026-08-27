@@ -629,10 +629,15 @@
     const fallbackDescription = "同频内容目录与权益入口";
     const title = seo && seo.title ? seo.title : fallbackTitle;
     const description = seo && seo.description ? seo.description : fallbackDescription;
-    const keywords = seo && Array.isArray(seo.keywords) ? seo.keywords.join(",") : "";
+    const keywordItems = [];
+    if (seo && Array.isArray(seo.keywords)) keywordItems.push.apply(keywordItems, seo.keywords);
+    if (seo && Array.isArray(seo.geoKeywords)) keywordItems.push.apply(keywordItems, seo.geoKeywords);
+    const keywords = Array.from(new Set(keywordItems.map(function (item) { return String(item || "").trim(); }).filter(Boolean))).join(",");
+    const geoKeywords = seo && Array.isArray(seo.geoKeywords) ? seo.geoKeywords.join(",") : "";
     document.title = title;
     setMetaContent('meta[name="description"]', { name: "description" }, description);
     setMetaContent('meta[name="keywords"]', { name: "keywords" }, keywords);
+    setMetaContent('meta[name="geo.keywords"]', { name: "geo.keywords" }, geoKeywords);
     setMetaContent('meta[name="robots"]', { name: "robots" }, "noindex,nofollow");
     setMetaContent('meta[property="og:title"]', { property: "og:title" }, title);
     setMetaContent('meta[property="og:description"]', { property: "og:description" }, description);
@@ -1366,9 +1371,10 @@
     }
     const detail = state.detailCache[id];
     trackAnalytics("content_opened", { contentId: detail.id, sourceModule: state.route.fromTab || "home" });
-    // Mini App 详情同样不暴露私密内容元数据给页面预取器。
-    updatePageSeo(null);
-    updateOgImage("");
+    // 详情页使用服务端已合并的 SEO/GEO：单条内容优先，未设置时自动回退平台默认。
+    // 页面维持 noindex，不输出付费内容的 VideoObject JSON-LD。
+    updatePageSeo(detail.effectiveSeo || null);
+    updateOgImage(detail.coverUrl || "");
     updateJsonLd(null);
 
     const playback = getDetailPlaybackStatus(detail);

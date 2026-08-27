@@ -100,7 +100,10 @@ function safeHexDigest(input: string, len = 32): string {
 
 // 给运营侧后台的免费频道试看文案模板。
 // 推广/公开频道一律先进入官方 Bot 对话；不直跳站外网页或暴露支付链路。
-export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" | "description" | "productId">): {
+export function buildPreviewVideoCaption(
+  content: Pick<Content, "id" | "title" | "description" | "productId">,
+  telegramTags: string[] = [],
+): {
   caption: string;
   parseMode: "HTML";
 } {
@@ -108,14 +111,19 @@ export function buildPreviewVideoCaption(content: Pick<Content, "id" | "title" |
   const safeDesc = escapeHtml(
     String(content.description || "30–60 秒试看说明（运营需确保上传前已加水印）")
   ).slice(0, 280);
+  // 免费流量入口的标签必须紧跟内容介绍；再空一行显示 Bot CTA，避免二者堆在一起，
+  // 同时让 CTA 在频道中保持独立、可点击的引导位。
+  const tagLine = normalizeTelegramHashtagsFromInputs([telegramTags]).join(" ");
   const caption = [
     `<b>《${safeTitle}》</b>`,
     "",
     `${safeDesc}`,
     "完整内容已收录于同频。",
     "",
+    tagLine || null,
+    tagLine ? "" : null,
     `👉👉<a href="${officialBotContentStartUrl(content.id)}">打开【同频 Bot】 查看试看与完整内容</a>👈👈`,
-  ].join("\n");
+  ].filter((line): line is string => line !== null).join("\n");
   return { caption, parseMode: "HTML" };
 }
 
@@ -465,9 +473,9 @@ export async function processPublishJob(
       parseMode: job.parseMode === "HTML" ? "HTML" : undefined,
     };
   } else if (isPreviewKind && job.content) {
-    const previewBundle = buildPreviewVideoCaption(job.content);
+    const previewBundle = buildPreviewVideoCaption(job.content, normalizedTelegramTags);
     captionBundle = {
-      caption: appendTelegramTagLine(previewBundle.caption, normalizedTelegramTags),
+      caption: previewBundle.caption,
       parseMode: previewBundle.parseMode,
     };
   } else if (normalizedTelegramTags.length > 0) {

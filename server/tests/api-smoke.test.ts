@@ -68,12 +68,18 @@ test("catalog APIs return seeded home, category and content data", async () => {
       "catalog membership cards must carry their purchasable product contract",
     );
 
+    await prisma.content.update({
+      where: { id: TEST_KNOWN_IDS.contentMembership },
+      data: { geoKeywords: ["会员专属主题"] },
+    });
     const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentMembership}` });
     assert.equal(detail.statusCode, 200, detail.body);
     const detailBody = detail.json() as any;
     assert.equal(detailBody.id, TEST_KNOWN_IDS.contentMembership, "content detail id match");
     assert.equal(detailBody.robots, "noindex,nofollow", "content detail should stay noindex by default");
     assert.equal(detailBody.effectiveSeo?.description, "会员内容 SEO 描述", "detail should prefer content SEO override");
+    assert.equal(detailBody.effectiveSeo?.source?.description, "content", "detail SEO source should identify content override");
+    assert.equal(detailBody.effectiveSeo?.source?.geoKeywords, "content", "detail GEO should prefer content override when configured");
     assert.equal(
       detailBody.product?.id,
       TEST_KNOWN_IDS.membershipProductKey,
