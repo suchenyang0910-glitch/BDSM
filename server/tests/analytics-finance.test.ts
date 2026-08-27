@@ -289,6 +289,28 @@ test("admin analytics overview exposes aggregate funnel only and enforces analyt
   }
 });
 
+test("Google Analytics integration status never exposes the Measurement Protocol secret", async () => {
+  const previousSecret = process.env.GA4_MEASUREMENT_PROTOCOL_API_SECRET;
+  process.env.GA4_MEASUREMENT_PROTOCOL_API_SECRET = "ga4-measurement-protocol-test-secret";
+  const app = await createApp(prisma);
+  try {
+    const operatorCookie = await loginAdmin(app, "operator");
+    const supportCookie = await loginAdmin(app, "customerService");
+    const forbidden = await app.inject({ method: "GET", url: "/api/admin/analytics/google-integration", headers: { cookie: supportCookie } });
+    assert.equal(forbidden.statusCode, 403, forbidden.body);
+    const ok = await app.inject({ method: "GET", url: "/api/admin/analytics/google-integration", headers: { cookie: operatorCookie } });
+    assert.equal(ok.statusCode, 200, ok.body);
+    const body = ok.json() as any;
+    assert.equal(body.measurementProtocol.configured, true);
+    assert.equal(body.measurementProtocol.storage, "server_environment");
+    assert.equal(JSON.stringify(body).includes("ga4-measurement-protocol-test-secret"), false);
+  } finally {
+    await app.close();
+    if (previousSecret === undefined) delete process.env.GA4_MEASUREMENT_PROTOCOL_API_SECRET;
+    else process.env.GA4_MEASUREMENT_PROTOCOL_API_SECRET = previousSecret;
+  }
+});
+
 test("traffic entries support admin CRUD, public resolve, and aggregated attribution metrics", async () => {
   const app = await createApp(prisma);
   try {

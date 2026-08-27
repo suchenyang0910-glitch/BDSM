@@ -196,6 +196,19 @@ async function loadAnalyticsOverviewAggregates(prisma: AnalyticsQueryClient, fro
 export default async function analyticsAndPreferenceRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
 
+  fastify.get("/admin/analytics/google-integration", { preHandler: [requireAdmin("analytics:view")] }, async (_req, reply) => {
+    const measurementId = String(process.env.GA4_MEASUREMENT_ID || "G-7EYN98PSVP").trim();
+    const apiSecret = String(process.env.GA4_MEASUREMENT_PROTOCOL_API_SECRET || "").trim();
+    return reply.send({
+      webTag: { measurementId, configured: /^G-[A-Z0-9]+$/i.test(measurementId) },
+      measurementProtocol: {
+        configured: apiSecret.length >= 12 && !/^REPLACE_/i.test(apiSecret),
+        storage: "server_environment",
+      },
+      message: "Measurement Protocol 密钥仅保存在服务端环境变量中，后台不会回显、传输或写入数据库。",
+    });
+  });
+
   fastify.get("/admin/analytics/overview", { preHandler: [requireAdmin("analytics:view")] }, async (req, reply) => {
     const parsed = ANALYTICS_ADMIN_QUERY.safeParse(req.query || {});
     if (!parsed.success) return reply.status(400).send({ error: "bad_request", message: "统计周期不合法" });

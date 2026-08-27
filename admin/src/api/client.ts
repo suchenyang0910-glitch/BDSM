@@ -69,6 +69,7 @@ import type {
   StartTelegramPublishInput,
   StartTelegramPublishResp,
   AdminAnalyticsOverview,
+  AdminGoogleAnalyticsIntegration,
   AdminTrafficEntryListResp,
   CreateAdminTrafficEntryInput,
   UpdateAdminTrafficEntryInput,
@@ -325,6 +326,11 @@ export async function listAdminPackages(): Promise<{ data: AdminPackageItem[] }>
 
 export async function getAdminAnalyticsOverview(preset: "7d" | "30d" = "7d"): Promise<AdminAnalyticsOverview> {
   const res = await http.get("/admin/analytics/overview", { params: { preset } });
+  return res.data;
+}
+
+export async function getAdminGoogleAnalyticsIntegration(): Promise<AdminGoogleAnalyticsIntegration> {
+  const res = await http.get("/admin/analytics/google-integration");
   return res.data;
 }
 

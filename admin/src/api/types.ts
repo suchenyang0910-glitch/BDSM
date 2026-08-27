@@ -23,6 +23,12 @@ export type AdminAnalyticsOverview = {
   privacy: string;
 };
 
+export type AdminGoogleAnalyticsIntegration = {
+  webTag: { measurementId: string; configured: boolean };
+  measurementProtocol: { configured: boolean; storage: "server_environment" };
+  message: string;
+};
+
 export type TrafficEntryType = "telegram_channel" | "telegram_bot" | "web" | "facebook" | "x" | "partner";
 export type TrafficEntryDestinationType = "content" | "category" | "package" | "membership";
 export type TrafficEntryStatus = "active" | "inactive";

@@ -1,9 +1,9 @@
 import React from "react";
-import { Alert, Card, Col, Empty, Progress, Row, Segmented, Space, Spin, Statistic, Table, Typography } from "antd";
+import { Alert, Card, Col, Empty, Progress, Row, Segmented, Space, Spin, Statistic, Table, Tag, Typography } from "antd";
 import { BarChartOutlined, ReloadOutlined, UserOutlined, VideoCameraOutlined, WalletOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
-import { errMsg, getAdminAnalyticsOverview } from "../api/client";
-import type { AdminAnalyticsOverview } from "../api/types";
+import { errMsg, getAdminAnalyticsOverview, getAdminGoogleAnalyticsIntegration } from "../api/client";
+import type { AdminAnalyticsOverview, AdminGoogleAnalyticsIntegration } from "../api/types";
 
 const { Title, Text } = Typography;
 
@@ -22,11 +22,15 @@ const PLATFORM_LABEL: Record<string, string> = { h5: "H5", telegram_mini_app: "T
 const AnalyticsPage: React.FC = () => {
   const [preset, setPreset] = React.useState<"7d" | "30d">("7d");
   const [data, setData] = React.useState<AdminAnalyticsOverview | null>(null);
+  const [googleIntegration, setGoogleIntegration] = React.useState<AdminGoogleAnalyticsIntegration | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const load = React.useCallback(async () => {
     setLoading(true); setError(null);
-    try { setData(await getAdminAnalyticsOverview(preset)); }
+    try {
+      const [overview, integration] = await Promise.all([getAdminAnalyticsOverview(preset), getAdminGoogleAnalyticsIntegration()]);
+      setData(overview); setGoogleIntegration(integration);
+    }
     catch (e) { setError(errMsg(e, "加载数据分析失败")); }
     finally { setLoading(false); }
   }, [preset]);
@@ -38,6 +42,13 @@ const AnalyticsPage: React.FC = () => {
         <Segmented value={preset} options={[{ label: "近 7 天", value: "7d" }, { label: "近 30 天", value: "30d" }]} onChange={(v) => setPreset(v as "7d" | "30d")} />
       </div>
       {error && <Alert type="error" showIcon message={error} />}
+      {googleIntegration && <Card title="Google Analytics 集成">
+        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+          <Space wrap><Text>网页标签：{googleIntegration.webTag.measurementId}</Text><Tag color={googleIntegration.webTag.configured ? "success" : "warning"}>{googleIntegration.webTag.configured ? "已启用" : "未配置"}</Tag></Space>
+          <Space wrap><Text>Measurement Protocol API 密钥</Text><Tag color={googleIntegration.measurementProtocol.configured ? "success" : "warning"}>{googleIntegration.measurementProtocol.configured ? "已配置" : "待配置"}</Tag><Text type="secondary">仅服务端环境变量保存</Text></Space>
+          <Text type="secondary">{googleIntegration.message}</Text>
+        </Space>
+      </Card>}
       {data && <>
         <Alert type="info" showIcon message={data.privacy} />
         <Row gutter={[16, 16]}>
