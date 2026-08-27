@@ -847,13 +847,14 @@
       };
     }
     const tab = params.get("tab") || "home";
-    return { view: "tab", id: "", tab: tab, fromTab: tab };
+    return { view: "tab", id: "", tab: tab, fromTab: tab, categoryId: params.get("categoryId") || "" };
   }
 
-  function setHashForTab(tab) {
+  function setHashForTab(tab, categoryId) {
     clearLandingQueryParams();
     const params = new URLSearchParams();
     params.set("tab", tab);
+    if (tab === "library" && categoryId && categoryId !== "all") params.set("categoryId", categoryId);
     window.location.hash = params.toString();
   }
 
@@ -1213,8 +1214,7 @@
         '<span class="popular-type-copy"><strong>' + escapeHtml(theme.name) + '</strong><small>' +
           escapeHtml(String(theme.publishedContentCount || 0)) + ' 条内容</small></span>';
       card.addEventListener("click", function () {
-        state.library.categoryId = theme.id;
-        setHashForTab("library");
+        setHashForTab("library", theme.id);
       });
       host.appendChild(card);
     });
@@ -2145,8 +2145,7 @@
       return;
     }
     if (banner.targetType === "category" && banner.targetId) {
-      state.library.categoryId = banner.targetId;
-      setHashForTab("library");
+      setHashForTab("library", banner.targetId);
       return;
     }
     if (banner.targetType === "package" && banner.targetId) {
@@ -2696,6 +2695,7 @@
   function routeTo(routeState) {
     const leavingDetail = state.route && state.route.view === "detail" && routeState.view !== "detail";
     if (leavingDetail) detachActivePlayer("leave");
+    const refreshLibraryForCategory = routeState.tab === "library" && !!routeState.categoryId && routeState.categoryId !== state.library.categoryId;
     state.route = routeState;
     if (routeState.categoryId) state.library.categoryId = routeState.categoryId;
     if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "history" ? "watch_history" : routeState.view === "wallet" ? "wallet" : routeState.tab });
@@ -2754,7 +2754,7 @@
       return;
     }
 
-    if (!state.library.loaded && routeState.tab !== "home") loadLibrary();
+    if ((!state.library.loaded && routeState.tab !== "home") || refreshLibraryForCategory) loadLibrary();
     if (routeState.tab === "membership" && routeState.packageId) {
       const target = (state.library.items || []).find(function (item) { return item.packageId === routeState.packageId; });
       if (target) {

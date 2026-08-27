@@ -76,6 +76,8 @@ test("h5 home separates a closable popup placement, popular types, and billing f
   assert.match(homeRouteSource, /slot: banner\.slot \|\| "home_primary"/);
   assert.match(appSource, /banner\.slot !== "home_popup"/);
   assert.match(appSource, /function renderHomePopup\(\)/);
+  assert.match(appSource, /params\.set\("categoryId", categoryId\)/);
+  assert.match(appSource, /refreshLibraryForCategory/);
   assert.match(appSource, /HOME_PROMO_DISMISS_PREFIX/);
   assert.match(appSource, /function setHashForWallet\(\)/);
   assert.match(appSource, /function renderWallet\(\)/);
