@@ -3188,12 +3188,24 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
   const ZCAT_CREATE = z.object({
     name: z.string().trim().min(1).max(100),
     slug: z.string().trim().min(1).max(80),
-    iconUrl: z.string().max(500).optional().nullable(),
+    /** 仅接受已校验的公开封面素材，禁止后台再手填任意图片 URL。 */
+    iconAssetId: z.string().uuid().optional().nullable(),
     sortOrder: z.number().int().min(0).optional().default(0),
     status: z.enum(["active", "inactive", "archived"]).optional().default("active"),
     reason: z.string().max(500).optional(),
   });
   const ZCAT_EDIT = ZCAT_CREATE.partial().extend({ id: z.string().uuid() });
+
+  async function resolveCategoryIconUrl(iconAssetId: string): Promise<string> {
+    const asset = await prisma.mediaAsset.findUnique({
+      where: { id: iconAssetId },
+      select: { id: true, kind: true, status: true, storagePublicUrl: true },
+    });
+    if (!asset || asset.kind !== "cover_image" || asset.status !== "ready" || !asset.storagePublicUrl) {
+      throw new Error("category_icon_asset_invalid");
+    }
+    return asset.storagePublicUrl;
+  }
 
   fastify.get(
     "/admin/categories",
@@ -3215,9 +3227,17 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     async (req: any, reply) => {
       const body = ZCAT_CREATE.parse(req.body);
       const meta = adminMeta(req);
-      const { reason, ...payload } = body;
+      const { reason, iconAssetId, ...payload } = body;
+      let iconUrl: string | null = null;
+      if (iconAssetId) {
+        try {
+          iconUrl = await resolveCategoryIconUrl(iconAssetId);
+        } catch {
+          return reply.status(400).send({ error: "category_icon_asset_invalid", message: "分类图标素材不存在、未校验完成或不可公开展示" });
+        }
+      }
       const res = await prisma.$transaction(async (tx: any) => {
-        const cr = await tx.category.create({ data: payload });
+        const cr = await tx.category.create({ data: { ...payload, iconUrl } });
         await writeAudit(tx, meta, "category.create", "category", cr.id, null, serialize(cr), reason);
         return cr;
       });
@@ -3232,11 +3252,22 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const id = z.string().uuid().parse(req.params.id);
       const body = ZCAT_EDIT.omit({ id: true }).parse(req.body);
       const meta = adminMeta(req);
-      const { reason, ...payload } = body;
+      const { reason, iconAssetId, ...payload } = body;
       const before = await prisma.category.findUnique({ where: { id } });
       if (!before) return reply.status(404).send({ error: "not_found" });
       const data: any = {};
       for (const k of Object.keys(payload)) if ((payload as any)[k] !== undefined) (data as any)[k] = (payload as any)[k];
+      if (iconAssetId !== undefined) {
+        if (iconAssetId === null) {
+          data.iconUrl = null;
+        } else {
+          try {
+            data.iconUrl = await resolveCategoryIconUrl(iconAssetId);
+          } catch {
+            return reply.status(400).send({ error: "category_icon_asset_invalid", message: "分类图标素材不存在、未校验完成或不可公开展示" });
+          }
+        }
+      }
       const result = await prisma.$transaction(async (tx: any) => {
         const after = await tx.category.update({ where: { id }, data });
         await writeAudit(tx, meta, "category.update", "category", id, serialize(before), serialize(after), reason);

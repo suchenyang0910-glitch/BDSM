@@ -478,12 +478,37 @@ img.is-image-unavailable {
   flex: 0 0 auto;
   min-width: 104px;
   min-height: 52px;
-  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: linear-gradient(135deg, rgba(166, 107, 255, 0.18), rgba(38, 34, 54, 0.72));
   color: var(--text-primary);
   font-size: 14px;
+}
+
+.topic-chip-image,
+.topic-chip-fallback,
+.category-chip-image {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  object-fit: cover;
+  background: rgba(166, 107, 255, 0.25);
+}
+
+.topic-chip-fallback {
+  background: linear-gradient(135deg, rgba(192, 139, 255, 0.8), rgba(93, 58, 149, 0.45));
+}
+
+.chip .category-chip-image {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  margin-right: 5px;
 }
 
 .content-card {

@@ -740,7 +740,8 @@ export type CategoryItem = {
 export type CreateCategoryInput = {
   name: string;
   slug: string;
-  iconUrl?: string | null;
+  /** 已校验完成的封面素材；服务端将其解析为公开图标地址。 */
+  iconAssetId?: string | null;
   sortOrder?: number;
   status?: "active" | "inactive" | "archived";
   reason?: string;

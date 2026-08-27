@@ -932,7 +932,9 @@
       const card = document.createElement("button");
       card.type = "button";
       card.className = "topic-chip";
-      card.innerHTML = '<strong>' + escapeHtml(theme.name) + '</strong>';
+      card.innerHTML =
+        (theme.iconUrl ? imageTag(theme.iconUrl, "topic-chip-image", theme.name || "分类图标", true) : '<span class="topic-chip-fallback" aria-hidden="true"></span>') +
+        '<strong>' + escapeHtml(theme.name) + '</strong>';
       card.addEventListener("click", function () {
         state.library.categoryId = theme.id;
         setHashForTab("library");
@@ -966,7 +968,9 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "chip" + (state.library.categoryId === category.id ? " is-active" : "");
-      btn.textContent = category.name;
+      btn.innerHTML =
+        (category.iconUrl ? imageTag(category.iconUrl, "category-chip-image", category.name || "分类图标", true) : "") +
+        '<span>' + escapeHtml(category.name) + '</span>';
       btn.addEventListener("click", function () {
         state.library.categoryId = category.id;
         loadLibrary();

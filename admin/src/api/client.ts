@@ -442,7 +442,7 @@ export async function initAdminBannerImageUpload(input: {
 export async function completeAdminBannerImageUpload(
   id: string,
   input: { ok: boolean; reportedContentLength?: number; error?: string },
-): Promise<{ ok: boolean; id: string; status: string }> {
+): Promise<{ ok: boolean; id: string; status: string; publicUrl?: string | null }> {
   const res = await http.post(`/admin/media/${encodeURIComponent(id)}/complete`, input, { timeout: 30_000 });
   return res.data;
 }

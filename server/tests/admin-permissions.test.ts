@@ -495,6 +495,56 @@ test("越权3：auditor 不允许发布内容/分类写操作，仅读=200/写=4
   }
 });
 
+test("分类图标只能绑定已校验完成的上传素材，服务端保存受控公开地址", async () => {
+  const app = await createApp(prisma);
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const iconAsset = await seedReadyMediaAsset(prisma, {
+      id: crypto.randomUUID(),
+      kind: "cover_image",
+      filename: "category-icon.jpg",
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/categories",
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: {
+        name: "图标上传分类",
+        slug: `icon-upload-${Date.now()}`,
+        iconAssetId: iconAsset.id,
+        reason: "验证分类图标必须绑定已校验素材",
+      },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const categoryId = (created.json() as any).id;
+    const categories = await app.inject({ method: "GET", url: "/api/admin/categories", headers: { cookie: editorCookie } });
+    assert.equal(categories.statusCode, 200, categories.body);
+    const stored = (categories.json() as any).data.find((row: any) => row.id === categoryId);
+    assert.equal(stored.iconUrl, iconAsset.storagePublicUrl);
+
+    const preserveExistingIcon = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/categories/${categoryId}`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { sortOrder: 9, reason: "未上传新图标时必须保留原图标" },
+    });
+    assert.equal(preserveExistingIcon.statusCode, 200, preserveExistingIcon.body);
+    const preservedRow = await prisma.category.findUnique({ where: { id: categoryId } });
+    assert.equal(preservedRow?.iconUrl, iconAsset.storagePublicUrl);
+
+    const rejected = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/categories/${categoryId}`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { iconAssetId: crypto.randomUUID(), reason: "非法素材必须拒绝" },
+    });
+    assert.equal(rejected.statusCode, 400, rejected.body);
+    assert.equal((rejected.json() as any).error, "category_icon_asset_invalid");
+  } finally {
+    await app.close();
+  }
+});
+
 test("越权P2-1：finance 无 order:cancel 权限，取消订单必须 403", async () => {
   const app = await createApp(prisma);
   try {
