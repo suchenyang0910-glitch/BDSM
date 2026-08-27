@@ -317,7 +317,7 @@ export default async function authH5Routes(fastify: FastifyInstance) {
       }
       const user = await prisma.user.findUnique({
         where: { id: finalUserId },
-        select: { id: true, telegramUserId: true, displayName: true, status: true },
+        select: { id: true, telegramUserId: true, displayName: true, photoUrl: true, status: true },
       });
       if (!user || user.status === "deleted") {
         clearDeviceCookie(reply, SECURE_COOKIE);
@@ -336,6 +336,10 @@ export default async function authH5Routes(fastify: FastifyInstance) {
         userId: finalUserId,
         telegramBound: bound,
         displayName,
+        // The client only receives an image URL for a Telegram-bound user.
+        // Browser device sessions intentionally receive null and render the
+        // generic platform avatar instead of exposing any external identity.
+        photoUrl: bound ? (user.photoUrl || null) : null,
         expiresAt: sess.row.expiresAt.toISOString(),
       });
     } catch (e: any) {

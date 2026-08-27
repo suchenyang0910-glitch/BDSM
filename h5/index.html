@@ -171,10 +171,13 @@
 
         <section id="meView" class="tab-view is-hidden">
           <div class="panel-card profile-card">
-            <div>
-              <p class="eyebrow">MY ACCOUNT</p>
-              <h2 id="profileTitle">加载中</h2>
-              <p id="profileSubtitle" class="muted-copy">正在读取账户信息…</p>
+            <div class="profile-identity">
+              <span class="account-avatar" aria-hidden="true"><img id="profileAvatar" class="account-avatar-image" alt="" /></span>
+              <div>
+                <p class="eyebrow">MY ACCOUNT</p>
+                <h2 id="profileTitle">加载中</h2>
+                <p id="profileSubtitle" class="muted-copy">正在读取账户信息…</p>
+              </div>
             </div>
             <div class="profile-actions">
               <button id="bindTelegramButton" class="primary-button" type="button">绑定 Telegram</button>
@@ -336,6 +339,6 @@
     </template>
 
     <!-- Bump on every player release: the managed HLS flow must never run from a stale browser cache. -->
-    <script src="./app.js?v=20260827-vod-home-wallet-2"></script>
+    <script src="./app.js?v=20260827-vod-account-avatar-1"></script>
   </body>
 </html>

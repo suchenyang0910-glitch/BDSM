@@ -97,6 +97,9 @@
 
   const H5_INSTALL_GUIDE_STORAGE_KEY = "samewave_h5_install_guide_seen_v1";
   const HOME_PROMO_DISMISS_PREFIX = "samewave_home_promo_dismissed_";
+  // A generic inline avatar for device-based H5 sessions. It carries no user
+  // identifier and remains available when an external Telegram image expires.
+  const DEFAULT_ACCOUNT_AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%23794ee8'/%3E%3Cstop offset='1' stop-color='%232b2148'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='96' height='96' rx='48' fill='url(%23g)'/%3E%3Ccircle cx='48' cy='37' r='16' fill='%23f6f1ff' fill-opacity='.92'/%3E%3Cpath d='M19 84c4-17 16-25 29-25s25 8 29 25' fill='%23f6f1ff' fill-opacity='.92'/%3E%3C/svg%3E";
   let librarySearchTimer = 0;
 
   function isStandaloneH5() {
@@ -132,6 +135,15 @@
       (eager ? ' loading="eager" decoding="async"' : ' loading="lazy" decoding="async"') + " />";
   }
 
+  function accountAvatarUrl(session) {
+    const candidate = session && session.identity === "telegram" ? String(session.photoUrl || "") : "";
+    return /^https:\/\//i.test(candidate) ? candidate : DEFAULT_ACCOUNT_AVATAR;
+  }
+
+  function accountAvatarMarkup(session, className, alt) {
+    return imageTag(accountAvatarUrl(session), className || "account-avatar-image", alt || "用户头像", true);
+  }
+
   // A legacy catalog row can refer to a cover that has since been removed
   // from storage. Keep the card geometry stable rather than showing a broken
   // image icon or a black block; the API never falls back to a durable media
@@ -140,6 +152,10 @@
     const image = event.target;
     if (!(image instanceof HTMLImageElement) || image.dataset.fallbackApplied === "1") return;
     image.dataset.fallbackApplied = "1";
+    if (image.classList.contains("account-avatar-image")) {
+      image.src = DEFAULT_ACCOUNT_AVATAR;
+      return;
+    }
     image.removeAttribute("src");
     image.classList.add("is-image-unavailable");
   }, true);
@@ -1147,8 +1163,11 @@
 
     host.innerHTML =
       '<section class="desktop-rail-card desktop-profile-card">' +
-        '<p class="eyebrow">MY ACCOUNT</p>' +
-        '<strong>' + escapeHtml(profileName) + '</strong>' +
+        '<div class="desktop-profile-identity">' +
+          '<span class="account-avatar desktop-account-avatar">' + accountAvatarMarkup(state.session, "account-avatar-image", "用户头像") + '</span>' +
+          '<div><p class="eyebrow">MY ACCOUNT</p>' +
+          '<strong>' + escapeHtml(profileName) + '</strong></div>' +
+        '</div>' +
         '<span class="desktop-rail-muted">' + escapeHtml(membershipActive
           ? (membership.expiresAt ? "会员有效至 " + formatDateShort(membership.expiresAt) : "会员已开通")
           : "尚未开通会员") + '</span>' +
@@ -1623,6 +1642,8 @@
     $("profileSubtitle").textContent = isTelegram
       ? "已连接 Telegram，可跨设备恢复订单与权益。"
       : "已自动登录；绑定 Telegram 后可跨设备恢复订单与权益。";
+    const profileAvatar = $("profileAvatar");
+    if (profileAvatar) profileAvatar.src = accountAvatarUrl(session);
 
     const membershipSummary = state.entitlements.data && state.entitlements.data.summary
       ? state.entitlements.data.summary.membership
@@ -2183,6 +2204,7 @@
             : "同频成员",
           telegramBound: true,
           userId: payload.user && payload.user.id ? String(payload.user.id) : null,
+          photoUrl: payload.user && payload.user.photoUrl ? payload.user.photoUrl : null,
         };
       } catch (_) {}
     }

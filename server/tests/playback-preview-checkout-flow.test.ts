@@ -89,6 +89,23 @@ test("h5 home separates a closable popup placement, popular types, and billing f
   assert.match(cssSource, /\.home-promo-modal \{/);
 });
 
+test("account avatar prefers Telegram profile photos and uses a generic device-session fallback", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
+  const cssSource = await readFile(path.join(ROOT, "h5/styles.css"), "utf8");
+  const authSource = await readFile(path.join(ROOT, "server/src/routes/authH5.ts"), "utf8");
+
+  assert.match(authSource, /select: \{ id: true, telegramUserId: true, displayName: true, photoUrl: true, status: true \}/);
+  assert.match(authSource, /photoUrl: bound \? \(user\.photoUrl \|\| null\) : null/);
+  assert.match(appSource, /const DEFAULT_ACCOUNT_AVATAR/);
+  assert.match(appSource, /function accountAvatarUrl\(session\)/);
+  assert.match(appSource, /session\.identity === "telegram"/);
+  assert.match(appSource, /profileAvatar\.src = accountAvatarUrl\(session\)/);
+  assert.match(appSource, /payload\.user && payload\.user\.photoUrl/);
+  assert.match(htmlSource, /id="profileAvatar"/);
+  assert.match(cssSource, /\.account-avatar \{/);
+});
+
 test("checkout flow preserves return target and payment success returns to content detail", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const paySource = await readFile(path.join(ROOT, "telegram-mini-app/h5-pay.js"), "utf8");
