@@ -963,6 +963,21 @@ const ContentsPage: React.FC = () => {
     };
   }, [drawerOpen, editing?.id, refreshPublishJobs, refreshChannelMessages]);
 
+  // 转码由 Worker 异步执行。运营不需要手动刷新页面：只要存在排队或处理中
+  // 的完整源视频，就每 5 秒刷新一次素材状态和进度；关闭抽屉即停止轮询。
+  React.useEffect(() => {
+    if (!drawerOpen || !editing?.id) return;
+    const hasActiveTranscode = fullVideoSegments.some((asset) => (
+      asset.transcodeStatus === "queued" || asset.transcodeStatus === "processing"
+    ));
+    if (!hasActiveTranscode) return;
+    const timer = window.setInterval(() => {
+      void refreshContentMedia(editing.id);
+      void fetchList();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [drawerOpen, editing?.id, fullVideoSegments, refreshContentMedia, fetchList]);
+
   const resetMediaState = React.useCallback(() => {
     setCoverAssetId(null); setCoverAsset(null); setCoverAssetContentId(null); setCoverProgress(0); setCoverUploading(false);
     setPreviewAssetId(null); setPreviewAsset(null); setPreviewProgress(0); setPreviewUploading(false);
@@ -1726,7 +1741,7 @@ const ContentsPage: React.FC = () => {
       title: "发布内容",
       content: (
         <Space direction="vertical" size={12}>
-          <span>确定发布「{row.title}」？发布后 Mini App 用户立即可见。</span>
+          <span>确定发布「{row.title}」？仅在转码成功后，才会同步展示到用户端与 Telegram 频道。</span>
           {extraWarnings.length > 0 && (
             <Alert type="error" showIcon message="发布前检查未通过" description={extraWarnings.map((t, i) => <div key={i}>{t}</div>)} />
           )}

@@ -69,7 +69,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     const uid = (req as any).userId as string | undefined;
     const now = new Date();
 
-    const where: any = { status: "published" };
+    const where: any = { status: "published", platformPlaybackEnabled: true };
     if (query.type) where.accessType = query.type;
     if (query.categoryId && query.categoryId !== "all" && query.categoryId !== "featured") {
       where.categories = { some: { categoryId: query.categoryId } };
@@ -217,6 +217,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       where: { id },
       select: {
         status: true,
+        platformPlaybackEnabled: true,
         videoAssets: {
           where: { kind: "cover", status: "verified", deletedAt: null },
           orderBy: { createdAt: "desc" },
@@ -234,7 +235,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     const objectKey = videoAsset?.objectKey || (
       mediaAsset?.kind === "cover_image" && mediaAsset.status === "ready" ? mediaAsset.storageKey : null
     );
-    if (!content || content.status !== "published" || (!objectKey && !legacyPublicUrl)) {
+    if (!content || content.status !== "published" || !content.platformPlaybackEnabled || (!objectKey && !legacyPublicUrl)) {
       return reply.status(404).send({ error: "not_found" });
     }
     if (legacyPublicUrl) {
@@ -281,7 +282,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     ]);
 
     if (!content) return reply.status(404).send({ error: "not_found" });
-    if (content.status !== "published") {
+    if (content.status !== "published" || !content.platformPlaybackEnabled) {
       return reply.status(403).send({ error: "content_unavailable", message: "内容已下架或未上架" });
     }
 

@@ -117,6 +117,13 @@ async function seedReadyVideoAsset(
   });
 }
 
+async function markContentTranscodeReady(prismaClient: any, contentId: string, assetId: string) {
+  await prismaClient.transcodeJob.create({
+    data: { contentId, assetId, status: "ready", progressPercent: 100, queuedAt: new Date(), startedAt: new Date(), finishedAt: new Date() },
+  });
+  await prismaClient.content.update({ where: { id: contentId }, data: { platformPlaybackEnabled: true } });
+}
+
 test("越权2：customer_service 直接发放权益 entitlement:grant 必须 403", async () => {
   const app = await createApp(prisma);
   try {
@@ -271,6 +278,7 @@ test("start-telegram-publish 只合并内容标签与手填 Telegram 标签，�
         fullVideoSegments: { create: [{ videoAssetId: mediaAsset.id, segmentOrder: 1 }] },
       },
     });
+    await markContentTranscodeReady(prisma, contentId, mediaAsset.id);
 
     const startResp = await app.inject({
       method: "POST",
@@ -331,6 +339,7 @@ test("start-telegram-publish 只合并内容标签与手填 Telegram 标签，�
         fullVideoSegments: { create: [{ videoAssetId: fallbackAsset.id, segmentOrder: 1 }] },
       },
     });
+    await markContentTranscodeReady(prisma, fallbackContentId, fallbackAsset.id);
     const fallbackResp = await app.inject({
       method: "POST",
       url: `/api/admin/contents/${fallbackContentId}/start-telegram-publish`,
@@ -395,6 +404,7 @@ test("免费频道自动投放封面推广入口，试看仍由 Web HLS 承担",
         fullVideoSegments: { create: [{ videoAssetId: publicFullAsset.id, segmentOrder: 1 }] },
       },
     });
+    await markContentTranscodeReady(prisma, contentId, publicFullAsset.id);
     await seedReadyVideoAsset(prisma, {
       id: crypto.randomUUID(), contentId, filename: "public-cover.jpg", kind: "cover",
     });
@@ -435,6 +445,7 @@ test("免费频道自动投放封面推广入口，试看仍由 Web HLS 承担",
         fullVideoSegments: { create: [{ videoAssetId: fullAsset.id, segmentOrder: 1 }] },
       },
     });
+    await markContentTranscodeReady(prisma, membershipContentId, fullAsset.id);
     const membershipResponse = await app.inject({
       method: "POST",
       url: `/api/admin/contents/${membershipContentId}/start-telegram-publish`,

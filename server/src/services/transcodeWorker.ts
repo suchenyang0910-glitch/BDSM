@@ -1020,13 +1020,12 @@ export async function processClaimedTranscodeJob(
       renditions: readyRows,
     });
     await markTranscodeJobReady(prisma, { jobId: job.id }, new Date());
-    // A published title becomes web-playable only after every required HLS
-    // rendition has been verified.  Do this here instead of at upload time so
-    // users never receive a player pointing at an incomplete transcode.
+    // 技术就绪与公开发布是两个状态：转码成功后先标记为可播放，随后仍必须由
+    // 后台“发布”动作把 status 变为 published。这样不会让草稿提前出现在用户端。
     await (prisma as any).content.updateMany({
       where: {
         id: job.contentId,
-        status: "published",
+        status: { in: ["draft", "pending_review", "scheduled", "published"] },
         platformPlaybackEnabled: false,
       },
       data: { platformPlaybackEnabled: true },

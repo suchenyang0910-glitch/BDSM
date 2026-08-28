@@ -225,7 +225,41 @@ test("[S1-B] 既有 single 草稿 (topic-03-draft) 发布 → 200/202，且不�
         verifiedAt: new Date(),
       },
     });
+
+    const fullVideoAsset = await prisma.videoAsset.create({
+      data: {
+        id: "s1b-full-source",
+        contentId: TEST_KNOWN_IDS.contentDraft,
+        kind: "full_source",
+        objectKey: `originals/${TEST_KNOWN_IDS.contentDraft}/source.mp4`,
+        originalFilename: "source.mp4",
+        mimeType: "video/mp4",
+        byteSize: BigInt(2048),
+        sha256: "c".repeat(64),
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
+    await prisma.content.update({
+      where: { id: TEST_KNOWN_IDS.contentDraft },
+      data: { fullVideoAssetId: fullVideoAsset.id },
+    });
     const editorCookie = await loginAdmin(app, "editor");
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { reason: "[S1-B] 转码未完成不得发布" },
+    });
+    assert.equal(blocked.statusCode, 409, blocked.body);
+    assert.equal((blocked.json() as any).error, "transcode_not_ready");
+    assert.equal(await prisma.telegramPublishJob.count({ where: { contentId: TEST_KNOWN_IDS.contentDraft } }), 0);
+
+    // 发布门槛：只有完整 HLS 及 60 秒试看均已由 Worker 验证后才能公开/投放。
+    await prisma.transcodeJob.create({
+      data: { contentId: TEST_KNOWN_IDS.contentDraft, assetId: fullVideoAsset.id, status: "ready", progressPercent: 100, queuedAt: new Date(), startedAt: new Date(), finishedAt: new Date() },
+    });
+    await prisma.content.update({ where: { id: TEST_KNOWN_IDS.contentDraft }, data: { platformPlaybackEnabled: true } });
     const resp = await app.inject({
       method: "POST",
       url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/publish`,
@@ -670,6 +704,11 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
     assert.equal(patchResp.statusCode, 200, `membership patch expected 200, got ${patchResp.statusCode}: ${patchResp.body}`);
     assertNoSensitiveLeaks(patchResp.body, "membership patch 200");
 
+    await prisma.transcodeJob.create({
+      data: { contentId: newId, assetId: fullVideoAsset.id, status: "ready", progressPercent: 100, queuedAt: new Date(), startedAt: new Date(), finishedAt: new Date() },
+    });
+    await prisma.content.update({ where: { id: newId }, data: { platformPlaybackEnabled: true } });
+
     const submitResp = await app.inject({
       method: "POST",
       url: `/api/admin/contents/${newId}/submit_review`,
@@ -688,7 +727,7 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
       payload: { reason: "S1-G editor 发布（editor 角色含 content:publish）" },
     });
-    // validatePublishReady 会校验 membership 合法（不需要 package/channelId），预期 200
+    // validatePublishReady 同时校验会员绑定与已完成转码，预期 200。
     assert.ok(
       publishResp.statusCode === 200 || publishResp.statusCode === 202,
       `membership publish expected 2xx, got ${publishResp.statusCode}: ${publishResp.body}`,

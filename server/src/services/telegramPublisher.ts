@@ -290,6 +290,8 @@ type PublishJobIncludes = TelegramPublishJob & {
     accessType: string;
     packageId: string | null;
     productId: string | null;
+    status: string;
+    platformPlaybackEnabled: boolean;
     coverAsset: MediaAsset | null;
   }) | null;
   package: ({ id: string; title: string }) | null;
@@ -311,6 +313,7 @@ export async function processPublishJob(
         content: {
           select: {
             id: true, title: true, description: true, accessType: true, packageId: true, productId: true,
+            status: true, platformPlaybackEnabled: true,
             coverAsset: true,
           },
         },
@@ -355,6 +358,7 @@ export async function processPublishJob(
         content: {
           select: {
             id: true, title: true, description: true, accessType: true, packageId: true, productId: true,
+            status: true, platformPlaybackEnabled: true,
             coverAsset: true,
           },
         },
@@ -365,6 +369,21 @@ export async function processPublishJob(
   } catch (err) {
     emitSafetyEvent({ event: "tg_publish_job_lock_failed", errorClass: "db_error", note: `id_fp=${safeHexDigest(initialJobId, 12)}` }, err);
     return { ok: false, reason: "db_lock_failed" };
+  }
+
+  // 历史版本可能已在转码前入队。这里在真正调用 Telegram 前再做一次硬校验，
+  // 避免任何竞态或旧任务把未完成的视频/推广提前发出。
+  if (job.content?.status !== "published" || !job.content?.platformPlaybackEnabled) {
+    await prisma.telegramPublishJob.update({
+      where: { id: job.id },
+      data: {
+        status: "failed",
+        lastErrorClass: "transcode_not_ready",
+        lastErrorNote: "delivery_blocked_until_transcode_ready",
+        nextRetryAt: new Date(Date.now() + 60_000),
+      },
+    });
+    return { ok: true, skipped: true, reason: "transcode_not_ready" };
   }
 
   const storageEnv = requireObjectStorageEnv();

@@ -155,7 +155,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
         : Promise.resolve([] as any[]),
       config.featuredContentIds?.length
         ? prisma.content.findMany({
-            where: { id: { in: config.featuredContentIds }, status: "published" },
+            where: { id: { in: config.featuredContentIds }, status: "published", platformPlaybackEnabled: true },
             include: {
               categories: { select: { category: { select: { id: true, name: true } } } },
               product: { select: { id: true, priceMinor: true, currency: true, usdtPriceMinor: true, type: true } },
@@ -191,7 +191,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
         orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
       }),
       prisma.content.findMany({
-        where: { status: "published" },
+        where: { status: "published", platformPlaybackEnabled: true },
         orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
         take: 12,
         include: {
@@ -208,7 +208,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
         },
       }),
       prisma.content.findMany({
-        where: { status: "published", isFeatured: true },
+        where: { status: "published", platformPlaybackEnabled: true, isFeatured: true },
         orderBy: [{ featuredSort: "asc" }, { publishedAt: "desc" }],
         take: 4,
         include: {
@@ -314,6 +314,7 @@ export default async function homeRoutes(fastify: FastifyInstance) {
       const count = await prisma.content.count({
         where: {
           status: "published",
+          platformPlaybackEnabled: true,
           categories: { some: { categoryId: category.id } },
         },
       });

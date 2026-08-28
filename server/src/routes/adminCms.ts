@@ -767,11 +767,12 @@ async function validatePublishReady(
       coverAssetId: true,
       previewAssetId: true,
       fullVideoAssetId: true,
+      platformPlaybackEnabled: true,
       fullVideoSegments: { orderBy: { segmentOrder: "asc" }, select: { videoAssetId: true } },
     },
   });
   if (!row) return { ok: false, status: 404, error: "not_found", message: "内容不存在" };
-  return validateContentAccessTypeConstraints({
+  const assetCheck = await validateContentAccessTypeConstraints({
     prisma,
     accessType: row.accessType as AccessTypeBound,
     packageId: row.packageId,
@@ -782,6 +783,31 @@ async function validatePublishReady(
     fullVideoAssetId: row.fullVideoAssetId,
     fullVideoAssetIds: row.fullVideoSegments.map((segment) => segment.videoAssetId),
   });
+  if (!assetCheck.ok) return assetCheck;
+
+  // 发布是用户端、私密频道和免费流量入口的唯一放行点。素材“已校验”并不
+  // 等于可交付：必须等 Worker 验证过 60 秒试看和全部 HLS 清晰度后再发布。
+  const latestJob = await (prisma as any).transcodeJob.findFirst({
+    where: { contentId },
+    orderBy: [{ queuedAt: "desc" }, { createdAt: "desc" }],
+    select: { status: true, progressPercent: true, errorClass: true },
+  });
+  if (!row.platformPlaybackEnabled || latestJob?.status !== "ready") {
+    return {
+      ok: false,
+      status: 409,
+      error: "transcode_not_ready",
+      message: latestJob?.status === "failed"
+        ? "转码失败，请在素材页重新入队并等待成功后发布。"
+        : `转码尚未完成（当前 ${latestJob?.progressPercent || 0}%），完成后才能发布到用户端和 Telegram 频道。`,
+      details: {
+        transcodeStatus: latestJob?.status || "not_queued",
+        progressPercent: latestJob?.progressPercent || 0,
+        errorClass: latestJob?.errorClass || null,
+      },
+    };
+  }
+  return { ok: true };
 }
 
 type TelegramPublishPlanKind = "public_free_preview" | "membership_full" | "package_full";
@@ -832,6 +858,18 @@ async function queueTelegramPublishForContent(input: {
     },
   });
   if (!content) return { ok: false, status: 404, error: "not_found", message: "内容不存在" };
+
+  // 即使历史任务在旧代码下被提前创建，也绝不能绕过转码成功这个交付门槛。
+  const transcodeGate = await validatePublishReady(prisma, contentId);
+  if (!transcodeGate.ok) {
+    return {
+      ok: false,
+      status: transcodeGate.status,
+      error: transcodeGate.error,
+      message: transcodeGate.message || "转码尚未完成。",
+      details: transcodeGate.details,
+    };
+  }
 
   const baseOk = await validateContentAccessTypeConstraints({
     prisma,
