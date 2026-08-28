@@ -294,6 +294,38 @@ function formatEta(seconds: number | null): string {
   return `${secs}s`;
 }
 
+/**
+ * 从运营人员本机选择的源文件读取时长。它不读取或暴露文件内容，且失败时不阻断上传；
+ * 这样内容卡无需等待完整 HLS 转码排队即可展示真实时长。
+ */
+function readLocalVideoDurationSeconds(file: File): Promise<number | null> {
+  if (typeof document === "undefined" || !file || !String(file.type || "").startsWith("video/")) {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let settled = false;
+    const finish = (value: number | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(objectUrl);
+      resolve(value);
+    };
+    const timeoutId = window.setTimeout(() => finish(null), 15_000);
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const duration = Number(video.duration);
+      finish(Number.isFinite(duration) && duration > 0 ? Math.max(1, Math.round(duration)) : null);
+    };
+    video.onerror = () => finish(null);
+    video.src = objectUrl;
+  });
+}
+
 function normalizePartEtag(value: string | null | undefined): string | null {
   if (!value) return null;
   return String(value).replace(/^W\//, "").replace(/^"|"$/g, "").trim() || null;
@@ -1248,6 +1280,27 @@ const ContentsPage: React.FC = () => {
     setFullVideoProgress(0);
     lastFullVideoFileRef.current = file;
 
+    // 时长是内容卡的基础信息，不应等待后台完整转码结束才出现。首次选择源文件时，
+    // 由浏览器仅读取本地媒体 metadata 并立即回填内容；读取失败不影响后续上传。
+    if (!resumable) {
+      setFullVideoStatusHint("正在读取视频时长");
+      const detectedDurationSeconds = await readLocalVideoDurationSeconds(file);
+      if (detectedDurationSeconds && detectedDurationSeconds !== editing.durationSeconds) {
+        form.setFieldValue("durationSeconds", detectedDurationSeconds);
+        try {
+          await updateAdminContent(editing.id, {
+            durationSeconds: detectedDurationSeconds,
+            reason: "完整源视频本地元数据自动回填时长",
+          });
+          setEditing((current) => current ? { ...current, durationSeconds: detectedDurationSeconds } : current);
+          await fetchList();
+        } catch {
+          // 自动回填失败不阻断上传；转码 Worker 仍会以 ffprobe 结果回填权威时长。
+          message.warning("未能自动保存视频时长；上传与转码完成后系统会再次回填");
+        }
+      }
+    }
+
     if (resumable && persisted && fullVideoSession) {
       if (file.name !== persisted.fileName || file.size !== persisted.fileSize || file.lastModified !== persisted.fileLastModified) {
         message.error("所选文件与上次未完成上传的文件不一致，请选择同一文件继续，或先点击“放弃上传”");
@@ -1347,7 +1400,7 @@ const ContentsPage: React.FC = () => {
       message.error(errMsg(error, "完整源视频初始化失败"));
     }
     return Upload.LIST_IGNORE;
-  }, [canEdit, editing?.id, fullVideoSession, runMultipartUpload]);
+  }, [canEdit, editing?.id, editing?.durationSeconds, fetchList, form, fullVideoSession, runMultipartUpload]);
 
   const pauseFullVideoUpload = React.useCallback(async () => {
     if (!fullVideoSession?.id) return;
