@@ -14,7 +14,7 @@ import contentRoutes from "../src/routes/contents.js";
 import homeRoutes from "../src/routes/home.js";
 import resourceRoutes from "../src/routes/resources.js";
 import orderRoutes from "../src/routes/orders.js";
-import adminCmsRoutes, { adminPackageRoutes } from "../src/routes/adminCms.js";
+import adminCmsRoutes, { adminPackageRoutes, autoPublishContentAfterTranscode } from "../src/routes/adminCms.js";
 import adminUsersAndSupportRoutes from "../src/routes/adminUsersAndSupport.js";
 import adminChannelsRoutes from "../src/routes/adminChannels.js";
 import { chatIdIndexKey, encryptChatIdAesGcm } from "../src/utils/crypto.js";
@@ -244,6 +244,9 @@ test("[S1-B] 既有 single 草稿 (topic-03-draft) 发布 → 200/202，且不�
       where: { id: TEST_KNOWN_IDS.contentDraft },
       data: { fullVideoAssetId: fullVideoAsset.id },
     });
+    const queuedTranscode = await prisma.transcodeJob.create({
+      data: { contentId: TEST_KNOWN_IDS.contentDraft, assetId: fullVideoAsset.id, status: "queued", progressPercent: 35, queuedAt: new Date() },
+    });
     const editorCookie = await loginAdmin(app, "editor");
     const blocked = await app.inject({
       method: "POST",
@@ -251,32 +254,29 @@ test("[S1-B] 既有 single 草稿 (topic-03-draft) 发布 → 200/202，且不�
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
       payload: { reason: "[S1-B] 转码未完成不得发布" },
     });
-    assert.equal(blocked.statusCode, 409, blocked.body);
-    assert.equal((blocked.json() as any).error, "transcode_not_ready");
+    assert.equal(blocked.statusCode, 202, blocked.body);
+    assert.equal((blocked.json() as any).status, "scheduled");
+    assert.equal((blocked.json() as any).autoPublish, true);
+    assert.equal((await prisma.content.findUnique({ where: { id: TEST_KNOWN_IDS.contentDraft }, select: { status: true } }))?.status, "scheduled");
     assert.equal(await prisma.telegramPublishJob.count({ where: { contentId: TEST_KNOWN_IDS.contentDraft } }), 0);
 
     // 发布门槛：只有完整 HLS 及 60 秒试看均已由 Worker 验证后才能公开/投放。
-    await prisma.transcodeJob.create({
-      data: { contentId: TEST_KNOWN_IDS.contentDraft, assetId: fullVideoAsset.id, status: "ready", progressPercent: 100, queuedAt: new Date(), startedAt: new Date(), finishedAt: new Date() },
+    await prisma.transcodeJob.update({
+      where: { id: queuedTranscode.id },
+      data: { status: "ready", progressPercent: 100, startedAt: new Date(), finishedAt: new Date() },
     });
     await prisma.content.update({ where: { id: TEST_KNOWN_IDS.contentDraft }, data: { platformPlaybackEnabled: true } });
-    const resp = await app.inject({
-      method: "POST",
-      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/publish`,
-      headers: { cookie: editorCookie, "Content-Type": "application/json" },
-      payload: { reason: "[S1-B] 尝试发布 single" },
-    });
-    assert.ok([200, 202].includes(resp.statusCode), `single publish expected 200/202, got ${resp.statusCode}: ${resp.body}`);
-    const body = resp.json();
-    assert.equal(body.ok, true);
-    assert.equal(body.status, "published");
+    const autoPublished = await autoPublishContentAfterTranscode(prisma, TEST_KNOWN_IDS.contentDraft);
+    assert.equal(autoPublished.ok, true);
+    assert.equal(autoPublished.skipped, false);
+    assert.equal((await prisma.content.findUnique({ where: { id: TEST_KNOWN_IDS.contentDraft }, select: { status: true } }))?.status, "published");
     const jobs = await prisma.telegramPublishJob.findMany({
       where: { contentId: TEST_KNOWN_IDS.contentDraft },
       select: { channelKind: true },
     });
     assert.ok(jobs.length >= 1, "single publish should create free preview distribution jobs");
     assert.deepEqual([...new Set(jobs.map((job: any) => job.channelKind))], ["public_free_preview"]);
-    assertNoSensitiveLeaks(resp.body, "single publish resp body");
+    assertNoSensitiveLeaks(JSON.stringify(autoPublished), "single auto-publish result");
     await assertAuditLogsNoLeak(prisma, TEST_KNOWN_IDS.contentDraft);
   } finally {
     await app.close();

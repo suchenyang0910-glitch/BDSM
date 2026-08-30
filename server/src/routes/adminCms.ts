@@ -1063,6 +1063,59 @@ async function queueTelegramPublishForContent(input: {
   return { ok: true, jobs: createdJobs, normalizedTelegramTags };
 }
 
+/**
+ * 完整源视频转码成功后的自动发布收口。
+ *
+ * status=scheduled 且 scheduledAt 为空，代表运营者已经点击“发布”，但当时
+ * 仍在转码。该状态不会对用户端公开；只有本函数再次通过完整发布门槛后才会
+ * 切换为 published，并创建私密频道与全部免费流量入口任务。
+ */
+export async function autoPublishContentAfterTranscode(prisma: PrismaClient, contentId: string) {
+  const before = await prisma.content.findUnique({
+    where: { id: contentId },
+    select: { id: true, status: true, scheduledAt: true, lastEditorId: true, accessType: true },
+  });
+  if (!before || before.status !== "scheduled") return { ok: true, skipped: true as const, reason: "not_auto_scheduled" };
+  if (before.scheduledAt && before.scheduledAt.getTime() > Date.now()) return { ok: true, skipped: true as const, reason: "scheduled_for_future" };
+
+  const ready = await validatePublishReady(prisma, contentId);
+  if (!ready.ok) return { ok: false, skipped: false as const, error: ready.error, message: ready.message || "转码尚未完成" };
+
+  const now = new Date();
+  const publishUpdate = await prisma.content.updateMany({
+    where: { id: contentId, status: "scheduled" },
+    data: { status: "published", publishedAt: now },
+  });
+  if (publishUpdate.count !== 1) return { ok: true, skipped: true as const, reason: "status_changed" };
+
+  const channelKinds: TelegramPublishPlanKind[] = ["public_free_preview"];
+  if (before.accessType === "membership") channelKinds.unshift("membership_full");
+  if (before.accessType === "package") channelKinds.unshift("package_full");
+  const systemMeta: any = {
+    adminId: before.lastEditorId || null,
+    adminRole: "system",
+    adminEmail: null,
+    ip: null,
+    ua: "transcode-worker",
+  };
+  const telegramPublish = await queueTelegramPublishForContent({
+    prisma,
+    contentId,
+    meta: systemMeta,
+    channelKinds,
+    reason: "转码成功后自动发布：已创建私密频道与免费流量入口投放任务",
+  });
+  if (!telegramPublish.ok) {
+    emitSafetyEvent({
+      event: "content_auto_publish_channel_queue_failed",
+      errorClass: telegramPublish.error,
+      note: `content_fp=${safeHexDigest(contentId, 12)}`,
+    });
+    return { ok: false, skipped: false as const, error: telegramPublish.error, message: telegramPublish.message };
+  }
+  return { ok: true, skipped: false as const, telegramJobs: telegramPublish.jobs.length };
+}
+
 export default async function adminCmsRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma as PrismaClient;
   const playbackConfig = (fastify as any).playbackConfig as PlaybackConfig | undefined;
@@ -2838,6 +2891,23 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       }
       const preCheck = await validatePublishReady(prisma, id);
       if (!preCheck.ok) {
+        // 未完成转码时记录自动发布意图；scheduled 对用户端仍不可见。
+        if (preCheck.error === "transcode_not_ready" && ["queued", "processing"].includes(preCheck.details?.transcodeStatus)) {
+          await prisma.$transaction(async (tx: any) => {
+            const scheduled = await tx.content.update({
+              where: { id },
+              data: { status: "scheduled", scheduledAt: null, lastEditorId: meta.adminId },
+            });
+            await writeAudit(tx, meta, "content.publish_waiting_for_transcode", "content", id, stripSensitiveFields(before), stripSensitiveFields(scheduled), reason || "点击发布后等待转码成功自动发布");
+          });
+          return reply.status(202).send({
+            ok: true,
+            status: "scheduled",
+            autoPublish: true,
+            message: `已登记自动发布：转码完成后将自动展示到用户端，并投放私密频道与全部免费流量入口（当前 ${preCheck.details?.progressPercent || 0}%）。`,
+            details: preCheck.details,
+          });
+        }
         return reply.status(preCheck.status).send({ error: preCheck.error, message: preCheck.message, details: preCheck.details });
       }
       await prisma.$transaction(async (tx: any) => {
