@@ -1116,6 +1116,26 @@ export async function autoPublishContentAfterTranscode(prisma: PrismaClient, con
   return { ok: true, skipped: false as const, telegramJobs: telegramPublish.jobs.length };
 }
 
+/** API 常驻巡检，覆盖正在运行的旧 Worker：不必为了加载新代码中断当前转码。 */
+export async function autoPublishReadyScheduledContents(prisma: PrismaClient) {
+  const now = new Date();
+  const candidates = await prisma.content.findMany({
+    where: {
+      status: "scheduled",
+      platformPlaybackEnabled: true,
+      OR: [{ scheduledAt: null }, { scheduledAt: { lte: now } }],
+    },
+    orderBy: { updatedAt: "asc" },
+    take: 20,
+    select: { id: true },
+  });
+  const results = [] as Array<Awaited<ReturnType<typeof autoPublishContentAfterTranscode>>>;
+  for (const candidate of candidates) {
+    results.push(await autoPublishContentAfterTranscode(prisma, candidate.id));
+  }
+  return results;
+}
+
 export default async function adminCmsRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma as PrismaClient;
   const playbackConfig = (fastify as any).playbackConfig as PlaybackConfig | undefined;
@@ -1127,6 +1147,20 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     await initTelegramPublisher(fastify);
   } catch (err) {
     emitSafetyEvent({ event: "admin_init_publisher_failed", errorClass: "publisher_init_error", note: truncateNote(err instanceof Error ? err.message : String(err), 80) || undefined }, err);
+  }
+
+  // 自动发布不依赖正在执行的转码进程重启。定时器在测试环境关闭，并在 Fastify
+  // 停止时释放，避免重复投放或阻止测试进程退出。
+  if (process.env.NODE_ENV !== "test") {
+    const runAutoPublishSweep = () => {
+      void autoPublishReadyScheduledContents(prisma).catch((error) => {
+        emitSafetyEvent({ event: "content_auto_publish_sweep_failed", errorClass: "auto_publish_error" }, error);
+      });
+    };
+    runAutoPublishSweep();
+    const autoPublishTimer = setInterval(runAutoPublishSweep, 15_000);
+    autoPublishTimer.unref();
+    fastify.addHook("onClose", async () => clearInterval(autoPublishTimer));
   }
 
   // ===========================================================================
