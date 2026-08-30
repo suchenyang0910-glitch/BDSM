@@ -1999,19 +1999,35 @@
       $("detailContent").innerHTML = '<div class="empty-state">内容 ID 缺失。</div>';
       return;
     }
-    if (!state.detailCache[id]) {
+    // 深链首次打开时，初次 routeTo 与会话初始化后的 routeTo 可能并发执行。
+    // 不能在 await 之后重新从可被 bootstrapApp 重置的缓存读取详情；否则旧请求
+    // 会拿到 undefined，并在绑定“观看完整视频”前中断整个详情页渲染。
+    let detail = state.detailCache[id] || null;
+    if (!detail) {
       state.detailLoading = true;
       $("detailContent").innerHTML = createSkeletonCards(1);
       try {
-        state.detailCache[id] = await apiCall("/api/contents/" + encodeURIComponent(id));
+        detail = await apiCall("/api/contents/" + encodeURIComponent(id));
+        if (!detail || typeof detail !== "object" || !detail.id) {
+          throw new Error("content_detail_invalid");
+        }
+        // 用户已经离开当前详情时，不让慢响应覆盖新页面。
+        if (state.route.view !== "detail" || state.route.id !== id) return;
+        state.detailCache[id] = detail;
       } catch (err) {
-        $("detailContent").innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(apiText(err)) + "</div>";
+        if (state.route.view === "detail" && state.route.id === id) {
+          $("detailContent").innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(apiText(err)) + "</div>";
+        }
         state.detailLoading = false;
         return;
       }
       state.detailLoading = false;
     }
-    const detail = state.detailCache[id];
+    // 缓存可以被后续会话初始化清空，但当前调用仍持有本次成功响应。
+    if (!detail || typeof detail !== "object" || !detail.id) {
+      $("detailContent").innerHTML = '<div class="empty-state">内容加载异常，请返回后重新打开。</div>';
+      return;
+    }
     trackAnalytics("content_opened", { contentId: detail.id, sourceModule: state.route.fromTab || "home" });
     // 单条内容的 SEO/GEO 优先；服务端只会在该条内容未设置时回退平台默认值。
     // 应用页仍不输出付费内容的 VideoObject JSON-LD，避免预取媒体地址。

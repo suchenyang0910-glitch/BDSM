@@ -1357,19 +1357,32 @@
       $("detailContent").innerHTML = '<div class="empty-state">内容 ID 缺失。</div>';
       return;
     }
-    if (!state.detailCache[id]) {
+    // 首次深链进入时，会话初始化会重新触发路由。await 后必须使用本次请求
+    // 的稳定结果，不能重新读取可能已被初始化清空的详情缓存。
+    let detail = state.detailCache[id] || null;
+    if (!detail) {
       state.detailLoading = true;
       $("detailContent").innerHTML = createSkeletonCards(1);
       try {
-        state.detailCache[id] = await apiCall("/api/contents/" + encodeURIComponent(id));
+        detail = await apiCall("/api/contents/" + encodeURIComponent(id));
+        if (!detail || typeof detail !== "object" || !detail.id) {
+          throw new Error("content_detail_invalid");
+        }
+        if (state.route.view !== "detail" || state.route.id !== id) return;
+        state.detailCache[id] = detail;
       } catch (err) {
-        $("detailContent").innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(apiText(err)) + "</div>";
+        if (state.route.view === "detail" && state.route.id === id) {
+          $("detailContent").innerHTML = '<div class="empty-state">加载失败：' + escapeHtml(apiText(err)) + "</div>";
+        }
         state.detailLoading = false;
         return;
       }
       state.detailLoading = false;
     }
-    const detail = state.detailCache[id];
+    if (!detail || typeof detail !== "object" || !detail.id) {
+      $("detailContent").innerHTML = '<div class="empty-state">内容加载异常，请返回后重新打开。</div>';
+      return;
+    }
     trackAnalytics("content_opened", { contentId: detail.id, sourceModule: state.route.fromTab || "home" });
     // 详情页使用服务端已合并的 SEO/GEO：单条内容优先，未设置时自动回退平台默认。
     // 页面维持 noindex，不输出付费内容的 VideoObject JSON-LD。
