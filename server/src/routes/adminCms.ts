@@ -787,9 +787,11 @@ async function validatePublishReady(
 
   // 发布是用户端、私密频道和免费流量入口的唯一放行点。素材“已校验”并不
   // 等于可交付：必须等 Worker 验证过 60 秒试看和全部 HLS 清晰度后再发布。
-  const latestJob = await (prisma as any).transcodeJob.findFirst({
+  const latestJob = await prisma.transcodeJob.findFirst({
     where: { contentId },
-    orderBy: [{ queuedAt: "desc" }, { createdAt: "desc" }],
+    // TranscodeJob 没有 createdAt；queuedAt 是该队列模型唯一的创建/排序时间。
+    // 继续按不存在字段排序会让发布校验在进入业务判断前直接抛 Prisma 参数错误。
+    orderBy: [{ queuedAt: "desc" }],
     select: { status: true, progressPercent: true, errorClass: true },
   });
   if (!row.platformPlaybackEnabled || latestJob?.status !== "ready") {
