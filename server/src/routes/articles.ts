@@ -1,16 +1,18 @@
 import type { FastifyInstance } from "fastify";
+import { legacyMarkdownToHtml, sanitizeArticleHtml } from "../lib/articleHtml.js";
 
 type Article = {
   slug: string;
   title: string;
   summary: string;
+  coverImageUrl: string | null;
+  bodyHtml: string;
   publishedAt: string;
   sourceUrl: string;
   sourceName: string;
   readingMinutes: number;
   topics: string[];
   seo: { title: string; description: string; keywords: string[]; geoKeywords: string[]; robots: string };
-  sections: Array<{ heading: string; body: string }>;
 };
 
 const GEO = ["BDSM", "成人亲密关系", "安全沟通", "明确同意", "边界", "事后照护"];
@@ -49,17 +51,10 @@ export const STATIC_ARTICLES: Article[] = raw.map(function ([path, title, summar
     readingMinutes: 4,
     topics,
     seo: { title: title + "｜同频文章", description: summary, keywords: topics.concat(["BDSM", "安全", "沟通", "同意"]), geoKeywords: GEO, robots: "index,follow,max-snippet:-1" },
-    sections: [
-      { heading: "核心提醒", body: summary },
-      { heading: "同频建议", body: "把明确同意、随时暂停、尊重个人边界与事后沟通放在任何体验之前。具体做法应以参与者的实际状态和共同协商为准。" },
-    ],
+    coverImageUrl: null,
+    bodyHtml: `<p>${summary}</p><h2>同频建议</h2><p>把明确同意、随时暂停、尊重个人边界与事后沟通放在任何体验之前。具体做法应以参与者的实际状态和共同协商为准。</p>`,
   };
 });
-
-function toSections(bodyMarkdown: string): Array<{ heading: string; body: string }> {
-  const paragraphs = String(bodyMarkdown || "").split(/\r?\n\s*\r?\n/).map((part) => part.trim()).filter(Boolean);
-  return paragraphs.map((body, index) => ({ heading: index === 0 ? "正文" : "继续阅读", body }));
-}
 
 function dbArticleToPublic(row: any): Article {
   const publishedAt = row.publishedAt ? new Date(row.publishedAt).toISOString() : new Date(row.updatedAt || Date.now()).toISOString();
@@ -71,8 +66,10 @@ function dbArticleToPublic(row: any): Article {
     summary,
     publishedAt,
     sourceUrl: row.sourceUrl || "",
-    sourceName: row.sourceName || "同频文章",
-    readingMinutes: Math.max(1, Math.ceil(String(row.bodyMarkdown || "").length / 420)),
+    sourceName: row.sourceName || "",
+    readingMinutes: Math.max(1, Math.ceil(String(row.bodyHtml || row.bodyMarkdown || "").length / 420)),
+    coverImageUrl: row.coverImageUrl || null,
+    bodyHtml: sanitizeArticleHtml(row.bodyHtml || legacyMarkdownToHtml(row.bodyMarkdown)),
     topics,
     seo: {
       title: row.seoTitle || `${row.title}｜同频文章`,
@@ -81,7 +78,6 @@ function dbArticleToPublic(row: any): Article {
       geoKeywords: Array.isArray(row.geoKeywords) && row.geoKeywords.length ? row.geoKeywords : GEO,
       robots: "index,follow,max-snippet:-1",
     },
-    sections: toSections(row.bodyMarkdown),
   };
 }
 
@@ -111,7 +107,7 @@ export default async function articleRoutes(fastify: FastifyInstance) {
   fastify.get("/articles", async () => {
     const items = await visibleArticles(fastify);
     return {
-      items: items.map(function ({ sections: _sections, ...item }) { return item; }),
+      items,
       total: items.length,
     };
   });

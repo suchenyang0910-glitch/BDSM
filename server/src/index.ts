@@ -319,6 +319,13 @@ async function main() {
   });
   app.get("/h5", async (_req, reply) => reply.redirect("/h5/"));
 
+  await app.register(fastifyStatic, {
+    root: path.join(ROOT_DIR, "server", "public", "article-assets"),
+    prefix: "/article-assets/",
+    decorateReply: false,
+    index: false,
+  });
+
   // The managed HLS player must be served from our own origin. Depending on a
   // third-party script CDN makes Chrome playback fail in restricted networks,
   // even though the protected manifest itself is available.

@@ -4,6 +4,7 @@
  */
 import { PrismaClient } from "@prisma/client";
 import { STATIC_ARTICLES } from "../routes/articles.js";
+import { htmlToPlainText } from "../lib/articleHtml.js";
 
 const prisma = new PrismaClient();
 
@@ -21,7 +22,9 @@ async function main() {
         slug: article.slug,
         title: article.title,
         summary: article.summary,
-        bodyMarkdown: article.sections.map((section) => `${section.heading}\n\n${section.body}`).join("\n\n"),
+        bodyHtml: article.bodyHtml,
+        bodyMarkdown: htmlToPlainText(article.bodyHtml),
+        coverImageUrl: article.coverImageUrl,
         sourceName: article.sourceName || null,
         sourceUrl: article.sourceUrl || null,
         topics: article.topics,

@@ -439,6 +439,8 @@ model Article {
   title         String        @db.VarChar(160)
   summary       String        @db.VarChar(500)
   bodyMarkdown  String        @map("body_markdown") @db.Text
+  bodyHtml      String?       @map("body_html") @db.Text
+  coverImageUrl String?       @map("cover_image_url") @db.VarChar(500)
   sourceName    String?       @map("source_name") @db.VarChar(120)
   sourceUrl     String?       @map("source_url") @db.VarChar(500)
   topics        String[]      @default([])

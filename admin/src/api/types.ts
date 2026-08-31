@@ -336,7 +336,8 @@ export type AdminArticleItem = {
   slug: string;
   title: string;
   summary: string;
-  bodyMarkdown: string;
+  bodyHtml: string;
+  coverImageUrl: string | null;
   sourceName: string | null;
   sourceUrl: string | null;
   topics: string[];
@@ -354,7 +355,8 @@ export type AdminArticleInput = {
   slug: string;
   title: string;
   summary: string;
-  bodyMarkdown: string;
+  bodyHtml: string;
+  coverImageUrl?: string | null;
   sourceName?: string | null;
   sourceUrl?: string | null;
   topics?: string[];

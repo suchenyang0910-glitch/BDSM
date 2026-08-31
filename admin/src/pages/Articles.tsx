@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Button, Card, Drawer, Form, Input, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
+import { Alert, Button, Card, Divider, Drawer, Form, Input, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, EditOutlined, UploadOutlined } from "@ant-design/icons";
 import { adminMe, archiveAdminArticle, completeAdminBannerImageUpload, createAdminArticle, errMsg, initAdminBannerImageUpload, listAdminArticles, publishAdminArticle, updateAdminArticle } from "../api/client";
@@ -9,7 +9,7 @@ const { TextArea } = Input;
 const { Text, Title } = Typography;
 
 const EMPTY: AdminArticleInput = {
-  slug: "", title: "", summary: "", bodyMarkdown: "", sourceName: null, sourceUrl: null,
+  slug: "", title: "", summary: "", bodyHtml: "", coverImageUrl: null, sourceName: null, sourceUrl: null,
   topics: [], seoTitle: null, seoDescription: null, seoKeywords: [], geoKeywords: [], status: "draft", reason: "",
 };
 
@@ -76,7 +76,7 @@ const ArticlesPage: React.FC = () => {
     try { await archiveAdminArticle(article.id); message.success("文章已下线"); await load(); }
     catch (error) { message.error(errMsg(error, "下线文章失败")); }
   };
-  const uploadInlineImage = async (file: File) => {
+  const uploadArticleImage = async (file: File, mode: "cover" | "inline") => {
     if (!canEdit) return Upload.LIST_IGNORE;
     if (!/^image\/(jpeg|png|webp|jpg)$/i.test(file.type || "")) {
       message.error("仅支持 JPG、PNG 或 WebP 图片");
@@ -101,10 +101,16 @@ const ArticlesPage: React.FC = () => {
       });
       const completed = await completeAdminBannerImageUpload(assetId, { ok: true, reportedContentLength: file.size });
       if (!completed.ok || completed.status !== "ready" || !completed.publicUrl) throw new Error("article_image_verify_failed");
-      const current = String(form.getFieldValue("bodyMarkdown") || "").trimEnd();
+      const current = String(form.getFieldValue("bodyHtml") || "").trimEnd();
       const alt = file.name.replace(/\.[a-z0-9]+$/i, "") || "文章配图";
-      form.setFieldValue("bodyMarkdown", `${current}${current ? "\n\n" : ""}![${alt}](${completed.publicUrl})`);
-      message.success("图片已上传并插入正文末尾，可在正文中调整位置");
+      if (mode === "cover") {
+        form.setFieldValue("coverImageUrl", completed.publicUrl);
+        message.success("封面图片已上传，可直接保存文章");
+      } else {
+        const figure = `<figure><img src="${completed.publicUrl}" alt="${alt}"><figcaption>${alt}</figcaption></figure>`;
+        form.setFieldValue("bodyHtml", `${current}${current ? "\n\n" : ""}${figure}`);
+        message.success("图片已插入 HTML 正文末尾，可剪切到任意位置");
+      }
     } catch (error) {
       if (assetId) {
         try { await completeAdminBannerImageUpload(assetId, { ok: false, error: "article_image_upload_failed" }); } catch { /* best effort */ }
@@ -133,7 +139,7 @@ const ArticlesPage: React.FC = () => {
       <Space direction="vertical" size={8} style={{ width: "100%" }}>
         <Title level={5} style={{ margin: 0 }}>文章中心</Title>
         <Text type="secondary">编写平台原创文章或维护经授权的导读。仅“已发布”文章会出现在 H5、Web 和 Mini App 的文章板块。</Text>
-        <Alert type="info" showIcon message="支持安全图文排版" description="可上传 JPG、PNG、WebP 并自动插入正文；前台仅渲染受控的 Markdown 图片与纯文本，不执行任意 HTML。引用第三方资料请填写来源名称与链接，不直接搬运未经授权的全文。" />
+        <Alert type="info" showIcon message="支持封面与 HTML 图文排版" description="封面和正文图片均可上传；正文使用受控 HTML，支持标题、段落、列表、引用、链接和图片。系统会过滤脚本、样式、事件属性及非 HTTPS 资源。引用第三方资料请填写来源名称与链接，不直接搬运未经授权的全文。" />
       </Space>
     </Card>
     <Card title="文章列表" extra={<Space><Button onClick={load}>刷新</Button><Button type="primary" icon={<PlusOutlined />} disabled={!canEdit} onClick={openCreate}>新建文章</Button></Space>}>
@@ -144,10 +150,13 @@ const ArticlesPage: React.FC = () => {
         <Form.Item name="slug" label="URL 标识" rules={[{ required: true, pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/, message: "仅小写英文、数字与连字符，例如 bdsm-safety-guide" }]}><Input maxLength={160} disabled={!canEdit} /></Form.Item>
         <Form.Item name="title" label="文章标题" rules={[{ required: true, min: 2, max: 160 }]}><Input maxLength={160} disabled={!canEdit} /></Form.Item>
         <Form.Item name="summary" label="摘要" rules={[{ required: true, min: 10, max: 500 }]}><TextArea rows={3} maxLength={500} disabled={!canEdit} /></Form.Item>
-        <Form.Item name="bodyMarkdown" label="正文" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">以空行分段。图片会自动插入正文末尾，可剪切到任意段落之间。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadInlineImage(file as File)}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入图片</Button></Upload></Space>}><TextArea autoSize={{ minRows: 28, maxRows: 48 }} maxLength={50000} disabled={!canEdit} /></Form.Item>
+        <Form.Item name="coverImageUrl" label="文章封面图片" extra={<Space direction="vertical" size={6}><Text type="secondary">建议 16:9、最小 1600×900。封面会显示在文章列表与详情顶部。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "cover")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传封面图片</Button></Upload></Space>}><Input placeholder="上传后自动填写，也可填写 HTTPS 图片地址" disabled={!canEdit} /></Form.Item>
+        <Form.Item noStyle shouldUpdate={(previous, current) => previous.coverImageUrl !== current.coverImageUrl}>{() => form.getFieldValue("coverImageUrl") ? <img src={form.getFieldValue("coverImageUrl")} alt="文章封面预览" style={{ width: "100%", maxWidth: 480, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 10, marginBottom: 18 }} /> : null}</Form.Item>
+        <Form.Item name="bodyHtml" label="正文 HTML" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">可用标签：h2、h3、p、strong、em、ul、ol、li、blockquote、a、figure、img、figcaption、br、hr。图片会插入正文末尾，可剪切调整。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><TextArea autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={!canEdit} spellCheck={false} /></Form.Item>
+        <Form.Item noStyle shouldUpdate={(previous, current) => previous.bodyHtml !== current.bodyHtml}>{() => <><Divider orientation="left">HTML 安全预览</Divider><iframe title="文章 HTML 预览" sandbox="" style={{ width: "100%", minHeight: 320, border: "1px solid #eee", borderRadius: 10 }} srcDoc={`<style>body{font-family:system-ui,sans-serif;line-height:1.75;padding:20px;color:#211c2d}img{max-width:100%;height:auto;border-radius:12px}figure{margin:20px 0}figcaption{color:#716b7d;font-size:13px;text-align:center}blockquote{margin:18px 0;padding:12px 16px;border-left:3px solid #8d52ff;background:#f6f1ff}a{color:#6d3ae8}</style>${String(form.getFieldValue("bodyHtml") || "")}`} /></>}</Form.Item>
         <Space size={16} style={{ display: "flex" }}>
-          <Form.Item name="sourceName" label="来源名称" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} /></Form.Item>
-          <Form.Item name="sourceUrl" label="来源链接" style={{ flex: 1 }} rules={[{ type: "url", message: "请输入完整 https:// 链接" }]}><Input maxLength={500} disabled={!canEdit} /></Form.Item>
+          <Form.Item name="sourceName" label="来源名称（选填）" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} placeholder="填写后才会在文章正文底部展示" /></Form.Item>
+          <Form.Item name="sourceUrl" label="来源链接（选填）" style={{ flex: 1 }} rules={[{ type: "url", message: "请输入完整 https:// 链接" }]}><Input maxLength={500} disabled={!canEdit} placeholder="填写后才会在文章正文底部展示" /></Form.Item>
         </Space>
         <Form.Item name="topics" label="主题标签"><Select mode="tags" tokenSeparators={[",", "，", "\n"]} maxCount={12} disabled={!canEdit} /></Form.Item>
         <Form.Item name="seoTitle" label="SEO 标题"><Input maxLength={160} disabled={!canEdit} /></Form.Item>

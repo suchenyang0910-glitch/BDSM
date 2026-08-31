@@ -1,13 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { requireAdmin, type AdminSession } from "./admin.js";
+import { htmlToPlainText, sanitizeArticleHtml } from "../lib/articleHtml.js";
 
 const StatusZ = z.enum(["draft", "published", "archived"]);
 const ArticleInputZ = z.object({
   slug: z.string().trim().toLowerCase().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(160),
   title: z.string().trim().min(2).max(160),
   summary: z.string().trim().min(10).max(500),
-  bodyMarkdown: z.string().trim().min(20).max(50_000),
+  bodyHtml: z.string().trim().min(20).max(50_000),
+  coverImageUrl: z.string().trim().url().max(500).nullable().optional(),
   sourceName: z.string().trim().max(120).nullable().optional(),
   sourceUrl: z.string().trim().url().max(500).nullable().optional(),
   topics: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
@@ -30,7 +32,8 @@ function publicShape(row: any) {
     slug: row.slug,
     title: row.title,
     summary: row.summary,
-    bodyMarkdown: row.bodyMarkdown,
+    bodyHtml: row.bodyHtml || "",
+    coverImageUrl: row.coverImageUrl,
     sourceName: row.sourceName,
     sourceUrl: row.sourceUrl,
     topics: row.topics || [],
@@ -73,11 +76,16 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
   fastify.post("/admin/articles", { preHandler: [requireAdmin("content:edit")] }, async (req, reply) => {
     const parsed = ArticleInputZ.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_article_input", details: parsed.error.issues });
-    const { reason, ...input } = parsed.data;
+    const { reason, bodyHtml, coverImageUrl, ...input } = parsed.data;
+    const safeHtml = sanitizeArticleHtml(bodyHtml);
+    if (htmlToPlainText(safeHtml).length < 20) return reply.code(400).send({ error: "invalid_article_html", message: "正文 HTML 不包含足够的可读内容。" });
     const actor = meta(req);
     const created = await prisma.article.create({
       data: {
         ...input,
+        bodyHtml: safeHtml,
+        bodyMarkdown: htmlToPlainText(safeHtml),
+        coverImageUrl: coverImageUrl || null,
         sourceName: input.sourceName || null,
         sourceUrl: input.sourceUrl || null,
         seoTitle: input.seoTitle || null,
@@ -97,13 +105,18 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: "invalid_article_input", details: parsed.error.issues });
     const before = await prisma.article.findUnique({ where: { id: req.params.id } });
     if (!before) return reply.code(404).send({ error: "article_not_found", message: "文章不存在。" });
-    const { reason, ...input } = parsed.data;
+    const { reason, bodyHtml, coverImageUrl, ...input } = parsed.data;
+    const safeHtml = sanitizeArticleHtml(bodyHtml);
+    if (htmlToPlainText(safeHtml).length < 20) return reply.code(400).send({ error: "invalid_article_html", message: "正文 HTML 不包含足够的可读内容。" });
     const actor = meta(req);
     const status = input.status || before.status;
     const after = await prisma.article.update({
       where: { id: before.id },
       data: {
         ...input,
+        bodyHtml: safeHtml,
+        bodyMarkdown: htmlToPlainText(safeHtml),
+        coverImageUrl: coverImageUrl || null,
         sourceName: input.sourceName || null,
         sourceUrl: input.sourceUrl || null,
         seoTitle: input.seoTitle || null,

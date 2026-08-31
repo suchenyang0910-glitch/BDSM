@@ -811,6 +811,7 @@
     host.innerHTML = state.articles.items.map(function (item) {
       const topics = (item.topics || []).slice(0, 3).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
       return '<button class="article-card" type="button" data-article-slug="' + escapeHtml(item.slug) + '">' +
+        (item.coverImageUrl ? '<img class="article-card-cover" src="' + escapeHtml(item.coverImageUrl) + '" alt="' + escapeHtml(item.title) + '" loading="lazy">' : "") +
         '<div class="article-card-top">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
         "<h3>" + escapeHtml(item.title) + "</h3><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +
         '<span class="text-button">阅读中文导读 ›</span></button>';
@@ -818,20 +819,6 @@
     host.querySelectorAll("[data-article-slug]").forEach(function (button) {
       button.addEventListener("click", function () { setHashForArticle(button.getAttribute("data-article-slug"), "articles"); });
     });
-  }
-
-  function renderArticleBody(body) {
-    return String(body || "").split(/\r?\n\s*\r?\n/).map(function (block) {
-      const trimmed = block.trim();
-      const image = /^!\[([^\]]*)\]\((https:\/\/[^\s)]+)\)$/i.exec(trimmed);
-      if (image) {
-        try {
-          const url = new URL(image[2]);
-          if (url.protocol === "https:") return '<figure class="article-inline-image"><img src="' + escapeHtml(url.href) + '" alt="' + escapeHtml(image[1] || "文章配图") + '" loading="lazy"><figcaption>' + escapeHtml(image[1] || "文章配图") + "</figcaption></figure>";
-        } catch (_) { /* unsafe or malformed image stays as text */ }
-      }
-      return "<p>" + escapeHtml(block).replace(/\r?\n/g, "<br>") + "</p>";
-    }).join("");
   }
 
   async function renderArticleDetail(slug) {
@@ -846,12 +833,11 @@
       }
       updatePageSeo(item.seo);
       const topics = (item.topics || []).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
-      const sections = (item.sections || []).map(function (section) {
-        return '<section class="article-detail-section"><h3>' + escapeHtml(section.heading) + "</h3>" + renderArticleBody(section.body) + "</section>";
-      }).join("");
+      const source = (item.sourceName || item.sourceUrl) ? '<div class="article-source-row">' + (item.sourceName ? '<span>原始来源：' + escapeHtml(item.sourceName) + '</span>' : '') + (item.sourceUrl ? '<a class="article-source-link" href="' + escapeHtml(item.sourceUrl) + '" target="_blank" rel="noopener noreferrer">阅读原文 ↗</a>' : '') + '</div>' : "";
       host.innerHTML = '<div class="article-detail-meta">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
+        (item.coverImageUrl ? '<img class="article-detail-cover" src="' + escapeHtml(item.coverImageUrl) + '" alt="' + escapeHtml(item.title) + '">' : "") +
         "<h2>" + escapeHtml(item.title) + "</h2><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +
-        sections + '<div class="article-source-row"><span>原始来源：' + escapeHtml(item.sourceName || "Lovense Sex Blog") + '</span><a class="article-source-link" href="' + escapeHtml(item.sourceUrl) + '" target="_blank" rel="noopener noreferrer">阅读原文 ↗</a></div>';
+        '<div class="article-html-body">' + String(item.bodyHtml || "") + "</div>" + source;
     } catch (err) {
       host.innerHTML = '<div class="inline-state">文章加载失败：' + escapeHtml(apiText(err)) + "</div>";
     }
