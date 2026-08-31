@@ -146,86 +146,102 @@
           <button id="libraryLoadMoreButton" class="ghost-button is-hidden" type="button">加载更多</button>
         </section>
 
-        <section id="membershipView" class="tab-view is-hidden">
-          <div class="panel-card membership-summary">
-            <div>
-              <p class="eyebrow">MEMBERSHIP</p>
-              <h2 id="membershipHeadline">会员与内容包</h2>
-              <p id="membershipCopy" class="muted-copy">理解权益，再决定购买方式。</p>
-            </div>
-            <div id="membershipStatusBadge" class="status-badge">加载中</div>
-          </div>
-
-          <section class="section-block">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">MAIN CHANNEL</p>
-                <h3>月度会员</h3>
-              </div>
-            </div>
-            <div id="membershipPrimaryCard"></div>
+        <section id="articlesView" class="tab-view is-hidden">
+          <section class="article-intro panel-card">
+            <p class="eyebrow">SAMEWAVE ARTICLES</p>
+            <h2>文章</h2>
+            <p class="muted-copy">关于沟通、边界、同意与亲密关系的中文导读。每篇均标明原始来源。</p>
           </section>
-
-          <section class="section-block">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">PACKAGES</p>
-                <h3>内容包</h3>
-              </div>
-            </div>
-            <div id="membershipPackagesList" class="stack-list"></div>
-          </section>
+          <div id="articlesState" class="inline-state">正在加载文章…</div>
+          <div id="articlesList" class="article-list"></div>
         </section>
 
         <section id="meView" class="tab-view is-hidden">
-          <div class="panel-card profile-card">
-            <div class="profile-identity">
-              <span class="account-avatar" aria-hidden="true"><img id="profileAvatar" class="account-avatar-image" alt="" /></span>
-              <div>
-                <p class="eyebrow">MY ACCOUNT</p>
-                <h2 id="profileTitle">加载中</h2>
-                <p id="profileSubtitle" class="muted-copy">正在读取账户信息…</p>
+          <div class="panel-card profile-card profile-card-hero">
+            <button id="profileOverviewButton" class="profile-overview-button" type="button" aria-label="查看账号信息">
+              <div class="profile-identity">
+                <span class="account-avatar" aria-hidden="true"><img id="profileAvatar" class="account-avatar-image" alt="" /></span>
+                <div class="profile-copy">
+                  <p class="eyebrow">MY ACCOUNT</p>
+                  <h2 id="profileTitle">加载中</h2>
+                  <p id="profileSubtitle" class="muted-copy">正在读取账户信息…</p>
+                </div>
               </div>
-            </div>
-            <div class="profile-actions">
-              <button id="bindTelegramButton" class="primary-button" type="button">绑定 Telegram</button>
-              <button id="logoutButton" class="ghost-button" type="button">退出登录</button>
-            </div>
+              <span class="row-chevron" aria-hidden="true">›</span>
+            </button>
           </div>
 
-          <section class="section-block">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">LAST PLAYED</p>
-                <h3>上次播放</h3>
+          <section class="section-block" id="myMembershipSection">
+            <div class="panel-card membership-hero">
+              <div class="membership-hero-head">
+                <div>
+                  <p class="eyebrow">MEMBERSHIP</p>
+                  <h2 id="membershipHeadline">月度会员</h2>
+                </div>
+                <div id="membershipStatusBadge" class="status-badge">加载中</div>
               </div>
-              <button id="meWatchHistoryButton" class="text-button" type="button">观看历史</button>
+              <p id="membershipCopy" class="muted-copy">理解权益，再决定购买方式。</p>
+              <p id="membershipExpiryText" class="membership-expiry-text">正在读取会员状态…</p>
+              <div class="membership-benefit-grid" aria-label="会员权益">
+                <article class="membership-benefit-item"><span class="membership-benefit-icon">▶</span><strong>全站内容</strong></article>
+                <article class="membership-benefit-item"><span class="membership-benefit-icon">HD</span><strong>高清画质</strong></article>
+                <article class="membership-benefit-item"><span class="membership-benefit-icon">◎</span><strong>专属更新</strong></article>
+                <article class="membership-benefit-item"><span class="membership-benefit-icon">≡</span><strong>多端同步</strong></article>
+              </div>
+              <div id="membershipPrimaryCard" class="membership-primary-card"></div>
             </div>
-            <div id="meResumeCard"></div>
+          </section>
+          <section class="section-block" id="membershipOrdersSection">
+            <div class="section-head section-head-inline"><div><p class="eyebrow">ORDERS</p><h3>订单</h3></div><button id="walletShortcutButton" class="text-button" type="button">全部订单</button></div>
+            <div id="membershipOrdersList" class="stack-list"></div>
+          </section>
+          <section class="section-block">
+            <div class="section-head"><div><p class="eyebrow">PACKAGES</p><h3>内容包</h3></div></div>
+            <div id="membershipPackagesList" class="stack-list"></div>
           </section>
 
-          <div class="info-grid">
+          <section class="section-block me-entry-list-section">
+            <div class="me-entry-list">
+              <button id="meWatchHistoryButton" class="me-entry-card me-history-entry" type="button">
+                <div class="me-entry-main">
+                  <div class="me-entry-title-row">
+                    <strong>观看历史</strong>
+                    <span class="row-chevron" aria-hidden="true">›</span>
+                  </div>
+                  <p id="meHistoryEntryHint" class="muted-copy">继续观看和播放进度会显示在这里。</p>
+                </div>
+                <div id="meHistoryPreviewStrip" class="me-history-preview-strip" aria-hidden="true"></div>
+              </button>
+
+              <button id="meUnlockedShortcutButton" class="me-entry-row" type="button">
+                <span class="me-entry-label">已解锁内容</span>
+                <span class="me-entry-value"><strong id="meUnlockedCount">0</strong><span class="row-chevron" aria-hidden="true">›</span></span>
+              </button>
+
+              <button id="bindTelegramButton" class="me-entry-row" type="button">
+                <span class="me-entry-label">绑定 Telegram</span>
+                <span class="me-entry-value"><strong id="meBindTelegramStatus">未绑定</strong><span class="row-chevron" aria-hidden="true">›</span></span>
+              </button>
+
+              <button id="accountPreferencesShortcutButton" class="me-entry-row" type="button">
+                <span class="me-entry-label">设置</span>
+                <span class="me-entry-value"><strong id="meMembershipText">默认</strong><span class="row-chevron" aria-hidden="true">›</span></span>
+              </button>
+            </div>
+          </section>
+
+          <div class="info-grid me-summary-grid">
             <article class="info-card">
               <p class="info-label">会员状态</p>
-              <strong id="meMembershipText">加载中</strong>
+              <strong id="meMembershipSummaryText">加载中</strong>
               <p id="meMembershipHint" class="muted-copy">正在读取权益摘要…</p>
             </article>
             <article class="info-card">
               <p class="info-label">订单摘要</p>
               <strong id="meOrdersText">加载中</strong>
-              <p id="meOrdersHint" class="muted-copy">我的订单会显示在这里。</p>
+              <p id="meOrdersSummaryHint" class="muted-copy">我的订单会显示在这里。</p>
             </article>
           </div>
-
-          <section class="section-block account-shortcuts-section">
-            <div class="section-head"><div><p class="eyebrow">ACCOUNT</p><h3>账户服务</h3></div></div>
-            <div class="account-shortcut-grid">
-              <button id="walletShortcutButton" class="account-shortcut" type="button"><span>账</span><strong>支付与账单</strong><small>订单、支付方式与记录</small></button>
-              <button id="accountHistoryShortcutButton" class="account-shortcut" type="button"><span>播</span><strong>观看历史</strong><small>继续观看与播放进度</small></button>
-              <button id="accountPreferencesShortcutButton" class="account-shortcut" type="button"><span>偏</span><strong>内容偏好</strong><small>推荐设置即将开放</small></button>
-              <button id="accountHelpShortcutButton" class="account-shortcut" type="button"><span>帮</span><strong>帮助与规则</strong><small>边界、隐私与反馈</small></button>
-            </div>
-          </section>
 
           <section class="section-block">
             <div class="section-head">
@@ -233,6 +249,7 @@
                 <p class="eyebrow">UNLOCKED</p>
                 <h3>我的已解锁</h3>
               </div>
+              <button id="accountHistoryShortcutButton" class="text-button" type="button">查看最近播放</button>
             </div>
             <div id="meUnlockedList" class="stack-list"></div>
           </section>
@@ -263,9 +280,14 @@
                 <p class="eyebrow">PREFERENCES</p>
                 <h3>偏好与帮助</h3>
               </div>
+              <button id="accountHelpShortcutButton" class="text-button" type="button">帮助</button>
             </div>
             <div id="mePreferenceList" class="stack-list"></div>
           </section>
+
+          <div class="me-footer-actions">
+            <button id="logoutButton" class="ghost-button" type="button">退出登录</button>
+          </div>
         </section>
 
         <section id="walletView" class="tab-view is-hidden">
@@ -276,6 +298,10 @@
 
         <section id="detailView" class="tab-view is-hidden">
           <article id="detailContent" class="detail-shell"></article>
+        </section>
+
+        <section id="articleDetailView" class="tab-view is-hidden">
+          <article id="articleDetailContent" class="article-detail-shell"></article>
         </section>
 
         <section id="watchHistoryView" class="tab-view is-hidden">
@@ -313,10 +339,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
           <span>片库</span>
         </button>
-        <button class="nav-item" data-tab="membership" type="button">
+        <button class="nav-item" data-tab="articles" type="button">
           <span class="nav-indicator"></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19V9.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2V19"></path><path d="M9 7V5a3 3 0 0 1 6 0v2"></path><path d="M8 12h8"></path></svg>
-          <span>会员</span>
+          <span>文章</span>
         </button>
         <button class="nav-item" data-tab="me" type="button">
           <span class="nav-indicator"></span>

@@ -1131,6 +1131,66 @@ img.is-image-unavailable {
   display: none !important;
 }
 
+.article-intro,
+.article-card,
+.article-detail-shell {
+  display: grid;
+  gap: 12px;
+}
+
+.article-intro h2,
+.article-card h3,
+.article-detail-shell h2,
+.article-detail-shell h3,
+.article-detail-shell p { margin: 0; }
+
+.article-list { display: grid; gap: 12px; }
+
+.article-card {
+  width: 100%;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.article-card-top,
+.article-detail-meta,
+.article-source-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.article-topic {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(169, 104, 255, .14);
+  color: var(--brand-primary);
+  font-weight: 700;
+}
+
+.article-detail-shell {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+
+.article-detail-section {
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.article-source-link { color: var(--brand-primary); font-weight: 700; }
+
 @media (max-width: 680px) {
   .membership-summary,
   .profile-card {

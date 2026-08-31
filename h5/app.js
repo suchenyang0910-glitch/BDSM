@@ -63,6 +63,12 @@
       history: [],
       pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
     },
+    articles: {
+      loading: false,
+      loaded: false,
+      items: [],
+      details: {},
+    },
     player: {
       contentId: "",
       video: null,
@@ -813,7 +819,7 @@
     setMetaContent('meta[name="description"]', { name: "description" }, description);
     setMetaContent('meta[name="keywords"]', { name: "keywords" }, keywords);
     setMetaContent('meta[name="geo.keywords"]', { name: "geo.keywords" }, geoKeywords);
-    setMetaContent('meta[name="robots"]', { name: "robots" }, "noindex,nofollow");
+    setMetaContent('meta[name="robots"]', { name: "robots" }, seo && seo.robots ? seo.robots : "noindex,nofollow");
     setMetaContent('meta[property="og:title"]', { property: "og:title" }, title);
     setMetaContent('meta[property="og:description"]', { property: "og:description" }, description);
   }
@@ -829,7 +835,7 @@
 
   function clearLandingQueryParams() {
     const url = new URL(window.location.href);
-    ["content", "te", "category", "package", "membership"].forEach(function (key) {
+    ["content", "te", "category", "package", "membership", "article"].forEach(function (key) {
       url.searchParams.delete(key);
     });
     window.history.replaceState(null, "", url.pathname + (url.search || ""));
@@ -849,10 +855,14 @@
     }
     const queryPackageId = queryParams.get("package");
     if (queryPackageId) {
-      return { view: "tab", id: "", tab: "membership", fromTab: "home", packageId: queryPackageId };
+      return { view: "tab", id: "", tab: "me", fromTab: "home", packageId: queryPackageId };
     }
     if (queryParams.get("membership") === "1") {
-      return { view: "tab", id: "", tab: "membership", fromTab: "home" };
+      return { view: "tab", id: "", tab: "me", fromTab: "home" };
+    }
+    const queryArticle = queryParams.get("article");
+    if (queryArticle) {
+      return { view: "article", id: queryArticle, tab: "articles", fromTab: "articles" };
     }
     const raw = String(window.location.hash || "").replace(/^#/, "");
     const params = new URLSearchParams(raw);
@@ -875,8 +885,11 @@
         fromTab: params.get("from") || "home",
       };
     }
+    if (params.get("view") === "article" && params.get("id")) {
+      return { view: "article", id: params.get("id") || "", tab: "articles", fromTab: params.get("from") || "articles" };
+    }
     const tab = params.get("tab") || "home";
-    return { view: "tab", id: "", tab: tab, fromTab: tab, categoryId: params.get("categoryId") || "" };
+    return { view: "tab", id: "", tab: tab === "membership" ? "me" : tab, fromTab: tab, categoryId: params.get("categoryId") || "" };
   }
 
   function setHashForTab(tab, categoryId) {
@@ -894,6 +907,86 @@
     params.set("id", id);
     params.set("from", fromTab || "home");
     window.location.hash = params.toString();
+  }
+
+  function setHashForArticle(slug, fromTab) {
+    clearLandingQueryParams();
+    const params = new URLSearchParams();
+    params.set("view", "article");
+    params.set("id", slug);
+    params.set("from", fromTab || "articles");
+    window.location.hash = params.toString();
+  }
+
+  function openArticle(slug) {
+    setHashForArticle(slug, "articles");
+  }
+
+  function formatArticleDate(value) {
+    const date = value ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime())
+      ? date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0")
+      : "";
+  }
+
+  async function loadArticles() {
+    if (state.articles.loading || state.articles.loaded) return;
+    state.articles.loading = true;
+    try {
+      const data = await apiCall("/api/articles");
+      state.articles.items = Array.isArray(data && data.items) ? data.items : [];
+      state.articles.loaded = true;
+    } catch (err) {
+      if ($("articlesState")) $("articlesState").textContent = "文章加载失败：" + apiText(err);
+    } finally {
+      state.articles.loading = false;
+      renderArticles();
+    }
+  }
+
+  function renderArticles() {
+    const host = $("articlesList");
+    const stateNode = $("articlesState");
+    if (!host || !stateNode) return;
+    if (!state.articles.loaded) return;
+    stateNode.classList.toggle("is-hidden", state.articles.items.length > 0);
+    stateNode.textContent = state.articles.items.length ? "" : "暂无文章。";
+    host.innerHTML = state.articles.items.map(function (item) {
+      const topics = (item.topics || []).slice(0, 3).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
+      return '<button class="article-card" type="button" data-article-slug="' + escapeHtml(item.slug) + '">' +
+        '<div class="article-card-top">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
+        "<h3>" + escapeHtml(item.title) + "</h3>" +
+        '<p class="muted-copy">' + escapeHtml(item.summary) + "</p>" +
+        '<span class="text-button">阅读中文导读 ›</span></button>';
+    }).join("");
+    host.querySelectorAll("[data-article-slug]").forEach(function (button) {
+      button.addEventListener("click", function () { openArticle(button.getAttribute("data-article-slug")); });
+    });
+  }
+
+  async function renderArticleDetail(slug) {
+    const host = $("articleDetailContent");
+    if (!host) return;
+    host.innerHTML = '<div class="inline-state">正在加载文章…</div>';
+    try {
+      let item = state.articles.details[slug];
+      if (!item) {
+        item = await apiCall("/api/articles/" + encodeURIComponent(slug));
+        state.articles.details[slug] = item;
+      }
+      updatePageSeo(item.seo);
+      const topics = (item.topics || []).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
+      const sections = (item.sections || []).map(function (section) {
+        return '<section class="article-detail-section"><h3>' + escapeHtml(section.heading) + "</h3><p>" + escapeHtml(section.body) + "</p></section>";
+      }).join("");
+      host.innerHTML = '<div class="article-detail-meta">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span><span>约 " + escapeHtml(item.readingMinutes) + " 分钟</span></div>" +
+        "<h2>" + escapeHtml(item.title) + "</h2>" +
+        '<p class="muted-copy">' + escapeHtml(item.summary) + "</p>" +
+        sections +
+        '<div class="article-source-row"><span>原始来源：' + escapeHtml(item.sourceName || "Lovense Sex Blog") + '</span><a class="article-source-link" href="' + escapeHtml(item.sourceUrl) + '" target="_blank" rel="noopener noreferrer">阅读原文 ↗</a></div>';
+    } catch (err) {
+      host.innerHTML = '<div class="inline-state">文章加载失败：' + escapeHtml(apiText(err)) + "</div>";
+    }
   }
 
   function setHashForHistory(fromTab) {
@@ -1206,7 +1299,7 @@
         : "");
 
     const membershipButton = $("desktopMembershipButton");
-    if (membershipButton) membershipButton.addEventListener("click", function () { setHashForTab("membership"); });
+    if (membershipButton) membershipButton.addEventListener("click", function () { setHashForTab("me"); });
     const resumeButton = $("desktopResumeButton");
     if (resumeButton && recent) resumeButton.addEventListener("click", function () {
       openContentDetail(recent.contentId, "home", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
@@ -1405,6 +1498,33 @@
     host.appendChild(action);
   }
 
+  function renderMembershipPrimaryCard(host, membershipEntry, summary) {
+    if (!host) return;
+    if (!membershipEntry || !membershipEntry.product) {
+      host.innerHTML = '<div class="inline-state">当前还没有配置月度会员商品。</div>';
+      return;
+    }
+    const isActive = summary.status === "active";
+    const activeText = isActive
+      ? (summary.expiresAt ? "当前有效至 " + formatDateShort(summary.expiresAt) : "当前会员权益已生效")
+      : (summary.status === "expired" ? "会员已到期，可立即恢复权益。" : "开通后可观看全部会员内容。");
+    host.innerHTML =
+      '<article class="membership-action-card">' +
+        '<div class="membership-action-copy">' +
+          '<strong>' + escapeHtml(membershipEntry.product.title || "月度会员") + '</strong>' +
+          '<p>' + escapeHtml(activeText) + '</p>' +
+        '</div>' +
+        '<div class="membership-action-meta">' +
+          '<span>' + escapeHtml(formatAvailablePrices(membershipEntry)) + '</span>' +
+          '<small>' + escapeHtml(isActive ? "续费会从当前到期日顺延" : "网页 / H5 / Mini App 统一可看") + '</small>' +
+        '</div>' +
+        '<button class="primary-button" type="button">' + escapeHtml(isActive ? "管理会员" : "开通会员") + '</button>' +
+      '</article>';
+    host.querySelector("button").addEventListener("click", function () {
+      startPurchase(membershipEntry);
+    });
+  }
+
   function renderMembership() {
     const summary = state.entitlements.data && state.entitlements.data.summary
       ? state.entitlements.data.summary.membership
@@ -1413,26 +1533,29 @@
     if (summary.status === "active") {
       badge.textContent = summary.expiresAt ? "有效至 " + formatDateShort(summary.expiresAt) : "已开通";
       badge.className = "status-badge";
-      $("membershipHeadline").textContent = "会员权益已生效";
-      $("membershipCopy").textContent = "有效期内可在网页、H5 与 Mini App 观看全部会员内容；频道与 Bot 是可选的关注入口。";
+      $("membershipHeadline").textContent = "月度会员";
+      $("membershipCopy").textContent = "有效期内可在网页、H5 与 Mini App 观看全部会员内容；频道与 Bot 是可选入口。";
+      $("membershipExpiryText").textContent = summary.expiresAt ? "有效期至 " + formatDateShort(summary.expiresAt) : "会员权益当前已生效";
     } else {
       badge.textContent = summary.status === "expired" ? "已到期" : "未开通";
       badge.className = "status-badge status-warning";
-      $("membershipHeadline").textContent = summary.status === "expired" ? "恢复会员权益" : "理解权益，再决定购买方式";
+      $("membershipHeadline").textContent = "月度会员";
       $("membershipCopy").textContent = state.env.isTelegram
         ? "Telegram 内默认优先使用 Stars，同时提供 USDT。"
         : "H5 默认使用 USDT；若需 Stars，请在 Telegram 内打开。";
+      $("membershipExpiryText").textContent = summary.status === "expired"
+        ? "你的会员已到期，可立即恢复完整观看权益。"
+        : "开通后即可解锁全部会员内容与多端同步。";
     }
 
     const membershipEntry = findMembershipEntry();
     const membershipHost = $("membershipPrimaryCard");
-    if (!membershipEntry) {
-      membershipHost.innerHTML = '<div class="inline-state">当前还没有配置月度会员商品。</div>';
-    } else {
-      membershipHost.innerHTML = "";
-      renderContentCards("membershipPrimaryCard", [membershipEntry], "membership");
-      appendMembershipPurchaseAction(membershipHost, membershipEntry, summary);
-    }
+    renderMembershipPrimaryCard(membershipHost, membershipEntry, summary);
+    renderOrdersList("membershipOrdersList", {
+      limit: 4,
+      emptyText: "暂无订单记录。开通会员或解锁内容后，订单会显示在这里。",
+      sourceTab: "membership",
+    });
 
     const packageHost = $("membershipPackagesList");
     const packages = groupPackageItems((state.library.items || []).filter(function (item) { return item.accessType === "package"; }));
@@ -1515,18 +1638,23 @@
     });
   }
 
-  function renderOrdersList() {
-    const host = $("meOrdersList");
+  function renderOrdersList(hostId, options) {
+    const host = $(hostId || "meOrdersList");
+    const opts = options || {};
+    const sourceTab = opts.sourceTab || "me";
+    const limit = Math.max(0, Number(opts.limit) || 0);
+    const visibleItems = limit > 0 ? state.orders.items.slice(0, limit) : state.orders.items;
+    if (!host) return;
     host.innerHTML = "";
     if (state.orders.loading) {
       host.innerHTML = createSkeletonCards(2);
       return;
     }
-    if (!state.orders.items.length) {
-      host.innerHTML = '<div class="inline-state">当前没有订单记录。</div>';
+    if (!visibleItems.length) {
+      host.innerHTML = '<div class="inline-state">' + escapeHtml(opts.emptyText || "当前没有订单记录。") + '</div>';
       return;
     }
-    state.orders.items.forEach(function (order) {
+    visibleItems.forEach(function (order) {
       const statusClass = order.status === "paid" ? "" : (order.status === "pending" ? " status-warning" : " status-danger");
       const card = document.createElement("article");
       card.className = "stack-card";
@@ -1553,7 +1681,7 @@
         }
         if (order.product && order.product.id) {
           const target = (state.library.items || []).find(function (item) { return item.productId === order.product.id; });
-          if (target) openContentDetail(target.id, "me", { autoplay: false, resumePositionSec: 0 });
+          if (target) openContentDetail(target.id, sourceTab, { autoplay: false, resumePositionSec: 0 });
         }
       });
       actions.appendChild(primary);
@@ -1562,32 +1690,18 @@
   }
 
   function renderMeResume() {
-    const host = $("meResumeCard");
-    const recent = state.watch.recent;
-    if (!recent) {
-      host.innerHTML = '<div class="inline-state">还没有观看记录，去首页或片库打开一条内容后，这里会显示上次播放。</div>';
+    const host = $("meHistoryPreviewStrip");
+    const items = (state.watch.history || []).slice(0, 4);
+    if (!host) return;
+    if (!items.length) {
+      host.innerHTML = '<div class="inline-state">还没有观看记录</div>';
       return;
     }
-    host.innerHTML =
-      '<article class="resume-card">' +
-      '<button class="resume-cover-button" type="button" aria-label="继续播放 ' + escapeHtml(recent.title) + '">' +
-      '<div class="resume-cover">' +
-      imageTag(recent.coverUrl, "resume-cover-image", recent.title || "上次播放封面", true) +
-      '<span class="cover-duration">' + escapeHtml(recent.duration || "—") + "</span>" +
-      "</div>" +
-      "</button>" +
-      '<div class="resume-body">' +
-      '<div class="resume-title-row"><strong>' + escapeHtml(recent.title || "未命名内容") + '</strong><span class="resume-time">' + escapeHtml(formatDate(recent.lastPlayedAt)) + "</span></div>" +
-      '<div class="resume-progress-track"><span class="resume-progress-value" style="width:' + escapeHtml(String(Math.max(0, Math.min(100, recent.progressPercent || 0)))) + '%"></span></div>' +
-      '<div class="resume-meta"><span>' + escapeHtml(getLastPlayedSubtitle(recent)) + '</span><button class="primary-button" type="button">继续播放</button></div>' +
-      "</div>" +
-      "</article>";
-    host.querySelector(".resume-cover-button").addEventListener("click", function () {
-      openContentDetail(recent.contentId, "me", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
-    });
-    host.querySelector(".resume-meta .primary-button").addEventListener("click", function () {
-      openContentDetail(recent.contentId, "me", { autoplay: true, resumePositionSec: recent.resumePositionSec || 0 });
-    });
+    host.innerHTML = items.map(function (item, index) {
+      return '<span class="me-history-preview-item' + (index === 0 ? " is-current" : "") + '">' +
+        imageTag(item.coverUrl, "me-history-preview-image", item.title || "观看记录封面", true) +
+        "</span>";
+    }).join("");
   }
 
   function renderWatchHistory() {
@@ -1650,33 +1764,37 @@
     const session = state.session;
     const isTelegram = session && session.identity === "telegram";
     const profileName = session && session.displayName ? session.displayName : "同频成员";
-    $("profileTitle").textContent = isTelegram
-      ? "我的昵称 · " + profileName
-      : profileName;
+    $("profileTitle").textContent = profileName;
     $("profileSubtitle").textContent = isTelegram
       ? "已连接 Telegram，可跨设备恢复订单与权益。"
-      : "已自动登录；绑定 Telegram 后可跨设备恢复订单与权益。";
+      : "绑定 Telegram 后可跨设备恢复订单与权益。";
     const profileAvatar = $("profileAvatar");
     if (profileAvatar) profileAvatar.src = accountAvatarUrl(session);
 
     const membershipSummary = state.entitlements.data && state.entitlements.data.summary
       ? state.entitlements.data.summary.membership
       : { status: "none", expiresAt: null };
-    $("meMembershipText").textContent = membershipSummary.status === "active"
+    $("meMembershipSummaryText").textContent = membershipSummary.status === "active"
       ? (membershipSummary.expiresAt ? "已开通至 " + formatDateShort(membershipSummary.expiresAt) : "已开通")
       : "未开通";
     $("meMembershipHint").textContent = membershipSummary.status === "active"
-      ? "会员有效期内可直接观看全部会员内容；可在「会员」页续费。"
-      : (membershipSummary.status === "expired" ? "会员已到期，可在「会员」页恢复权益。" : "会员与内容包购买入口在「会员」页。");
+      ? "会员有效期内可直接观看全部会员内容；可在个人中心续费。"
+      : (membershipSummary.status === "expired" ? "会员已到期，可在个人中心恢复权益。" : "会员与内容包购买入口已迁至个人中心。");
+    $("meBindTelegramStatus").textContent = isTelegram ? "已绑定" : "去绑定";
+    $("meMembershipText").textContent = membershipSummary.status === "active" ? "通知默认" : "基础设置";
     $("meOrdersText").textContent = state.orders.items.length ? "共 " + state.orders.items.length + " 条" : "暂无订单";
-    $("meOrdersHint").textContent = state.orders.items.some(function (item) { return item.status === "pending"; })
+    $("meOrdersSummaryHint").textContent = state.orders.items.some(function (item) { return item.status === "pending"; })
       ? "你有待支付订单，通知入口会直接带你回到这里。"
       : "已支付、待支付、失效订单都会统一收进这里。";
+    $("meHistoryEntryHint").textContent = state.watch.recent
+      ? (state.watch.recent.title || "继续观看")
+      : "继续观看和播放进度会显示在这里。";
+    $("meUnlockedCount").textContent = String((state.library.items || []).filter(function (item) { return item.unlocked; }).length || 0);
 
     renderMeResume();
     renderUnlockedList();
     renderChannelCards();
-    renderOrdersList();
+    renderOrdersList("meOrdersList");
     renderPreferenceCards();
   }
 
@@ -1691,7 +1809,7 @@
       : "开通后即可观看会员完整内容。";
     $("walletMembershipCopy").textContent = active
       ? "会员已生效。支付记录与待处理订单统一保存在这里。"
-      : "在这里查看订单、继续支付待完成订单，或前往会员页开通权益。";
+      : "在这里查看订单、继续支付待完成订单，或前往个人中心开通权益。";
 
     const host = $("walletOrdersList");
     host.innerHTML = "";
@@ -2216,7 +2334,7 @@
       }
     }
     if (banner.targetType === "membership") {
-      setHashForTab("membership");
+      setHashForTab("me");
       return;
     }
     if (banner.externalUrl) {
@@ -2309,12 +2427,14 @@
   async function loadOrders() {
     if (state.orders.loading) return;
     state.orders.loading = true;
-    renderOrdersList();
+    renderOrdersList("meOrdersList");
+    renderOrdersList("membershipOrdersList", { limit: 4, emptyText: "暂无订单记录。开通会员或解锁内容后，订单会显示在这里。", sourceTab: "membership" });
     try {
       const data = await apiCall("/api/user/orders?page=1&pageSize=50");
       state.orders.items = data.items || [];
     } catch (err) {
       $("meOrdersList").innerHTML = '<div class="inline-state">订单加载失败：' + escapeHtml(apiText(err)) + "</div>";
+      if ($("membershipOrdersList")) $("membershipOrdersList").innerHTML = '<div class="inline-state">订单加载失败：' + escapeHtml(apiText(err)) + "</div>";
     } finally {
       state.orders.loading = false;
       renderNotifyBadge();
@@ -2372,7 +2492,7 @@
         state.watch.history = data.items || [];
       }
     } catch (err) {
-      $("meResumeCard").innerHTML = '<div class="inline-state">播放记录加载失败：' + escapeHtml(apiText(err)) + "</div>";
+      if ($("meHistoryPreviewStrip")) $("meHistoryPreviewStrip").innerHTML = '<div class="inline-state">播放记录加载失败：' + escapeHtml(apiText(err)) + "</div>";
       $("homeRecentCard").innerHTML = "";
       $("homeRecentSection").classList.add("is-hidden");
     } finally {
@@ -2769,25 +2889,28 @@
     const refreshLibraryForCategory = routeState.tab === "library" && !!routeState.categoryId && routeState.categoryId !== state.library.categoryId;
     state.route = routeState;
     if (routeState.categoryId) state.library.categoryId = routeState.categoryId;
-    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "history" ? "watch_history" : routeState.view === "wallet" ? "wallet" : routeState.tab });
+    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "article" ? "library" : (routeState.view === "history" ? "watch_history" : routeState.view === "wallet" ? "wallet" : routeState.tab) });
     const isDetail = routeState.view === "detail";
+    const isArticle = routeState.view === "article";
     const isHistory = routeState.view === "history";
     const isWallet = routeState.view === "wallet";
-    if (isDetail || isHistory || isWallet || routeState.tab !== "home") $("homePromoModal").classList.add("is-hidden");
+    if (isDetail || isArticle || isHistory || isWallet || routeState.tab !== "home") $("homePromoModal").classList.add("is-hidden");
     const titleMap = {
       home: ["同频", "免费试看，解锁后继续观看"],
       library: ["片库", "按标题、简介与标签查找内容"],
-      membership: ["会员", "查看会员权益、内容包与续费入口"],
+      articles: ["文章", "关于边界、沟通与亲密关系的中文导读"],
       me: ["我的", "查看权益、订单和继续观看记录"],
     };
-    const isHome = !isDetail && !isHistory && !isWallet && routeState.tab === "home";
+    const isHome = !isDetail && !isArticle && !isHistory && !isWallet && routeState.tab === "home";
 
-    $("backButton").hidden = !(isDetail || isHistory || isWallet);
-    $("bottomNav").classList.toggle("is-hidden", isDetail || isHistory || isWallet);
+    $("backButton").hidden = !(isDetail || isArticle || isHistory || isWallet);
+    $("bottomNav").classList.toggle("is-hidden", isDetail || isArticle || isHistory || isWallet);
     $("appHeader").classList.toggle("is-home", isHome);
-    $("headerTitle").textContent = isDetail ? "视频详情" : (isHistory ? "观看历史" : (isWallet ? "支付与账单" : titleMap[routeState.tab][0]));
+    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "文章详情" : (isHistory ? "观看历史" : (isWallet ? "支付与账单" : titleMap[routeState.tab][0])));
     $("headerSubtitle").textContent = isDetail
       ? "试看后可直接解锁完整内容"
+      : isArticle
+        ? "中文导读与原始来源"
       : isHistory
         ? "按最近播放时间排序，可删除单条或清空记录"
       : isWallet
@@ -2796,21 +2919,26 @@
     $("headerSubtitle").hidden = false;
     $("headerEyebrow").hidden = isHome;
 
-    ["home", "library", "membership", "me"].forEach(function (tab) {
-      $(tab + "View").classList.toggle("is-hidden", isDetail || isHistory || isWallet || routeState.tab !== tab);
+    ["home", "library", "articles", "me"].forEach(function (tab) {
+      $(tab + "View").classList.toggle("is-hidden", isDetail || isArticle || isHistory || isWallet || routeState.tab !== tab);
     });
     $("detailView").classList.toggle("is-hidden", !isDetail);
+    $("articleDetailView").classList.toggle("is-hidden", !isArticle);
     $("watchHistoryView").classList.toggle("is-hidden", !isHistory);
     $("walletView").classList.toggle("is-hidden", !isWallet);
     $("desktopRail").classList.toggle("is-hidden", isDetail || isHistory || isWallet);
     if (!isDetail && !isHistory && !isWallet) renderDesktopRail();
 
     document.querySelectorAll(".nav-item").forEach(function (button) {
-      button.classList.toggle("is-active", !isDetail && !isHistory && !isWallet && button.getAttribute("data-tab") === routeState.tab);
+      button.classList.toggle("is-active", !isDetail && !isArticle && !isHistory && !isWallet && button.getAttribute("data-tab") === routeState.tab);
     });
 
     if (isDetail) {
       renderDetail(routeState.id);
+      return;
+    }
+    if (isArticle) {
+      renderArticleDetail(routeState.id);
       return;
     }
     if (isHistory) {
@@ -2825,20 +2953,24 @@
       return;
     }
 
-    if ((!state.library.loaded && routeState.tab !== "home") || refreshLibraryForCategory) loadLibrary();
-    if (routeState.tab === "membership" && routeState.packageId) {
+    if ((!state.library.loaded && routeState.tab === "library") || refreshLibraryForCategory) loadLibrary();
+    if (routeState.tab === "me" && routeState.packageId) {
       const target = (state.library.items || []).find(function (item) { return item.packageId === routeState.packageId; });
       if (target) {
-        openContentDetail(target.id, "membership", { autoplay: false, resumePositionSec: 0 });
+        openContentDetail(target.id, "me", { autoplay: false, resumePositionSec: 0 });
         return;
       }
     }
-    if (routeState.tab === "membership") renderMembership();
+    if (routeState.tab === "articles") {
+      loadArticles();
+      renderArticles();
+    }
     if (routeState.tab === "me") {
       loadOrders();
       loadEntitlements();
       loadChannels();
       if (!state.watch.loaded) loadWatchProgress(1, false);
+      renderMembership();
     }
     renderHomePopup();
   }
@@ -2906,11 +3038,18 @@
     $("meWatchHistoryButton").addEventListener("click", function () {
       setHashForHistory("me");
     });
+    $("profileOverviewButton").addEventListener("click", function () {
+      showInlineMessage("账号设置与更多账户能力正在整理中。");
+    });
+    $("meUnlockedShortcutButton").addEventListener("click", function () {
+      const section = $("meUnlockedList");
+      if (section && typeof section.scrollIntoView === "function") section.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     $("walletShortcutButton").addEventListener("click", setHashForWallet);
     $("accountHistoryShortcutButton").addEventListener("click", function () { setHashForHistory("me"); });
     $("accountPreferencesShortcutButton").addEventListener("click", function () { showInlineMessage("内容偏好设置正在完善中，当前推荐会根据你的观看与解锁记录逐步优化。"); });
     $("accountHelpShortcutButton").addEventListener("click", function () { showInlineMessage("请遵守社区规则、尊重边界并保护隐私；如需帮助，请联系官方 Bot。 "); });
-    $("walletMembershipButton").addEventListener("click", function () { setHashForTab("membership"); });
+    $("walletMembershipButton").addEventListener("click", function () { setHashForTab("me"); });
     $("jumpPopularLibraryButton").addEventListener("click", function () { state.library.categoryId = "all"; setHashForTab("library"); });
     $("watchHistoryLoadMore").addEventListener("click", function () {
       if (state.watch.loading) return;
@@ -3006,7 +3145,8 @@
     $("homeLatestGrid").innerHTML = createSkeletonCards(4);
     $("libraryGrid").innerHTML = createSkeletonCards(4);
     $("membershipPrimaryCard").innerHTML = createSkeletonCards(1);
-    $("meResumeCard").innerHTML = createSkeletonCards(1);
+    if ($("membershipOrdersList")) $("membershipOrdersList").innerHTML = createSkeletonCards(2);
+    if ($("meHistoryPreviewStrip")) $("meHistoryPreviewStrip").innerHTML = createSkeletonCards(1);
     $("meUnlockedList").innerHTML = createSkeletonCards(1);
     if (!window.location.hash) setHashForTab("home");
     else routeTo(parseHash());

@@ -60,6 +60,12 @@
       history: [],
       pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
     },
+    articles: {
+      loading: false,
+      loaded: false,
+      items: [],
+      details: {},
+    },
     player: {
       contentId: "",
       video: null,
@@ -638,7 +644,7 @@
     setMetaContent('meta[name="description"]', { name: "description" }, description);
     setMetaContent('meta[name="keywords"]', { name: "keywords" }, keywords);
     setMetaContent('meta[name="geo.keywords"]', { name: "geo.keywords" }, geoKeywords);
-    setMetaContent('meta[name="robots"]', { name: "robots" }, "noindex,nofollow");
+    setMetaContent('meta[name="robots"]', { name: "robots" }, seo && seo.robots ? seo.robots : "noindex,nofollow");
     setMetaContent('meta[property="og:title"]', { property: "og:title" }, title);
     setMetaContent('meta[property="og:description"]', { property: "og:description" }, description);
   }
@@ -654,7 +660,7 @@
 
   function clearLandingQueryParams() {
     const url = new URL(window.location.href);
-    ["content", "te", "category", "package", "membership"].forEach(function (key) {
+    ["content", "te", "category", "package", "membership", "article"].forEach(function (key) {
       url.searchParams.delete(key);
     });
     window.history.replaceState(null, "", url.pathname + (url.search || ""));
@@ -674,11 +680,13 @@
     }
     const queryPackageId = queryParams.get("package");
     if (queryPackageId) {
-      return { view: "tab", id: "", tab: "membership", fromTab: "home", packageId: queryPackageId };
+      return { view: "tab", id: "", tab: "me", fromTab: "home", packageId: queryPackageId };
     }
     if (queryParams.get("membership") === "1") {
-      return { view: "tab", id: "", tab: "membership", fromTab: "home" };
+      return { view: "tab", id: "", tab: "me", fromTab: "home" };
     }
+    const queryArticle = queryParams.get("article");
+    if (queryArticle) return { view: "article", id: queryArticle, tab: "articles", fromTab: "articles" };
     const raw = String(window.location.hash || "").replace(/^#/, "");
     const params = new URLSearchParams(raw);
     if (params.get("view") === "history") {
@@ -697,8 +705,11 @@
         fromTab: params.get("from") || "home",
       };
     }
+    if (params.get("view") === "article" && params.get("id")) {
+      return { view: "article", id: params.get("id") || "", tab: "articles", fromTab: params.get("from") || "articles" };
+    }
     const tab = params.get("tab") || "home";
-    return { view: "tab", id: "", tab: tab, fromTab: tab };
+    return { view: "tab", id: "", tab: tab === "membership" ? "me" : tab, fromTab: tab };
   }
 
   function setHashForTab(tab) {
@@ -758,6 +769,78 @@
     state.inlineToastTimer = window.setTimeout(function () {
       toast.classList.add("is-hidden");
     }, 5000);
+  }
+
+  function setHashForArticle(slug, fromTab) {
+    clearLandingQueryParams();
+    const params = new URLSearchParams();
+    params.set("view", "article");
+    params.set("id", slug);
+    params.set("from", fromTab || "articles");
+    window.location.hash = params.toString();
+  }
+
+  function formatArticleDate(value) {
+    const date = value ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime())
+      ? date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0")
+      : "";
+  }
+
+  async function loadArticles() {
+    if (state.articles.loading || state.articles.loaded) return;
+    state.articles.loading = true;
+    try {
+      const data = await apiCall("/api/articles");
+      state.articles.items = Array.isArray(data && data.items) ? data.items : [];
+      state.articles.loaded = true;
+    } catch (err) {
+      if ($("articlesState")) $("articlesState").textContent = "文章加载失败：" + apiText(err);
+    } finally {
+      state.articles.loading = false;
+      renderArticles();
+    }
+  }
+
+  function renderArticles() {
+    const host = $("articlesList");
+    const stateNode = $("articlesState");
+    if (!host || !stateNode || !state.articles.loaded) return;
+    stateNode.classList.toggle("is-hidden", state.articles.items.length > 0);
+    stateNode.textContent = state.articles.items.length ? "" : "暂无文章。";
+    host.innerHTML = state.articles.items.map(function (item) {
+      const topics = (item.topics || []).slice(0, 3).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
+      return '<button class="article-card" type="button" data-article-slug="' + escapeHtml(item.slug) + '">' +
+        '<div class="article-card-top">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
+        "<h3>" + escapeHtml(item.title) + "</h3><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +
+        '<span class="text-button">阅读中文导读 ›</span></button>';
+    }).join("");
+    host.querySelectorAll("[data-article-slug]").forEach(function (button) {
+      button.addEventListener("click", function () { setHashForArticle(button.getAttribute("data-article-slug"), "articles"); });
+    });
+  }
+
+  async function renderArticleDetail(slug) {
+    const host = $("articleDetailContent");
+    if (!host) return;
+    host.innerHTML = '<div class="inline-state">正在加载文章…</div>';
+    try {
+      let item = state.articles.details[slug];
+      if (!item) {
+        item = await apiCall("/api/articles/" + encodeURIComponent(slug));
+        state.articles.details[slug] = item;
+      }
+      updatePageSeo(item.seo);
+      const topics = (item.topics || []).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
+      const sections = (item.sections || []).map(function (section) {
+        return '<section class="article-detail-section"><h3>' + escapeHtml(section.heading) + "</h3><p>" + escapeHtml(section.body) + "</p></section>";
+      }).join("");
+      host.innerHTML = '<div class="article-detail-meta">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
+        "<h2>" + escapeHtml(item.title) + "</h2><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +
+        sections + '<div class="article-source-row"><span>原始来源：' + escapeHtml(item.sourceName || "Lovense Sex Blog") + '</span><a class="article-source-link" href="' + escapeHtml(item.sourceUrl) + '" target="_blank" rel="noopener noreferrer">阅读原文 ↗</a></div>';
+    } catch (err) {
+      host.innerHTML = '<div class="inline-state">文章加载失败：' + escapeHtml(apiText(err)) + "</div>";
+    }
   }
 
   function createSkeletonCards(count) {
@@ -1502,7 +1585,7 @@
       }
     }
     if (banner.targetType === "membership") {
-      setHashForTab("membership");
+      setHashForTab("me");
       return;
     }
     if (banner.externalUrl) {
@@ -1968,41 +2051,49 @@
     if (leavingDetail) detachActivePlayer("leave");
     state.route = routeState;
     if (routeState.categoryId) state.library.categoryId = routeState.categoryId;
-    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "history" ? "watch_history" : routeState.tab });
+    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "article" ? "library" : (routeState.view === "history" ? "watch_history" : routeState.tab) });
     const isDetail = routeState.view === "detail";
+    const isArticle = routeState.view === "article";
     const isHistory = routeState.view === "history";
     const titleMap = {
       home: ["同频", ""],
       library: ["片库", "搜索、分类与筛选"],
-      membership: ["会员", "会员主频道与内容包"],
+      articles: ["文章", "关于边界、沟通与亲密关系的中文导读"],
       me: ["我的", "资产、订单、频道入口与绑定"],
     };
-    const isHome = !isDetail && !isHistory && routeState.tab === "home";
+    const isHome = !isDetail && !isArticle && !isHistory && routeState.tab === "home";
 
-    $("backButton").hidden = !(isDetail || isHistory);
-    $("bottomNav").classList.toggle("is-hidden", isDetail || isHistory);
+    $("backButton").hidden = !(isDetail || isArticle || isHistory);
+    $("bottomNav").classList.toggle("is-hidden", isDetail || isArticle || isHistory);
     $("appHeader").classList.toggle("is-home", isHome);
-    $("headerTitle").textContent = isDetail ? "视频详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]);
+    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "文章详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]));
     $("headerSubtitle").textContent = isDetail
       ? "查看权益与购买方式"
+      : isArticle
+        ? "中文导读与原始来源"
       : isHistory
         ? "按最近播放时间排序，可删除单条或清空记录"
       : (isHome ? "真实表达，在理解与边界中被看见" : titleMap[routeState.tab][1]);
     $("headerSubtitle").hidden = false;
     $("headerEyebrow").hidden = isHome;
 
-    ["home", "library", "membership", "me"].forEach(function (tab) {
-      $(tab + "View").classList.toggle("is-hidden", isDetail || isHistory || routeState.tab !== tab);
+    ["home", "library", "articles", "me"].forEach(function (tab) {
+      $(tab + "View").classList.toggle("is-hidden", isDetail || isArticle || isHistory || routeState.tab !== tab);
     });
     $("detailView").classList.toggle("is-hidden", !isDetail);
+    $("articleDetailView").classList.toggle("is-hidden", !isArticle);
     $("watchHistoryView").classList.toggle("is-hidden", !isHistory);
 
     document.querySelectorAll(".nav-item").forEach(function (button) {
-      button.classList.toggle("is-active", !isDetail && !isHistory && button.getAttribute("data-tab") === routeState.tab);
+      button.classList.toggle("is-active", !isDetail && !isArticle && !isHistory && button.getAttribute("data-tab") === routeState.tab);
     });
 
     if (isDetail) {
       renderDetail(routeState.id);
+      return;
+    }
+    if (isArticle) {
+      renderArticleDetail(routeState.id);
       return;
     }
     if (isHistory) {
@@ -2011,15 +2102,18 @@
       return;
     }
 
-    if (!state.library.loaded && routeState.tab !== "home") loadLibrary();
-    if (routeState.tab === "membership" && routeState.packageId) {
+    if (!state.library.loaded && routeState.tab === "library") loadLibrary();
+    if (routeState.tab === "me" && routeState.packageId) {
       const target = (state.library.items || []).find(function (item) { return item.packageId === routeState.packageId; });
       if (target) {
-        openContentDetail(target.id, "membership", { autoplay: false, resumePositionSec: 0 });
+        openContentDetail(target.id, "me", { autoplay: false, resumePositionSec: 0 });
         return;
       }
     }
-    if (routeState.tab === "membership") renderMembership();
+    if (routeState.tab === "articles") {
+      loadArticles();
+      renderArticles();
+    }
     if (routeState.tab === "me") {
       loadOrders();
       loadEntitlements();

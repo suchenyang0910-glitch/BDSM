@@ -28,6 +28,7 @@ import watchProgressRoutes from "./routes/watchProgress.js";
 import playbackRoutes from "./routes/playback.js";
 import playbackMediaRoutes from "./routes/playbackMedia.js";
 import publicSeoRoutes from "./routes/publicSeo.js";
+import articleRoutes from "./routes/articles.js";
 import { botSelfTest, TELEGRAM_CONFIG } from "./services/telegramBot.js";
 import { startEntitlementsCron } from "./services/entitlementsCron.js";
 import { startUploadSessionCleanupCron } from "./services/uploadSessionCleanup.js";
@@ -334,6 +335,7 @@ async function main() {
   // 【Phase 0-3】webhook 入口固定路径 POST /api/telegram/webhook（与 telegram 路由独立，不走 session / cookie）
   await app.register(telegramWebhookRoutes, { prefix: "" });
   await app.register(homeRoutes, { prefix: "/api" });
+  await app.register(articleRoutes, { prefix: "/api" });
   await app.register(contentRoutes, { prefix: "/api" });
   await app.register(resourceRoutes, { prefix: "/api" });
   await app.register(orderRoutes, { prefix: "/api" });

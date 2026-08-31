@@ -111,35 +111,14 @@
           <div id="libraryGrid" class="content-grid"></div>
         </section>
 
-        <section id="membershipView" class="tab-view is-hidden">
-          <div class="panel-card membership-summary">
-            <div>
-              <p class="eyebrow">MEMBERSHIP</p>
-              <h2 id="membershipHeadline">会员与内容包</h2>
-              <p id="membershipCopy" class="muted-copy">理解权益，再决定购买方式。</p>
-            </div>
-            <div id="membershipStatusBadge" class="status-badge">加载中</div>
-          </div>
-
-          <section class="section-block">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">MAIN CHANNEL</p>
-                <h3>会员主频道</h3>
-              </div>
-            </div>
-            <div id="membershipPrimaryCard"></div>
+        <section id="articlesView" class="tab-view is-hidden">
+          <section class="panel-card article-intro">
+            <p class="eyebrow">SAMEWAVE ARTICLES</p>
+            <h2>文章</h2>
+            <p class="muted-copy">关于沟通、边界、同意与亲密关系的中文导读。</p>
           </section>
-
-          <section class="section-block">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">PACKAGES</p>
-                <h3>内容包</h3>
-              </div>
-            </div>
-            <div id="membershipPackagesList" class="stack-list"></div>
-          </section>
+          <div id="articlesState" class="inline-state">正在加载文章…</div>
+          <div id="articlesList" class="article-list"></div>
         </section>
 
         <section id="meView" class="tab-view is-hidden">
@@ -154,6 +133,23 @@
               <button id="logoutButton" class="ghost-button" type="button">退出登录</button>
             </div>
           </div>
+
+          <section class="section-block" id="myMembershipSection">
+            <div class="panel-card membership-summary">
+              <div>
+                <p class="eyebrow">MEMBERSHIP</p>
+                <h2 id="membershipHeadline">会员与内容包</h2>
+                <p id="membershipCopy" class="muted-copy">理解权益，再决定购买方式。</p>
+              </div>
+              <div id="membershipStatusBadge" class="status-badge">加载中</div>
+            </div>
+            <div class="section-head"><div><p class="eyebrow">MAIN MEMBERSHIP</p><h3>会员权益</h3></div></div>
+            <div id="membershipPrimaryCard"></div>
+          </section>
+          <section class="section-block">
+            <div class="section-head"><div><p class="eyebrow">PACKAGES</p><h3>内容包</h3></div></div>
+            <div id="membershipPackagesList" class="stack-list"></div>
+          </section>
 
           <section class="section-block">
             <div class="section-head">
@@ -224,6 +220,10 @@
           <article id="detailContent" class="detail-shell"></article>
         </section>
 
+        <section id="articleDetailView" class="tab-view is-hidden">
+          <article id="articleDetailContent" class="article-detail-shell"></article>
+        </section>
+
         <section id="watchHistoryView" class="tab-view is-hidden">
           <section class="section-block">
             <div class="section-head">
@@ -251,10 +251,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
           <span>片库</span>
         </button>
-        <button class="nav-item" data-tab="membership" type="button">
+        <button class="nav-item" data-tab="articles" type="button">
           <span class="nav-indicator"></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19V9.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2V19"></path><path d="M9 7V5a3 3 0 0 1 6 0v2"></path><path d="M8 12h8"></path></svg>
-          <span>会员</span>
+          <span>文章</span>
         </button>
         <button class="nav-item" data-tab="me" type="button">
           <span class="nav-indicator"></span>
