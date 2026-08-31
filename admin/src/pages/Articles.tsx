@@ -156,6 +156,75 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     selection?.addRange(range);
     return true;
   };
+  const activeTextRange = () => {
+    const root = editorRef.current;
+    if (!root || !restoreSelectedText()) {
+      message.info("请先在正文中选中文案，再使用排版工具");
+      return null;
+    }
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    return root.contains(range.commonAncestorContainer) && !range.collapsed ? range : null;
+  };
+  const selectContents = (node: Node) => {
+    const nextRange = document.createRange();
+    nextRange.selectNodeContents(node);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(nextRange);
+    rememberSelectedText();
+  };
+  const wrapSelectedText = (tagName: "strong" | "em" | "a", attributes?: Record<string, string>) => {
+    const range = activeTextRange();
+    if (!range) return false;
+    const wrapper = document.createElement(tagName);
+    Object.entries(attributes || {}).forEach(([name, value]) => wrapper.setAttribute(name, value));
+    const fragment = range.extractContents();
+    wrapper.appendChild(fragment);
+    range.insertNode(wrapper);
+    selectContents(wrapper);
+    return true;
+  };
+  const selectedBlocks = (range: Range) => {
+    const root = editorRef.current;
+    if (!root) return [] as HTMLElement[];
+    return Array.from(root.querySelectorAll<HTMLElement>("p, h2, h3, h4, blockquote, li"))
+      .filter((block) => range.intersectsNode(block))
+      .filter((block) => !Array.from(block.parentElement?.querySelectorAll<HTMLElement>("p, h2, h3, h4, blockquote, li") || []).some((child) => child !== block && child.contains(block) && range.intersectsNode(child)));
+  };
+  const replaceBlockTag = (block: HTMLElement, tagName: "p" | "h2" | "blockquote") => {
+    if (block.tagName.toLowerCase() === tagName) return block;
+    const replacement = document.createElement(tagName);
+    replacement.innerHTML = block.innerHTML;
+    block.replaceWith(replacement);
+    return replacement;
+  };
+  const formatSelectedBlocks = (tagName: "p" | "h2" | "blockquote") => {
+    const range = activeTextRange();
+    if (!range) return false;
+    const blocks = selectedBlocks(range);
+    if (!blocks.length) return false;
+    const formatted = blocks.map((block) => replaceBlockTag(block, tagName));
+    selectContents(formatted[0].parentElement && formatted.length > 1 ? formatted[0].parentElement : formatted[0]);
+    return true;
+  };
+  const formatSelectedList = (tagName: "ul" | "ol") => {
+    const range = activeTextRange();
+    if (!range) return false;
+    const blocks = selectedBlocks(range).filter((block) => block.tagName !== "LI");
+    if (!blocks.length || !blocks[0].parentNode) return false;
+    const list = document.createElement(tagName);
+    blocks[0].parentNode.insertBefore(list, blocks[0]);
+    blocks.forEach((block) => {
+      const item = document.createElement("li");
+      item.innerHTML = block.innerHTML;
+      list.appendChild(item);
+      block.remove();
+    });
+    selectContents(list);
+    return true;
+  };
   const clearSelectedImage = () => {
     const previous = selectedImageRef.current;
     if (previous) { previous.style.removeProperty("outline"); previous.style.removeProperty("outline-offset"); }
@@ -196,18 +265,19 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   }, [value, sourceMode]);
   const command = (name: string, commandValue?: string) => {
     if (disabled) return;
-    if (!restoreSelectedText()) {
-      message.info("请先在正文中选中文案，再使用排版工具");
-      return;
-    }
+    let changed = false;
     if (name === "link") {
+      if (!activeTextRange()) return;
       const href = window.prompt("输入完整 HTTPS 链接");
       if (!href) return;
       try { if (new URL(href).protocol !== "https:") throw new Error("unsafe"); } catch { message.error("仅支持 HTTPS 链接"); return; }
-      if (!restoreSelectedText()) { message.info("选中文案已失效，请重新选择后添加链接"); return; }
-      document.execCommand("createLink", false, href);
-    } else document.execCommand(name, false, name === "formatBlock" && commandValue ? `<${commandValue}>` : commandValue);
-    rememberSelectedText();
+      changed = wrapSelectedText("a", { href, target: "_blank", rel: "noopener noreferrer" });
+    } else if (name === "bold") changed = wrapSelectedText("strong");
+    else if (name === "italic") changed = wrapSelectedText("em");
+    else if (name === "insertUnorderedList") changed = formatSelectedList("ul");
+    else if (name === "insertOrderedList") changed = formatSelectedList("ol");
+    else if (name === "formatBlock" && (commandValue === "p" || commandValue === "h2" || commandValue === "blockquote")) changed = formatSelectedBlocks(commandValue);
+    if (!changed) { message.info("请先选中一段正文，再使用此排版工具"); return; }
     emit();
   };
   const preserveSelectedText = () => {
