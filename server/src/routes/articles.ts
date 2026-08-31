@@ -85,7 +85,7 @@ function dbArticleToPublic(row: any): Article {
   };
 }
 
-async function publishedDbArticles(fastify: FastifyInstance): Promise<Article[]> {
+async function publishedDbArticles(fastify: FastifyInstance): Promise<Article[] | null> {
   try {
     const rows = await (fastify as any).prisma.article.findMany({
       where: { status: "published" },
@@ -95,14 +95,16 @@ async function publishedDbArticles(fastify: FastifyInstance): Promise<Article[]>
   } catch (error) {
     // The static guide remains available during a rolling migration or on a read-only preview database.
     fastify.log.warn({ err: error }, "published article query unavailable; using static article guide only");
-    return [];
+    return null;
   }
 }
 
 async function visibleArticles(fastify: FastifyInstance): Promise<Article[]> {
   const managed = await publishedDbArticles(fastify);
-  const managedSlugs = new Set(managed.map((item) => item.slug));
-  return managed.concat(STATIC_ARTICLES.filter((item) => !managedSlugs.has(item.slug)));
+  // 发布后的 Article CMS 是前台唯一正式来源：后台的上架、编辑、下线必须立刻
+  // 一一反映到用户端。静态导读仅用于迁移失败或数据库暂不可读时的应急降级，
+  // 不能再与 CMS 数据按 slug 混合，否则会出现后台和前台文章对不上的情况。
+  return managed ?? STATIC_ARTICLES;
 }
 
 export default async function articleRoutes(fastify: FastifyInstance) {
