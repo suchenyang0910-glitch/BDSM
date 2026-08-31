@@ -23,6 +23,12 @@ test("article HTML keeps accessible table structure without attributes", () => {
   assert.equal(html, "<table><thead><tr><th>状态</th></tr></thead><tbody><tr><td>停止</td></tr></tbody></table>");
 });
 
+test("article HTML permits only the fixed editorial text-color tokens", () => {
+  const html = sanitizeArticleHtml('<p><span data-article-color="violet" style="color:red">重点</span><span data-article-color="danger" onclick="x()">普通</span></p>');
+  assert.equal(html, '<p><span data-article-color="violet">重点</span><span>普通</span></p>');
+  assert.doesNotMatch(html, /style=|onclick|danger/);
+});
+
 test("public article API exposes a cover and already-sanitized HTML only", async () => {
   const app = Fastify();
   app.decorate("prisma", {

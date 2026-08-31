@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Button, Card, Divider, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
+import { Alert, Button, Card, Divider, Drawer, Dropdown, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, EditOutlined, UploadOutlined } from "@ant-design/icons";
 import { adminMe, archiveAdminArticle, completeAdminBannerImageUpload, createAdminArticle, errMsg, initAdminBannerImageUpload, listAdminArticles, publishAdminArticle, updateAdminArticle } from "../api/client";
@@ -17,7 +17,17 @@ const statusLabel: Record<AdminArticleItem["status"], string> = { draft: "草稿
 const statusColor: Record<AdminArticleItem["status"], string> = { draft: "default", published: "green", archived: "orange" };
 const articlePublicUrl = (slug: string) => `${window.location.origin}/#view=article&id=${encodeURIComponent(slug)}&from=articles`;
 
-const EDITOR_TAGS = new Set(["P", "H2", "H3", "H4", "STRONG", "EM", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD"]);
+const ARTICLE_TEXT_COLORS = [
+  { key: "violet", label: "紫色", swatch: "#9d67ff" },
+  { key: "pink", label: "粉色", swatch: "#f472b6" },
+  { key: "red", label: "红色", swatch: "#ef6b73" },
+  { key: "orange", label: "橙色", swatch: "#f59e0b" },
+  { key: "green", label: "绿色", swatch: "#34d399" },
+  { key: "blue", label: "蓝色", swatch: "#60a5fa" },
+] as const;
+const ARTICLE_TEXT_COLOR_KEYS = new Set<string>(ARTICLE_TEXT_COLORS.map((color) => color.key));
+const ARTICLE_SYMBOLS = ["★", "◆", "●", "✓", "✦", "→", "—", "※", "♥", "⚠"] as const;
+const EDITOR_TAGS = new Set(["P", "H2", "H3", "H4", "STRONG", "EM", "SPAN", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD"]);
 const VOID_EDITOR_TAGS = new Set(["BR", "HR", "IMG"]);
 
 function sanitizeEditorHtml(input: string): string {
@@ -41,6 +51,10 @@ function sanitizeEditorHtml(input: string): string {
       return "";
     }
     const children = Array.from(element.childNodes).map(walk).join("");
+    if (tag === "SPAN") {
+      const color = element.getAttribute("data-article-color") || "";
+      return ARTICLE_TEXT_COLOR_KEYS.has(color) ? `<span data-article-color="${color}">${children}</span>` : children;
+    }
     return VOID_EDITOR_TAGS.has(tag) ? `<${lower}>` : `<${lower}>${children}</${lower}>`;
   };
   return Array.from(documentNode.body.childNodes).map(walk).join("");
@@ -104,6 +118,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const editorRef = React.useRef<HTMLDivElement | null>(null);
   const selectedImageRef = React.useRef<HTMLImageElement | null>(null);
   const selectedTextRangeRef = React.useRef<Range | null>(null);
+  const lastEditorRangeRef = React.useRef<Range | null>(null);
   const lastValue = React.useRef("");
   const [sourceMode, setSourceMode] = React.useState(false);
   const [markdownOpen, setMarkdownOpen] = React.useState(false);
@@ -145,6 +160,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     // Keep the last in-editor range through that focus change so the command
     // can restore it; only an in-editor caret clears the active selection.
     if (!root.contains(range.commonAncestorContainer)) return;
+    lastEditorRangeRef.current = range.cloneRange();
     if (range.collapsed) { selectedTextRangeRef.current = null; return; }
     selectedTextRangeRef.current = range.cloneRange();
   };
@@ -177,7 +193,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     selection?.addRange(nextRange);
     rememberSelectedText();
   };
-  const wrapSelectedText = (tagName: "strong" | "em" | "a", attributes?: Record<string, string>) => {
+  const wrapSelectedText = (tagName: "strong" | "em" | "a" | "span", attributes?: Record<string, string>) => {
     const range = activeTextRange();
     if (!range) return false;
     const wrapper = document.createElement(tagName);
@@ -281,6 +297,34 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     if (!changed) { message.info("请先选中一段正文，再使用此排版工具"); return; }
     emit();
   };
+  const applyTextColor = (color: string) => {
+    if (!ARTICLE_TEXT_COLOR_KEYS.has(color)) return;
+    if (!wrapSelectedText("span", { "data-article-color": color })) return;
+    emit();
+  };
+  const insertSymbol = (symbol: string) => {
+    const root = editorRef.current;
+    const range = lastEditorRangeRef.current;
+    if (!root || !range || !root.contains(range.commonAncestorContainer)) {
+      message.info("请先在正文中放置光标或选中文案，再插入符号");
+      return;
+    }
+    root.focus();
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    range.deleteContents();
+    const text = document.createTextNode(symbol);
+    range.insertNode(text);
+    const nextRange = document.createRange();
+    nextRange.setStartAfter(text);
+    nextRange.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(nextRange);
+    lastEditorRangeRef.current = nextRange.cloneRange();
+    selectedTextRangeRef.current = null;
+    emit();
+  };
   const applyLink = () => {
     const href = linkUrl.trim();
     try { if (!href || new URL(href).protocol !== "https:") throw new Error("unsafe"); } catch { message.error("仅支持完整 HTTPS 链接"); return; }
@@ -311,6 +355,12 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("insertOrderedList")} disabled={disabled || sourceMode}>编号</Button>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "blockquote")} disabled={disabled || sourceMode}>引用</Button>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("link")} disabled={disabled || sourceMode}>链接</Button>
+      <Dropdown trigger={["click"]} disabled={disabled || sourceMode} menu={{ items: ARTICLE_TEXT_COLORS.map((color) => ({ key: color.key, label: <Space size={6}><span aria-hidden style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: color.swatch, border: "1px solid rgba(0,0,0,.18)" }} />{color.label}</Space> })), onClick: ({ key }) => applyTextColor(String(key)) }}>
+        <Button size="small" onPointerDown={preserveSelectedText} disabled={disabled || sourceMode}>文字颜色</Button>
+      </Dropdown>
+      <Dropdown trigger={["click"]} disabled={disabled || sourceMode} menu={{ items: ARTICLE_SYMBOLS.map((symbol) => ({ key: symbol, label: symbol })), onClick: ({ key }) => insertSymbol(String(key)) }}>
+        <Button size="small" onPointerDown={preserveSelectedText} disabled={disabled || sourceMode}>符号</Button>
+      </Dropdown>
       <Button size="small" danger onClick={deleteSelectedImage} disabled={disabled || sourceMode || !hasSelectedImage}>删除选中图片</Button>
       <Button size="small" onClick={() => setMarkdownOpen(true)} disabled={disabled}>导入 Markdown</Button>
       <Button size="small" type={sourceMode ? "primary" : "default"} onClick={() => { if (!sourceMode) emit(); setSourceMode((open) => !open); }}>{sourceMode ? "可视化编辑" : "HTML 源码"}</Button>

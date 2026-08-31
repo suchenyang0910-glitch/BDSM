@@ -1,5 +1,6 @@
-const ALLOWED_TAGS = new Set(["p", "h2", "h3", "h4", "strong", "em", "ul", "ol", "li", "blockquote", "figure", "figcaption", "br", "hr", "a", "img", "table", "thead", "tbody", "tr", "th", "td"]);
+const ALLOWED_TAGS = new Set(["p", "h2", "h3", "h4", "strong", "em", "span", "ul", "ol", "li", "blockquote", "figure", "figcaption", "br", "hr", "a", "img", "table", "thead", "tbody", "tr", "th", "td"]);
 const VOID_TAGS = new Set(["br", "hr", "img"]);
+const ARTICLE_TEXT_COLORS = new Set(["violet", "pink", "red", "orange", "green", "blue"]);
 
 function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;");
@@ -51,6 +52,11 @@ export function sanitizeArticleHtml(input: string): string {
       const alt = raw.match(/\balt\s*=\s*([\"'])(.*?)\1/i)?.[2] || "文章配图";
       const safe = safeHttpsUrl(src);
       if (safe) output += `<img src="${escapeHtml(safe)}" alt="${escapeHtml(alt)}" loading="lazy">`;
+      continue;
+    }
+    if (name === "span") {
+      const color = raw.match(/\bdata-article-color\s*=\s*(["'])(.*?)\1/i)?.[2] || "";
+      output += ARTICLE_TEXT_COLORS.has(color) ? `<span data-article-color="${color}">` : "<span>";
       continue;
     }
     output += `<${name}>`;
