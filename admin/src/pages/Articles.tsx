@@ -78,7 +78,7 @@ function markdownToHtml(markdown: string): string {
   return sanitizeEditorHtml(blocks.join("\n"));
 }
 
-const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) => void; disabled?: boolean }> = ({ value = "", onChange, disabled }) => {
+const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) => void; disabled?: boolean; onPasteImage?: (file: File) => Promise<string | null> }> = ({ value = "", onChange, disabled, onPasteImage }) => {
   const editorRef = React.useRef<HTMLDivElement | null>(null);
   const lastValue = React.useRef("");
   const [sourceMode, setSourceMode] = React.useState(false);
@@ -123,7 +123,20 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     </Space>
     {sourceMode
       ? <TextArea value={value} onChange={(event) => { lastValue.current = event.target.value; onChange?.(event.target.value); }} autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={disabled} spellCheck={false} />
-      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onPaste={(event) => { event.preventDefault(); document.execCommand("insertText", false, event.clipboardData.getData("text/plain")); emit(); }} style={{ minHeight: 440, padding: 16, border: "1px solid #d9d9d9", borderRadius: 8, lineHeight: 1.8, outline: "none" }} />}
+      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onPaste={(event) => {
+        const image = Array.from(event.clipboardData.items).map((item) => item.kind === "file" ? item.getAsFile() : null).find((file): file is File => !!file && /^image\//i.test(file.type));
+        event.preventDefault();
+        if (!image || !onPasteImage) { document.execCommand("insertText", false, event.clipboardData.getData("text/plain")); emit(); return; }
+        const selection = window.getSelection();
+        const range = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+        void onPasteImage(image).then((figure) => {
+          if (!figure || !editorRef.current) return;
+          editorRef.current.focus();
+          if (range && selection) { selection.removeAllRanges(); selection.addRange(range); }
+          document.execCommand("insertHTML", false, figure);
+          emit();
+        });
+      }} style={{ minHeight: 440, padding: 16, border: "1px solid #d9d9d9", borderRadius: 8, lineHeight: 1.8, outline: "none" }} />}
     <Modal title="导入 Markdown" open={markdownOpen} onCancel={() => setMarkdownOpen(false)} onOk={() => { const converted = markdownToHtml(markdown); lastValue.current = converted; onChange?.(converted); setSourceMode(false); setMarkdownOpen(false); message.success("Markdown 已转换为可视化文章，可继续编辑"); }} okText="转换并载入" cancelText="取消" okButtonProps={{ disabled: !markdown.trim() }}>
       <Text type="secondary">将覆盖当前正文。支持标题、引用、列表、编号、分隔线、链接和 Markdown 表格。</Text>
       <TextArea value={markdown} onChange={(event) => setMarkdown(event.target.value)} autoSize={{ minRows: 18, maxRows: 32 }} style={{ marginTop: 12 }} placeholder="# 文章标题\n\n正文…" spellCheck={false} />
@@ -191,14 +204,16 @@ const ArticlesPage: React.FC = () => {
     try { await archiveAdminArticle(article.id); message.success("文章已下线"); await load(); }
     catch (error) { message.error(errMsg(error, "下线文章失败")); }
   };
-  const uploadArticleImage = async (file: File, mode: "cover" | "inline") => {
-    if (!canEdit) return Upload.LIST_IGNORE;
+  const uploadArticleImage = async (file: File, mode: "cover" | "inline" | "paste", pasted?: (figure: string | null) => void) => {
+    if (!canEdit) { pasted?.(null); return Upload.LIST_IGNORE; }
     if (!/^image\/(jpeg|png|webp|jpg)$/i.test(file.type || "")) {
       message.error("仅支持 JPG、PNG 或 WebP 图片");
+      pasted?.(null);
       return Upload.LIST_IGNORE;
     }
     if (file.size > 20 * 1024 * 1024) {
       message.error("文章图片不能超过 20MB");
+      pasted?.(null);
       return Upload.LIST_IGNORE;
     }
     setImageUploading(true);
@@ -223,13 +238,19 @@ const ArticlesPage: React.FC = () => {
         message.success("封面图片已上传，可直接保存文章");
       } else {
         const figure = `<figure><img src="${completed.publicUrl}" alt="${alt}"><figcaption>${alt}</figcaption></figure>`;
-        form.setFieldValue("bodyHtml", `${current}${current ? "\n\n" : ""}${figure}`);
-        message.success("图片已插入 HTML 正文末尾，可剪切到任意位置");
+        if (mode === "inline") {
+          form.setFieldValue("bodyHtml", `${current}${current ? "\n\n" : ""}${figure}`);
+          message.success("图片已插入 HTML 正文末尾，可剪切到任意位置");
+        } else {
+          message.success("图片已上传，正在插入当前光标位置");
+          pasted?.(figure);
+        }
       }
     } catch (error) {
       if (assetId) {
         try { await completeAdminBannerImageUpload(assetId, { ok: false, error: "article_image_upload_failed" }); } catch { /* best effort */ }
       }
+      pasted?.(null);
       message.error(errMsg(error, "文章图片上传失败"));
     } finally {
       setImageUploading(false);
@@ -268,7 +289,7 @@ const ArticlesPage: React.FC = () => {
         <Form.Item name="summary" label="摘要" rules={[{ required: true, min: 10, max: 500 }]}><TextArea rows={3} maxLength={500} disabled={!canEdit} /></Form.Item>
         <Form.Item name="coverImageUrl" label="文章封面图片" extra={<Space direction="vertical" size={6}><Text type="secondary">建议 16:9、最小 1600×900。封面会显示在文章列表与详情顶部。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "cover")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传封面图片</Button></Upload></Space>}><Input placeholder="上传后自动填写，也可填写 HTTPS 图片地址" disabled={!canEdit} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.coverImageUrl !== current.coverImageUrl}>{() => form.getFieldValue("coverImageUrl") ? <img src={form.getFieldValue("coverImageUrl")} alt="文章封面预览" style={{ width: "100%", maxWidth: 480, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 10, marginBottom: 18 }} /> : null}</Form.Item>
-        <Form.Item name="bodyHtml" label="正文编辑器" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">支持可视化排版与 HTML 源码切换。正文图片会插入末尾，可在编辑器中剪切到目标段落。保存时服务端再次过滤危险内容。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><RichArticleEditor disabled={!canEdit} /></Form.Item>
+        <Form.Item name="bodyHtml" label="正文编辑器" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">支持可视化排版、HTML 源码切换，以及直接粘贴图片自动上传。正文图片会插入末尾，可在编辑器中剪切到目标段落。保存时服务端再次过滤危险内容。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><RichArticleEditor disabled={!canEdit} onPasteImage={(file) => new Promise((resolve) => { void uploadArticleImage(file, "paste", resolve); })} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.bodyHtml !== current.bodyHtml}>{() => <><Divider orientation="left">HTML 安全预览</Divider><iframe title="文章 HTML 预览" sandbox="" style={{ width: "100%", minHeight: 320, border: "1px solid #eee", borderRadius: 10 }} srcDoc={`<style>body{font-family:system-ui,sans-serif;line-height:1.75;padding:20px;color:#211c2d}img{max-width:100%;height:auto;border-radius:12px}figure{margin:20px 0}figcaption{color:#716b7d;font-size:13px;text-align:center}blockquote{margin:18px 0;padding:12px 16px;border-left:3px solid #8d52ff;background:#f6f1ff}a{color:#6d3ae8}</style>${String(form.getFieldValue("bodyHtml") || "")}`} /></>}</Form.Item>
         <Space size={16} style={{ display: "flex" }}>
           <Form.Item name="sourceName" label="来源名称（选填）" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} placeholder="填写后才会在文章正文底部展示" /></Form.Item>
