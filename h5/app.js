@@ -985,7 +985,8 @@
         (item.coverImageUrl ? '<img class="article-detail-cover" src="' + escapeHtml(item.coverImageUrl) + '" alt="' + escapeHtml(item.title) + '">' : "") +
         "<h2>" + escapeHtml(item.title) + "</h2>" +
         '<p class="muted-copy">' + escapeHtml(item.summary) + "</p>" +
-        '<div class="article-html-body">' + String(item.bodyHtml || "") + "</div>";
+        '<div class="article-html-body">' + String(item.bodyHtml || "") + "</div>" +
+        '<footer class="article-attribution">归属：SAMEWAVE</footer>';
     } catch (err) {
       host.innerHTML = '<div class="inline-state">文章加载失败：' + escapeHtml(apiText(err)) + "</div>";
     }
