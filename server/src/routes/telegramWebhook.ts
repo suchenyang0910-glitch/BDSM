@@ -34,6 +34,7 @@ import {
   STARS_ORDER_EXPIRES_MS,
 } from "../services/orders.js";
 import { encryptPackageColsFromPlain } from "../services/channelCrypto.js";
+import { isPlatformPseudonym, randomPlatformPseudonym } from "../utils/pseudonym.js";
 
 const STALE_PROCESSING_MS = 10 * 60 * 1000; // processing 超过 10 分钟视为卡住，下一轮重置
 
@@ -81,9 +82,48 @@ export function miniAppContentUrl(contentId: string): string {
   return url.toString();
 }
 
+/** 机器人私聊事件也必须建档：用户即使不打开 Mini App，后台仍可检索其 Bot 身份。 */
+async function upsertBotUserFromPrivateMessage(prisma: any, message: any): Promise<void> {
+  const from = message?.from;
+  if (!from || typeof from.id !== "number") return;
+  const telegramUserId = BigInt(String(from.id));
+  const username = typeof from.username === "string" && from.username.trim() ? from.username.trim() : null;
+  const telegramFirstName = typeof from.first_name === "string" && from.first_name.trim() ? from.first_name.trim() : null;
+  const telegramLastName = typeof from.last_name === "string" && from.last_name.trim() ? from.last_name.trim() : null;
+  const telegramLanguageCode = typeof from.language_code === "string" && from.language_code.trim() ? from.language_code.trim() : null;
+  const existing = await prisma.user.findUnique({ where: { telegramUserId } });
+  if (!existing) {
+    await prisma.user.create({
+      data: {
+        telegramUserId,
+        username,
+        telegramFirstName,
+        telegramLastName,
+        telegramLanguageCode,
+        displayName: randomPlatformPseudonym(),
+        lastTelegramSeenAt: new Date(),
+      },
+    });
+    return;
+  }
+  if (existing.status !== "active") return;
+  await prisma.user.update({
+    where: { id: existing.id },
+    data: {
+      username: username || existing.username,
+      telegramFirstName: telegramFirstName || existing.telegramFirstName,
+      telegramLastName: telegramLastName || existing.telegramLastName,
+      telegramLanguageCode: telegramLanguageCode || existing.telegramLanguageCode,
+      displayName: isPlatformPseudonym(existing.displayName) ? existing.displayName : randomPlatformPseudonym(),
+      lastTelegramSeenAt: new Date(),
+    },
+  });
+}
+
 async function replyToPrivateStart(prisma: any, update: any): Promise<boolean> {
   const start = parsePrivateStartCommand(update);
   if (!start) return false;
+  await upsertBotUserFromPrivateMessage(prisma, update.message);
 
   let title: string | null = null;
   if (start.contentId) {

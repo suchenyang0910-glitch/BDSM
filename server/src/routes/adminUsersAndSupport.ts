@@ -36,6 +36,7 @@ const listUsersQuerySchema = z.object({
   q: z.string().min(1).optional(),
   telegramUserId: z.coerce.bigint().optional(),
   status: z.enum(["active", "suspended", "deleted"]).optional(),
+  telegramBound: z.coerce.boolean().optional(),
   hasActiveEntitlement: z.coerce.boolean().optional(),
 });
 
@@ -646,6 +647,8 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
       const query = listUsersQuerySchema.parse(req.query ?? {});
       const where: any = {};
       if (query.telegramUserId !== undefined) where.telegramUserId = BigInt(query.telegramUserId);
+      if (query.telegramBound === true) where.telegramUserId = { not: null };
+      if (query.telegramBound === false) where.telegramUserId = null;
       if (query.status) where.status = query.status;
       if (query.q) {
         const q = query.q.trim();
@@ -685,7 +688,11 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
           displayName: u.displayName,
           username: u.username ?? null,
           telegramUserId: u.telegramUserId ? u.telegramUserId.toString() : null,
+          telegramFirstName: u.telegramFirstName ?? null,
+          telegramLastName: u.telegramLastName ?? null,
+          telegramLanguageCode: u.telegramLanguageCode ?? null,
           photoUrl: u.photoUrl ?? null,
+          lastTelegramSeenAt: u.lastTelegramSeenAt ? u.lastTelegramSeenAt.toISOString() : null,
           status: u.status,
           createdAt: u.createdAt.toISOString(),
           ordersCount: u._count.orders,
@@ -733,7 +740,11 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
         displayName: u.displayName,
         username: u.username ?? null,
         telegramUserId: u.telegramUserId ? u.telegramUserId.toString() : null,
+        telegramFirstName: u.telegramFirstName ?? null,
+        telegramLastName: u.telegramLastName ?? null,
+        telegramLanguageCode: u.telegramLanguageCode ?? null,
         photoUrl: u.photoUrl ?? null,
+        lastTelegramSeenAt: u.lastTelegramSeenAt ? u.lastTelegramSeenAt.toISOString() : null,
         status: u.status,
         createdAt: u.createdAt.toISOString(),
         counts: {

@@ -375,6 +375,9 @@ export default async function authH5Routes(fastify: FastifyInstance) {
     const tgUserIdStr = params.id!;
     const tgUserId = BigInt(tgUserIdStr);
     const username = params.username || null;
+    const telegramFirstName = params.first_name || null;
+    const telegramLastName = params.last_name || null;
+    const telegramLanguageCode = params.language_code || null;
     // Telegram 身份只用于安全校验和跨设备恢复；平台公开昵称使用一次性分配的匿名网名。
     const displayName = randomH5DisplayName();
     const photoUrl = params.photo_url || null;
@@ -387,8 +390,12 @@ export default async function authH5Routes(fastify: FastifyInstance) {
           data: {
             telegramUserId: tgUserId,
             username,
+            telegramFirstName,
+            telegramLastName,
+            telegramLanguageCode,
             displayName,
             photoUrl,
+            lastTelegramSeenAt: new Date(),
             status: "active",
           },
         });
@@ -396,6 +403,9 @@ export default async function authH5Routes(fastify: FastifyInstance) {
         const needsPseudonym = !isPlatformPseudonym(targetUser.displayName);
         const changed =
           (username ?? null) !== (targetUser.username ?? null) ||
+          (telegramFirstName ?? null) !== (targetUser.telegramFirstName ?? null) ||
+          (telegramLastName ?? null) !== (targetUser.telegramLastName ?? null) ||
+          (telegramLanguageCode ?? null) !== (targetUser.telegramLanguageCode ?? null) ||
           (photoUrl ?? null) !== (targetUser.photoUrl ?? null) ||
           needsPseudonym;
         if (changed) {
@@ -403,8 +413,12 @@ export default async function authH5Routes(fastify: FastifyInstance) {
             where: { id: targetUser.id },
             data: {
               username,
+              telegramFirstName,
+              telegramLastName,
+              telegramLanguageCode,
               displayName: needsPseudonym ? randomH5DisplayName() : targetUser.displayName,
               photoUrl,
+              lastTelegramSeenAt: new Date(),
             },
           });
         }

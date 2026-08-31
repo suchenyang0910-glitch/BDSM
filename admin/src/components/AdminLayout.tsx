@@ -46,6 +46,7 @@ const PAGE_TITLE_BY_PATH: Record<string, string> = {
   "/entitlements": "订单与权益 · 权益管理",
   "/payment-addresses": "订单与权益 · USDT 收款地址",
   "/users": "订单与权益 · 用户检索",
+  "/bot-users": "订单与权益 · Bot 用户管理",
   "/tickets": "订单与权益 · 客服工单",
   "/contents": "内容管理 · 视频内容",
   "/articles": "内容管理 · 文章中心",
@@ -80,6 +81,7 @@ const AdminLayout: React.FC = () => {
     if (p.startsWith("/entitlements")) return "/entitlements";
     if (p.startsWith("/payment-addresses")) return "/payment-addresses";
     if (p.startsWith("/users")) return "/users";
+    if (p.startsWith("/bot-users")) return "/bot-users";
     if (p.startsWith("/tickets")) return "/tickets";
     if (p.startsWith("/channels")) return "/channels";
     if (p.startsWith("/platform-metadata")) return "/platform-metadata";
@@ -188,6 +190,7 @@ const AdminLayout: React.FC = () => {
                 { key: "/entitlements", icon: <SafetyCertificateOutlined />, label: "权益管理" },
                 { key: "/payment-addresses", icon: <ApiOutlined />, label: "USDT 收款地址" },
                 { key: "/users", icon: <TeamOutlined />, label: "用户检索" },
+                { key: "/bot-users", icon: <TeamOutlined />, label: "Bot 用户管理" },
                 { key: "/tickets", icon: <MessageOutlined />, label: "客服工单" },
               ],
             },

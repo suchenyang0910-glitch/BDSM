@@ -37,7 +37,7 @@ export function getTelegramBotByKey(key?: string): TelegramBotCredential | undef
 export function validateTelegramInitData(
   initData: string,
   botToken: string,
-): { ok: boolean; data: Record<string, string>; user?: { id: number; first_name: string; last_name?: string; username?: string; photo_url?: string } } {
+): { ok: boolean; data: Record<string, string>; user?: { id: number; first_name: string; last_name?: string; username?: string; language_code?: string; photo_url?: string } } {
   const params = new URLSearchParams(initData);
   const receivedHash = params.get("hash") || "";
   params.delete("hash");

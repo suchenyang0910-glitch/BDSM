@@ -1058,8 +1058,12 @@ export type AdminUserItem = {
   displayName: string;
   username: string | null;
   telegramUserId: string | null;
+  telegramFirstName?: string | null;
+  telegramLastName?: string | null;
+  telegramLanguageCode?: string | null;
   photoUrl: string | null;
   avatarUrl?: string | null;
+  lastTelegramSeenAt?: string | null;
   status: UserStatus;
   createdAt: string;
   ordersCount: number;
@@ -1140,6 +1144,7 @@ export type AdminUsersFilter = {
   telegramUserId?: string;
   status?: UserStatus;
   hasActiveEntitlement?: boolean;
+  telegramBound?: boolean;
 };
 
 export type SupportTicketItem = {

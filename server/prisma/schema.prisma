@@ -203,8 +203,12 @@ model User {
   id              String    @id @default(uuid())
   telegramUserId  BigInt?   @unique @map("telegram_user_id")
   username        String?
+  telegramFirstName String? @map("telegram_first_name")
+  telegramLastName  String? @map("telegram_last_name")
+  telegramLanguageCode String? @map("telegram_language_code")
   displayName     String    @map("display_name")
   photoUrl        String?   @map("photo_url")
+  lastTelegramSeenAt DateTime? @map("last_telegram_seen_at")
   status          UserStatus @default(active)
   mergedIntoUserId String?  @map("merged_into_user_id")
   createdAt       DateTime  @default(now()) @map("created_at")
@@ -225,6 +229,7 @@ model User {
   mergedTargetUser User?    @relation("UserMergeTarget", fields: [mergedIntoUserId], references: [id], onDelete: SetNull)
 
   @@index([status])
+  @@index([telegramUserId, lastTelegramSeenAt])
   @@index([mergedIntoUserId])
   @@map("users")
 }

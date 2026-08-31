@@ -45,6 +45,7 @@ import type {
   TicketPriority,
 } from "../api/types";
 import { useAuth } from "../components/AuthProvider";
+import { useLocation } from "react-router-dom";
 
 const { Text, Title } = Typography;
 const { Option } = Select;
@@ -106,6 +107,8 @@ const CATEGORY_COLOR: Record<string, string> = {
 
 const UsersPage: React.FC = () => {
   const { me } = useAuth();
+  const location = useLocation();
+  const botOnly = location.pathname.startsWith("/bot-users");
   const canView = !!me && VIEW_ROLES.includes(me.role);
 
   const [form] = Form.useForm<{
@@ -134,6 +137,7 @@ const UsersPage: React.FC = () => {
         telegramUserId: v.telegramUserId?.trim() || undefined,
         status: v.status,
         hasActiveEntitlement: v.hasActiveEntitlement === "1" ? true : v.hasActiveEntitlement === "0" ? false : undefined,
+        telegramBound: botOnly || undefined,
       });
       setRows(res.items);
       setTotal(res.pagination.total);
@@ -142,7 +146,7 @@ const UsersPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [form, page, pageSize]);
+  }, [botOnly, form, page, pageSize]);
 
   React.useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -178,6 +182,7 @@ const UsersPage: React.FC = () => {
               <div>
                 <Text strong>{r.displayName || "未知用户"}</Text>
                 {r.username ? <Tag style={{ marginLeft: 4 }}>@{r.username}</Tag> : null}
+                {r.telegramFirstName ? <Text type="secondary" style={{ marginLeft: 4 }}>TG：{[r.telegramFirstName, r.telegramLastName].filter(Boolean).join(" ")}</Text> : null}
               </div>
               <div>
                 <Text type="secondary" style={{ fontSize: 12 }}>
@@ -332,6 +337,7 @@ const UsersPage: React.FC = () => {
 
   return (
     <div>
+      {botOnly ? <div style={{ marginBottom: 16 }}><Title level={4} style={{ margin: 0 }}>Bot 用户管理</Title><Text type="secondary">仅显示通过 Bot /start、Mini App 或 Telegram 登录建档的用户。头像仅在 Telegram 登录上下文提供时保存。</Text></div> : null}
       <div style={{ marginBottom: 16 }}>
         <Form
           form={form}
@@ -343,7 +349,7 @@ const UsersPage: React.FC = () => {
             <Input
               allowClear
               prefix={<SearchOutlined />}
-              placeholder="姓名 / 显示名 / 用户名 / TG UID"
+              placeholder="平台昵称 / Telegram 昵称 / 用户名 / TG UID"
               style={{ width: 280 }}
             />
           </Form.Item>
@@ -379,7 +385,7 @@ const UsersPage: React.FC = () => {
         loading={loading}
         pagination={pagination}
         scroll={{ x: 1600 }}
-        locale={{ emptyText: <Empty description="暂无用户数据。用户在 Mini App 首次打开会话后会自动建档。" /> }}
+        locale={{ emptyText: <Empty description={botOnly ? "暂无 Bot 用户数据。用户点击 Bot /start 后会自动建档。" : "暂无用户数据。用户在 Mini App 首次打开会话后会自动建档。"} /> }}
       />
 
       <Drawer
@@ -417,6 +423,12 @@ const UsersPage: React.FC = () => {
                 ) : <Tag>未绑定</Tag>}
               </Descriptions.Item>
               <Descriptions.Item label="显示名">{detail.displayName || "-"}</Descriptions.Item>
+              <Descriptions.Item label="Telegram 昵称">
+                {[detail.telegramFirstName, detail.telegramLastName].filter(Boolean).join(" ") || <Text type="secondary">- 未提供 -</Text>}
+              </Descriptions.Item>
+              <Descriptions.Item label="Telegram 用户名">
+                {detail.username ? <Text copyable>@{detail.username}</Text> : <Text type="secondary">- 未设置 -</Text>}
+              </Descriptions.Item>
               <Descriptions.Item label="状态">
                 <Tag color={STATUS_META[detail.status]?.color}>{STATUS_META[detail.status]?.label}</Tag>
               </Descriptions.Item>
@@ -425,7 +437,7 @@ const UsersPage: React.FC = () => {
               </Descriptions.Item>
               <Descriptions.Item label="语言 / 时区">
                 <Space>
-                  {detail.languageCode ? <Tag>{detail.languageCode}</Tag> : null}
+                  {detail.telegramLanguageCode ? <Tag>{detail.telegramLanguageCode}</Tag> : detail.languageCode ? <Tag>{detail.languageCode}</Tag> : null}
                   {detail.timezone !== null && detail.timezone !== undefined ? (
                     <Text>UTC {detail.timezone >= 0 ? "+" : ""}{detail.timezone}</Text>
                   ) : null}
@@ -435,7 +447,7 @@ const UsersPage: React.FC = () => {
                 {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm:ss")}
               </Descriptions.Item>
               <Descriptions.Item label="最近活动">
-                {detail.lastActiveAt ? dayjs(detail.lastActiveAt).format("YYYY-MM-DD HH:mm:ss") : "无活动"}
+                {detail.lastTelegramSeenAt ? dayjs(detail.lastTelegramSeenAt).format("YYYY-MM-DD HH:mm:ss") : detail.lastActiveAt ? dayjs(detail.lastActiveAt).format("YYYY-MM-DD HH:mm:ss") : "无活动"}
               </Descriptions.Item>
             </Descriptions>
 

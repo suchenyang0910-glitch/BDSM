@@ -47,8 +47,12 @@ export default async function telegramRoutes(fastify: FastifyInstance) {
         data: {
           telegramUserId: BigInt(user.id),
           username: user.username || null,
+          telegramFirstName: user.first_name || null,
+          telegramLastName: user.last_name || null,
+          telegramLanguageCode: user.language_code || null,
           displayName: randomPlatformPseudonym(),
           photoUrl: user.photo_url || null,
+          lastTelegramSeenAt: new Date(),
         },
         include: { entitlements: true },
       });
@@ -59,8 +63,12 @@ export default async function telegramRoutes(fastify: FastifyInstance) {
         where: { id: dbUser.id },
         data: {
           username: user.username || dbUser.username,
+          telegramFirstName: user.first_name || dbUser.telegramFirstName,
+          telegramLastName: user.last_name || dbUser.telegramLastName,
+          telegramLanguageCode: user.language_code || dbUser.telegramLanguageCode,
           displayName: !isPlatformPseudonym(dbUser.displayName) ? randomPlatformPseudonym() : dbUser.displayName,
           photoUrl: user.photo_url || dbUser.photoUrl,
+          lastTelegramSeenAt: new Date(),
         },
         include: {
           entitlements: {
