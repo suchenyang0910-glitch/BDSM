@@ -137,9 +137,9 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const rememberSelectedText = () => {
     const root = editorRef.current;
     const selection = window.getSelection();
-    if (!root || !selection?.rangeCount) return;
+    if (!root || !selection?.rangeCount) { selectedTextRangeRef.current = null; return; }
     const range = selection.getRangeAt(0);
-    if (range.collapsed || !root.contains(range.commonAncestorContainer)) return;
+    if (range.collapsed || !root.contains(range.commonAncestorContainer)) { selectedTextRangeRef.current = null; return; }
     selectedTextRangeRef.current = range.cloneRange();
   };
   const restoreSelectedText = () => {
@@ -206,7 +206,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     rememberSelectedText();
     emit();
   };
-  const preserveSelectedText = (event: React.MouseEvent<HTMLButtonElement>) => {
+  const preserveSelectedText = (event: React.PointerEvent<HTMLElement>) => {
     rememberSelectedText();
     event.preventDefault();
   };
@@ -221,21 +221,21 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   };
   return <div>
     <Space wrap size={[6, 8]} style={{ marginBottom: 10 }}>
-      <Button size="small" onMouseDown={preserveSelectedText} onClick={() => command("formatBlock", "p")} disabled={disabled || sourceMode}>正文</Button>
-      <Button size="small" onMouseDown={preserveSelectedText} onClick={() => command("formatBlock", "h2")} disabled={disabled || sourceMode}>标题</Button>
-      <Button size="small" onMouseDown={preserveSelectedText} onClick={() => command("bold")} disabled={disabled || sourceMode}><strong>加粗</strong></Button>
-      <Button size="small" onMouseDown={preserveSelectedText} onClick={() => command("italic")} disabled={disabled || sourceMode}><em>斜体</em></Button>
-      <Button size="small" onMouseDown={preserveSelectedText} onClick={() => command("insertUnorderedList")} disabled={disabled || sourceMode}>列表</Button>
-      <Button size="small" onMouseDown={preserveSelectedText} onClick={() => command("insertOrderedList")} disabled={disabled || sourceMode}>编号</Button>
-      <Button size="small" onMouseDown={preserveSelectedText} onClick={() => command("formatBlock", "blockquote")} disabled={disabled || sourceMode}>引用</Button>
-      <Button size="small" onMouseDown={preserveSelectedText} onClick={() => command("link")} disabled={disabled || sourceMode}>链接</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "p")} disabled={disabled || sourceMode}>正文</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "h2")} disabled={disabled || sourceMode}>标题</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("bold")} disabled={disabled || sourceMode}><strong>加粗</strong></Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("italic")} disabled={disabled || sourceMode}><em>斜体</em></Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("insertUnorderedList")} disabled={disabled || sourceMode}>列表</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("insertOrderedList")} disabled={disabled || sourceMode}>编号</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "blockquote")} disabled={disabled || sourceMode}>引用</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("link")} disabled={disabled || sourceMode}>链接</Button>
       <Button size="small" danger onClick={deleteSelectedImage} disabled={disabled || sourceMode || !hasSelectedImage}>删除选中图片</Button>
       <Button size="small" onClick={() => setMarkdownOpen(true)} disabled={disabled}>导入 Markdown</Button>
       <Button size="small" type={sourceMode ? "primary" : "default"} onClick={() => { if (!sourceMode) emit(); setSourceMode((open) => !open); }}>{sourceMode ? "可视化编辑" : "HTML 源码"}</Button>
     </Space>
     {sourceMode
       ? <TextArea value={value} onChange={(event) => { lastValue.current = event.target.value; onChange?.(event.target.value); }} autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={disabled} spellCheck={false} />
-      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onMouseUp={rememberSelectedText} onKeyUp={rememberSelectedText} onFocus={rememberSelectedText} onClick={(event) => { const target = event.target; if (target instanceof HTMLImageElement) selectImage(target); else clearSelectedImage(); }} onKeyDown={(event) => {
+      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onSelect={rememberSelectedText} onPointerUp={rememberSelectedText} onMouseUp={rememberSelectedText} onKeyUp={rememberSelectedText} onFocus={rememberSelectedText} onClick={(event) => { const target = event.target; if (target instanceof HTMLImageElement) selectImage(target); else clearSelectedImage(); }} onKeyDown={(event) => {
         if ((event.key === "Delete" || event.key === "Backspace") && selectedImageRef.current) { event.preventDefault(); deleteSelectedImage(); return; }
         const selection = window.getSelection();
         const selectedElement = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
