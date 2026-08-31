@@ -155,6 +155,10 @@ h3 {
   letter-spacing: -0.015em;
 }
 
+.app-header.is-article-detail .header-actions {
+  display: none;
+}
+
 .app-header.is-home .header-copy {
   display: flex;
   align-items: baseline;
