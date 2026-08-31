@@ -137,9 +137,13 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const rememberSelectedText = () => {
     const root = editorRef.current;
     const selection = window.getSelection();
-    if (!root || !selection?.rangeCount) { selectedTextRangeRef.current = null; return; }
+    if (!root || !selection?.rangeCount) return;
     const range = selection.getRangeAt(0);
-    if (range.collapsed || !root.contains(range.commonAncestorContainer)) { selectedTextRangeRef.current = null; return; }
+    // Clicking a toolbar button moves the browser focus outside the editor.
+    // Keep the last in-editor range through that focus change so the command
+    // can restore it; only an in-editor caret clears the active selection.
+    if (!root.contains(range.commonAncestorContainer)) return;
+    if (range.collapsed) { selectedTextRangeRef.current = null; return; }
     selectedTextRangeRef.current = range.cloneRange();
   };
   const restoreSelectedText = () => {
