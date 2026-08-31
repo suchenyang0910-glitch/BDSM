@@ -110,6 +110,8 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const [markdown, setMarkdown] = React.useState("");
   const [richPasteHtml, setRichPasteHtml] = React.useState("");
   const [hasSelectedImage, setHasSelectedImage] = React.useState(false);
+  const [linkDialogOpen, setLinkDialogOpen] = React.useState(false);
+  const [linkUrl, setLinkUrl] = React.useState("");
   const captureCaret = (): { path: number[]; offset: number } | null => {
     const root = editorRef.current;
     const selection = window.getSelection();
@@ -268,10 +270,9 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     let changed = false;
     if (name === "link") {
       if (!activeTextRange()) return;
-      const href = window.prompt("输入完整 HTTPS 链接");
-      if (!href) return;
-      try { if (new URL(href).protocol !== "https:") throw new Error("unsafe"); } catch { message.error("仅支持 HTTPS 链接"); return; }
-      changed = wrapSelectedText("a", { href, target: "_blank", rel: "noopener noreferrer" });
+      setLinkUrl("");
+      setLinkDialogOpen(true);
+      return;
     } else if (name === "bold") changed = wrapSelectedText("strong");
     else if (name === "italic") changed = wrapSelectedText("em");
     else if (name === "insertUnorderedList") changed = formatSelectedList("ul");
@@ -279,6 +280,14 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     else if (name === "formatBlock" && (commandValue === "p" || commandValue === "h2" || commandValue === "blockquote")) changed = formatSelectedBlocks(commandValue);
     if (!changed) { message.info("请先选中一段正文，再使用此排版工具"); return; }
     emit();
+  };
+  const applyLink = () => {
+    const href = linkUrl.trim();
+    try { if (!href || new URL(href).protocol !== "https:") throw new Error("unsafe"); } catch { message.error("仅支持完整 HTTPS 链接"); return; }
+    if (!wrapSelectedText("a", { href, target: "_blank", rel: "noopener noreferrer" })) { message.info("选中文案已失效，请重新选择后添加链接"); setLinkDialogOpen(false); return; }
+    emit();
+    setLinkDialogOpen(false);
+    setLinkUrl("");
   };
   const preserveSelectedText = () => {
     rememberSelectedText();
@@ -327,6 +336,10 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
           emit();
         });
       }} style={{ minHeight: 440, padding: 16, border: "1px solid #d9d9d9", borderRadius: 8, lineHeight: 1.8, outline: "none", overflowX: "hidden", boxSizing: "border-box" }} />}
+    <Modal title="添加链接" open={linkDialogOpen} onCancel={() => { setLinkDialogOpen(false); setLinkUrl(""); }} onOk={applyLink} okText="添加链接" cancelText="取消">
+      <Text type="secondary">链接将只作用于刚才选中的文案。</Text>
+      <Input autoFocus value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} placeholder="https://example.com" style={{ marginTop: 12 }} />
+    </Modal>
     <Modal title="导入 Markdown" open={markdownOpen} onCancel={() => { setRichPasteHtml(""); setMarkdownOpen(false); }} onOk={() => { const converted = richPasteHtml || markdownToHtml(markdown); lastValue.current = converted; onChange?.(converted); setSourceMode(false); setRichPasteHtml(""); setMarkdownOpen(false); message.success(richPasteHtml ? "已保留文章详情的标题、引用、列表与图片格式" : "Markdown 已转换为可视化文章，可继续编辑"); }} okText="转换并载入" cancelText="取消" okButtonProps={{ disabled: !markdown.trim() }}>
       <Text type="secondary">将覆盖当前正文。支持标题、引用、列表、编号、强制换行、图片、链接和 Markdown 表格；直接从文章详情复制时会优先保留原有格式。</Text>
       <TextArea value={markdown} onChange={(event) => { setRichPasteHtml(""); setMarkdown(event.target.value); }} onPaste={(event) => { const html = event.clipboardData.getData("text/html"); const safe = html ? sanitizeEditorHtml(html) : ""; if (!safe) return; event.preventDefault(); setRichPasteHtml(safe); setMarkdown(event.clipboardData.getData("text/plain")); message.success("已识别文章详情格式，导入时将保留排版"); }} autoSize={{ minRows: 18, maxRows: 32 }} style={{ marginTop: 12 }} placeholder="# 文章标题\n\n正文…" spellCheck={false} />
