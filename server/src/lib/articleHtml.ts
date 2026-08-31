@@ -1,4 +1,4 @@
-const ALLOWED_TAGS = new Set(["p", "h2", "h3", "h4", "strong", "em", "ul", "ol", "li", "blockquote", "figure", "figcaption", "br", "hr", "a", "img"]);
+const ALLOWED_TAGS = new Set(["p", "h2", "h3", "h4", "strong", "em", "ul", "ol", "li", "blockquote", "figure", "figcaption", "br", "hr", "a", "img", "table", "thead", "tbody", "tr", "th", "td"]);
 const VOID_TAGS = new Set(["br", "hr", "img"]);
 
 function escapeHtml(value: string): string {

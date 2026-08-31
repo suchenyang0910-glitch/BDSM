@@ -1679,6 +1679,9 @@ img.is-image-unavailable {
 .article-html-body figure img { width: 100%; max-height: 680px; object-fit: contain; border-radius: 12px; background: var(--bg-page); }
 .article-html-body figcaption { color: var(--text-secondary); font-size: 12px; text-align: center; }
 .article-html-body a { color: var(--brand-primary); font-weight: 700; }
+.article-html-body table { width: 100%; border-collapse: collapse; font-size: 14px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }
+.article-html-body th, .article-html-body td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+.article-html-body th { background: rgba(169, 104, 255, .12); color: var(--text-primary); }
 
 .article-card-top,
 .article-detail-meta,

@@ -1,5 +1,5 @@
 import React from "react";
-import { Alert, Button, Card, Divider, Drawer, Form, Input, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
+import { Alert, Button, Card, Divider, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, EditOutlined, UploadOutlined } from "@ant-design/icons";
 import { adminMe, archiveAdminArticle, completeAdminBannerImageUpload, createAdminArticle, errMsg, initAdminBannerImageUpload, listAdminArticles, publishAdminArticle, updateAdminArticle } from "../api/client";
@@ -16,7 +16,7 @@ const EMPTY: AdminArticleInput = {
 const statusLabel: Record<AdminArticleItem["status"], string> = { draft: "草稿", published: "已发布", archived: "已下线" };
 const statusColor: Record<AdminArticleItem["status"], string> = { draft: "default", published: "green", archived: "orange" };
 
-const EDITOR_TAGS = new Set(["P", "H2", "H3", "H4", "STRONG", "EM", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG"]);
+const EDITOR_TAGS = new Set(["P", "H2", "H3", "H4", "STRONG", "EM", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD"]);
 const VOID_EDITOR_TAGS = new Set(["BR", "HR", "IMG"]);
 
 function sanitizeEditorHtml(input: string): string {
@@ -45,10 +45,45 @@ function sanitizeEditorHtml(input: string): string {
   return Array.from(documentNode.body.childNodes).map(walk).join("");
 }
 
+function markdownToHtml(markdown: string): string {
+  const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (value: string) => escape(value)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  const cells = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const blocks: string[] = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index].trim();
+    if (!line) { index += 1; continue; }
+    const tableSeparator = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(lines[index + 1]?.trim() || "");
+    if (line.includes("|") && tableSeparator) {
+      const header = cells(line); index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && lines[index].trim().includes("|")) { rows.push(cells(lines[index])); index += 1; }
+      blocks.push(`<table><thead><tr>${header.map((cell) => `<th>${inline(cell)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${header.map((_, cellIndex) => `<td>${inline(row[cellIndex] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+      continue;
+    }
+    const heading = /^(#{1,4})\s+(.+)$/.exec(line);
+    if (heading) { const level = Math.max(2, heading[1].length); blocks.push(`<h${level}>${inline(heading[2])}</h${level}>`); index += 1; continue; }
+    if (/^---+$/.test(line)) { blocks.push("<hr>"); index += 1; continue; }
+    if (/^>\s?/.test(line)) { const quote: string[] = []; while (index < lines.length && /^>\s?/.test(lines[index].trim())) { quote.push(lines[index].trim().replace(/^>\s?/, "")); index += 1; } blocks.push(`<blockquote>${quote.map(inline).join("<br>")}</blockquote>`); continue; }
+    if (/^[-*+]\s+/.test(line)) { const items: string[] = []; while (index < lines.length && /^[-*+]\s+/.test(lines[index].trim())) { items.push(lines[index].trim().replace(/^[-*+]\s+/, "")); index += 1; } blocks.push(`<ul>${items.map((item) => `<li>${inline(item)}</li>`).join("")}</ul>`); continue; }
+    if (/^\d+[.)]\s+/.test(line)) { const items: string[] = []; while (index < lines.length && /^\d+[.)]\s+/.test(lines[index].trim())) { items.push(lines[index].trim().replace(/^\d+[.)]\s+/, "")); index += 1; } blocks.push(`<ol>${items.map((item) => `<li>${inline(item)}</li>`).join("")}</ol>`); continue; }
+    const paragraph: string[] = [line]; index += 1;
+    while (index < lines.length && lines[index].trim() && !/^(#{1,4})\s|^>\s?|^[-*+]\s+|^\d+[.)]\s+|^---+$/.test(lines[index].trim())) { paragraph.push(lines[index].trim()); index += 1; }
+    blocks.push(`<p>${paragraph.map(inline).join("<br>")}</p>`);
+  }
+  return sanitizeEditorHtml(blocks.join("\n"));
+}
+
 const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) => void; disabled?: boolean }> = ({ value = "", onChange, disabled }) => {
   const editorRef = React.useRef<HTMLDivElement | null>(null);
   const lastValue = React.useRef("");
   const [sourceMode, setSourceMode] = React.useState(false);
+  const [markdownOpen, setMarkdownOpen] = React.useState(false);
+  const [markdown, setMarkdown] = React.useState("");
   const emit = () => {
     const safe = sanitizeEditorHtml(editorRef.current?.innerHTML || "");
     if (editorRef.current && editorRef.current.innerHTML !== safe) editorRef.current.innerHTML = safe;
@@ -83,11 +118,16 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
       <Button size="small" onClick={() => command("insertOrderedList")} disabled={disabled || sourceMode}>编号</Button>
       <Button size="small" onClick={() => command("formatBlock", "blockquote")} disabled={disabled || sourceMode}>引用</Button>
       <Button size="small" onClick={() => command("link")} disabled={disabled || sourceMode}>链接</Button>
+      <Button size="small" onClick={() => setMarkdownOpen(true)} disabled={disabled}>导入 Markdown</Button>
       <Button size="small" type={sourceMode ? "primary" : "default"} onClick={() => { if (!sourceMode) emit(); setSourceMode((open) => !open); }}>{sourceMode ? "可视化编辑" : "HTML 源码"}</Button>
     </Space>
     {sourceMode
       ? <TextArea value={value} onChange={(event) => { lastValue.current = event.target.value; onChange?.(event.target.value); }} autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={disabled} spellCheck={false} />
       : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onPaste={(event) => { event.preventDefault(); document.execCommand("insertText", false, event.clipboardData.getData("text/plain")); emit(); }} style={{ minHeight: 440, padding: 16, border: "1px solid #d9d9d9", borderRadius: 8, lineHeight: 1.8, outline: "none" }} />}
+    <Modal title="导入 Markdown" open={markdownOpen} onCancel={() => setMarkdownOpen(false)} onOk={() => { const converted = markdownToHtml(markdown); lastValue.current = converted; onChange?.(converted); setSourceMode(false); setMarkdownOpen(false); message.success("Markdown 已转换为可视化文章，可继续编辑"); }} okText="转换并载入" cancelText="取消" okButtonProps={{ disabled: !markdown.trim() }}>
+      <Text type="secondary">将覆盖当前正文。支持标题、引用、列表、编号、分隔线、链接和 Markdown 表格。</Text>
+      <TextArea value={markdown} onChange={(event) => setMarkdown(event.target.value)} autoSize={{ minRows: 18, maxRows: 32 }} style={{ marginTop: 12 }} placeholder="# 文章标题\n\n正文…" spellCheck={false} />
+    </Modal>
   </div>;
 };
 

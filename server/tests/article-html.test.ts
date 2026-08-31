@@ -18,6 +18,11 @@ test("article HTML derives a readable legacy plain-text shadow", () => {
   assert.equal(htmlToPlainText(html), "第一段 重点\n图注");
 });
 
+test("article HTML keeps accessible table structure without attributes", () => {
+  const html = sanitizeArticleHtml('<table class="unsafe"><thead><tr><th onclick="x()">状态</th></tr></thead><tbody><tr><td>停止</td></tr></tbody></table>');
+  assert.equal(html, "<table><thead><tr><th>状态</th></tr></thead><tbody><tr><td>停止</td></tr></tbody></table>");
+});
+
 test("public article API exposes a cover and already-sanitized HTML only", async () => {
   const app = Fastify();
   app.decorate("prisma", {
