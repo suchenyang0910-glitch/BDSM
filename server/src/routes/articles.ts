@@ -37,7 +37,7 @@ const raw: Array<[string, string, string, string, string[]]> = [
   ["kink-bdsm/bdsm-humiliation", "羞辱与贬低角色扮演：先确认边界与禁区", "语言和角色扮演具有很强的个人差异。先明确哪些词、主题和情境绝不触碰，才能降低伤害风险。", "2026-04-08T00:00:00+00:00", ["角色扮演", "协商", "情绪安全"]],
 ];
 
-const ARTICLES: Article[] = raw.map(function ([path, title, summary, publishedAt, topics]) {
+export const STATIC_ARTICLES: Article[] = raw.map(function ([path, title, summary, publishedAt, topics]) {
   const slug = path.replace(/^kink-bdsm\//, "");
   return {
     slug,
@@ -102,7 +102,7 @@ async function publishedDbArticles(fastify: FastifyInstance): Promise<Article[]>
 async function visibleArticles(fastify: FastifyInstance): Promise<Article[]> {
   const managed = await publishedDbArticles(fastify);
   const managedSlugs = new Set(managed.map((item) => item.slug));
-  return managed.concat(ARTICLES.filter((item) => !managedSlugs.has(item.slug)));
+  return managed.concat(STATIC_ARTICLES.filter((item) => !managedSlugs.has(item.slug)));
 }
 
 export default async function articleRoutes(fastify: FastifyInstance) {
