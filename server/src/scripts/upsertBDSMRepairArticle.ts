@@ -8,8 +8,9 @@ import { htmlToPlainText, sanitizeArticleHtml } from "../lib/articleHtml.js";
 const slug = "bdsm-boundaries-repair-and-aftercare";
 const prisma = new PrismaClient();
 const publicOrigin = (process.env.PUBLIC_WEB_ORIGIN || "https://samewave.cc").replace(/\/+$/, "");
-const coverImageUrl = `${publicOrigin}/article-assets/bdsm-boundaries-repair-cover.png`;
-const flowImageUrl = `${publicOrigin}/article-assets/bdsm-boundaries-repair-flow.png`;
+// Version the URLs so an earlier SPA fallback response cannot be reused by an edge cache.
+const coverImageUrl = `${publicOrigin}/article-assets/bdsm-boundaries-repair-cover.png?v=20260831`;
+const flowImageUrl = `${publicOrigin}/article-assets/bdsm-boundaries-repair-flow.png?v=20260831`;
 
 const bodyHtml = sanitizeArticleHtml(`
   <p>在成年人自愿参与的亲密场景中，任何“纠偏”都不应以伤害、羞辱或迫使对方服从为目的。更稳妥的做法，是把它理解为一次共同回到边界、节奏与照护的机会：先暂停，再确认，最后决定是否继续。</p>
