@@ -140,6 +140,12 @@ h3 {
   letter-spacing: -0.04em;
 }
 
+.app-header.is-article-detail h1 {
+  font-size: 18px;
+  line-height: 1.32;
+  letter-spacing: -0.015em;
+}
+
 .app-header.is-home .header-copy {
   display: grid;
   gap: 2px;

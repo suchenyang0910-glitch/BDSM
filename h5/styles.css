@@ -147,6 +147,14 @@ h3 {
   letter-spacing: -0.04em;
 }
 
+/* Article titles can be long; preserve the real title without making the
+   detail header dominate the reading view. */
+.app-header.is-article-detail h1 {
+  font-size: 18px;
+  line-height: 1.32;
+  letter-spacing: -0.015em;
+}
+
 .app-header.is-home .header-copy {
   display: flex;
   align-items: baseline;

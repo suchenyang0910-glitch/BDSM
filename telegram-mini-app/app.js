@@ -837,11 +837,10 @@
       }
       updatePageSeo(item.seo);
       const topics = (item.topics || []).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
-      const source = (item.sourceName || item.sourceUrl) ? '<div class="article-source-row">' + (item.sourceName ? '<span>原始来源：' + escapeHtml(item.sourceName) + '</span>' : '') + (item.sourceUrl ? '<a class="article-source-link" href="' + escapeHtml(item.sourceUrl) + '" target="_blank" rel="noopener noreferrer">阅读原文 ↗</a>' : '') + '</div>' : "";
       host.innerHTML = '<div class="article-detail-meta">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
         (item.coverImageUrl ? '<img class="article-detail-cover" src="' + escapeHtml(item.coverImageUrl) + '" alt="' + escapeHtml(item.title) + '">' : "") +
         "<h2>" + escapeHtml(item.title) + "</h2><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +
-        '<div class="article-html-body">' + String(item.bodyHtml || "") + "</div>" + source;
+        '<div class="article-html-body">' + String(item.bodyHtml || "") + "</div>";
     } catch (err) {
       host.innerHTML = '<div class="inline-state">文章加载失败：' + escapeHtml(apiText(err)) + "</div>";
     }
@@ -2070,6 +2069,7 @@
     $("backButton").hidden = !(isDetail || isArticle || isHistory);
     $("bottomNav").classList.toggle("is-hidden", isDetail || isArticle || isHistory);
     $("appHeader").classList.toggle("is-home", isHome);
+    $("appHeader").classList.toggle("is-article-detail", isArticle);
     $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "文章详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]));
     $("headerSubtitle").textContent = isDetail
       ? "查看权益与购买方式"
