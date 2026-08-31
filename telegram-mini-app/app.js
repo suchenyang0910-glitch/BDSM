@@ -820,6 +820,20 @@
     });
   }
 
+  function renderArticleBody(body) {
+    return String(body || "").split(/\r?\n\s*\r?\n/).map(function (block) {
+      const trimmed = block.trim();
+      const image = /^!\[([^\]]*)\]\((https:\/\/[^\s)]+)\)$/i.exec(trimmed);
+      if (image) {
+        try {
+          const url = new URL(image[2]);
+          if (url.protocol === "https:") return '<figure class="article-inline-image"><img src="' + escapeHtml(url.href) + '" alt="' + escapeHtml(image[1] || "文章配图") + '" loading="lazy"><figcaption>' + escapeHtml(image[1] || "文章配图") + "</figcaption></figure>";
+        } catch (_) { /* unsafe or malformed image stays as text */ }
+      }
+      return "<p>" + escapeHtml(block).replace(/\r?\n/g, "<br>") + "</p>";
+    }).join("");
+  }
+
   async function renderArticleDetail(slug) {
     const host = $("articleDetailContent");
     if (!host) return;
@@ -833,7 +847,7 @@
       updatePageSeo(item.seo);
       const topics = (item.topics || []).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
       const sections = (item.sections || []).map(function (section) {
-        return '<section class="article-detail-section"><h3>' + escapeHtml(section.heading) + "</h3><p>" + escapeHtml(section.body) + "</p></section>";
+        return '<section class="article-detail-section"><h3>' + escapeHtml(section.heading) + "</h3>" + renderArticleBody(section.body) + "</section>";
       }).join("");
       host.innerHTML = '<div class="article-detail-meta">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
         "<h2>" + escapeHtml(item.title) + "</h2><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +

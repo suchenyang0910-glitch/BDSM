@@ -1,8 +1,8 @@
 import React from "react";
-import { Alert, Button, Card, Drawer, Form, Input, Popconfirm, Select, Space, Table, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Drawer, Form, Input, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { PlusOutlined, EditOutlined } from "@ant-design/icons";
-import { adminMe, archiveAdminArticle, createAdminArticle, errMsg, listAdminArticles, publishAdminArticle, updateAdminArticle } from "../api/client";
+import { PlusOutlined, EditOutlined, UploadOutlined } from "@ant-design/icons";
+import { adminMe, archiveAdminArticle, completeAdminBannerImageUpload, createAdminArticle, errMsg, initAdminBannerImageUpload, listAdminArticles, publishAdminArticle, updateAdminArticle } from "../api/client";
 import type { AdminArticleInput, AdminArticleItem, AdminMe } from "../api/types";
 
 const { TextArea } = Input;
@@ -23,6 +23,7 @@ const ArticlesPage: React.FC = () => {
   const [saving, setSaving] = React.useState(false);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<AdminArticleItem | null>(null);
+  const [imageUploading, setImageUploading] = React.useState(false);
   const [me, setMe] = React.useState<AdminMe | null>(null);
   const canEdit = ["super_admin", "operator", "editor"].includes(me?.role || "");
   const canPublish = ["super_admin", "operator", "editor"].includes(me?.role || "");
@@ -75,6 +76,45 @@ const ArticlesPage: React.FC = () => {
     try { await archiveAdminArticle(article.id); message.success("文章已下线"); await load(); }
     catch (error) { message.error(errMsg(error, "下线文章失败")); }
   };
+  const uploadInlineImage = async (file: File) => {
+    if (!canEdit) return Upload.LIST_IGNORE;
+    if (!/^image\/(jpeg|png|webp|jpg)$/i.test(file.type || "")) {
+      message.error("仅支持 JPG、PNG 或 WebP 图片");
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      message.error("文章图片不能超过 20MB");
+      return Upload.LIST_IGNORE;
+    }
+    setImageUploading(true);
+    let assetId: string | null = null;
+    try {
+      const init = await initAdminBannerImageUpload({ originalFilename: file.name, mimeType: file.type, contentLength: file.size });
+      assetId = init.mediaAssetId;
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", init.uploadUrl, true);
+        Object.entries(init.expectedHttpHeaders || {}).forEach(([key, value]) => { try { xhr.setRequestHeader(key, value); } catch { /* browser restricted header */ } });
+        xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`HTTP ${xhr.status}`));
+        xhr.onerror = () => reject(new Error("网络错误：上传到对象存储失败"));
+        xhr.send(file);
+      });
+      const completed = await completeAdminBannerImageUpload(assetId, { ok: true, reportedContentLength: file.size });
+      if (!completed.ok || completed.status !== "ready" || !completed.publicUrl) throw new Error("article_image_verify_failed");
+      const current = String(form.getFieldValue("bodyMarkdown") || "").trimEnd();
+      const alt = file.name.replace(/\.[a-z0-9]+$/i, "") || "文章配图";
+      form.setFieldValue("bodyMarkdown", `${current}${current ? "\n\n" : ""}![${alt}](${completed.publicUrl})`);
+      message.success("图片已上传并插入正文末尾，可在正文中调整位置");
+    } catch (error) {
+      if (assetId) {
+        try { await completeAdminBannerImageUpload(assetId, { ok: false, error: "article_image_upload_failed" }); } catch { /* best effort */ }
+      }
+      message.error(errMsg(error, "文章图片上传失败"));
+    } finally {
+      setImageUploading(false);
+    }
+    return Upload.LIST_IGNORE;
+  };
 
   const columns: ColumnsType<AdminArticleItem> = [
     { title: "标题", dataIndex: "title", width: 260, render: (title, row) => <Space direction="vertical" size={0}><Text strong>{title}</Text><Text type="secondary">/{row.slug}</Text></Space> },
@@ -93,7 +133,7 @@ const ArticlesPage: React.FC = () => {
       <Space direction="vertical" size={8} style={{ width: "100%" }}>
         <Title level={5} style={{ margin: 0 }}>文章中心</Title>
         <Text type="secondary">编写平台原创文章或维护经授权的导读。仅“已发布”文章会出现在 H5、Web 和 Mini App 的文章板块。</Text>
-        <Alert type="info" showIcon message="正文以安全纯文本分段展示" description="保存为 Markdown / 纯文本；前台会转义 HTML，不执行脚本。引用第三方资料请填写来源名称与链接，不直接搬运未经授权的全文。" />
+        <Alert type="info" showIcon message="支持安全图文排版" description="可上传 JPG、PNG、WebP 并自动插入正文；前台仅渲染受控的 Markdown 图片与纯文本，不执行任意 HTML。引用第三方资料请填写来源名称与链接，不直接搬运未经授权的全文。" />
       </Space>
     </Card>
     <Card title="文章列表" extra={<Space><Button onClick={load}>刷新</Button><Button type="primary" icon={<PlusOutlined />} disabled={!canEdit} onClick={openCreate}>新建文章</Button></Space>}>
@@ -104,7 +144,7 @@ const ArticlesPage: React.FC = () => {
         <Form.Item name="slug" label="URL 标识" rules={[{ required: true, pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/, message: "仅小写英文、数字与连字符，例如 bdsm-safety-guide" }]}><Input maxLength={160} disabled={!canEdit} /></Form.Item>
         <Form.Item name="title" label="文章标题" rules={[{ required: true, min: 2, max: 160 }]}><Input maxLength={160} disabled={!canEdit} /></Form.Item>
         <Form.Item name="summary" label="摘要" rules={[{ required: true, min: 10, max: 500 }]}><TextArea rows={3} maxLength={500} disabled={!canEdit} /></Form.Item>
-        <Form.Item name="bodyMarkdown" label="正文" rules={[{ required: true, min: 20, max: 50000 }]} extra="以空行分段；前台会安全转义并保留段落。"><TextArea autoSize={{ minRows: 28, maxRows: 48 }} maxLength={50000} disabled={!canEdit} /></Form.Item>
+        <Form.Item name="bodyMarkdown" label="正文" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">以空行分段。图片会自动插入正文末尾，可剪切到任意段落之间。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadInlineImage(file as File)}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入图片</Button></Upload></Space>}><TextArea autoSize={{ minRows: 28, maxRows: 48 }} maxLength={50000} disabled={!canEdit} /></Form.Item>
         <Space size={16} style={{ display: "flex" }}>
           <Form.Item name="sourceName" label="来源名称" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} /></Form.Item>
           <Form.Item name="sourceUrl" label="来源链接" style={{ flex: 1 }} rules={[{ type: "url", message: "请输入完整 https:// 链接" }]}><Input maxLength={500} disabled={!canEdit} /></Form.Item>

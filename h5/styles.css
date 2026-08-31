@@ -1673,6 +1673,26 @@ img.is-image-unavailable {
   border-top: 1px solid var(--border);
 }
 
+.article-inline-image {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.article-inline-image img {
+  width: 100%;
+  max-height: 680px;
+  object-fit: contain;
+  border-radius: 12px;
+  background: var(--bg-page);
+}
+
+.article-inline-image figcaption {
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
 .article-source-link {
   color: var(--brand-primary);
   font-weight: 700;
