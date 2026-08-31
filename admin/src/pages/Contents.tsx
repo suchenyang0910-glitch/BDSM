@@ -20,7 +20,6 @@ import {
   Segmented,
   Upload,
   Progress,
-  Checkbox,
   Tabs,
   Badge,
 } from "antd";
@@ -597,8 +596,8 @@ export async function unlinkContentChannelMessage(contentId: string, reason?: st
 
 const CHANNEL_KIND_LABEL: Record<TelegramPublishJobItem["channelKind"], { label: string; color: string }> = {
   public_free_preview: { label: "免费频道试看", color: "blue" },
-  membership_full: { label: "会员主频道完整", color: "purple" },
-  package_full: { label: "内容包独立频道完整", color: "geekblue" },
+  membership_full: { label: "历史完整视频任务（已停用）", color: "default" },
+  package_full: { label: "历史完整视频任务（已停用）", color: "default" },
 };
 
 const PUBLISH_JOB_STATUS_TAG: Record<TelegramPublishJobStatus, { label: string; color: string }> = {
@@ -1043,11 +1042,8 @@ const ContentsPage: React.FC = () => {
     setLastNormalizedTelegramTags([]);
     setCurrentChannelLink(null);
     setChannelMessages([]);
-    // 默认勾选与 accessType 匹配的 channel kinds
-    const defaultKinds: Array<TelegramPublishJobItem["channelKind"]> = [];
-    if (row.accessType === "membership") defaultKinds.push("membership_full");
-    if (row.accessType === "package") defaultKinds.push("package_full");
-    setChannelKinds(defaultKinds);
+    // Telegram 仅投放免费流量入口；完整内容由平台受控播放交付。
+    setChannelKinds(["public_free_preview"]);
     form.setFieldsValue({
       title: row.title,
       description: row.description,
@@ -2723,75 +2719,18 @@ const ContentsPage: React.FC = () => {
                               ? `发布时系统会自动向全部 ${freeChannels.length} 个免费入口发送封面推广图与 Bot 内容入口；60 秒试看在同频内播放。`
                               : "尚未配置免费流量入口；系统会阻止内容发布。"}
                           />
-                          <Checkbox.Group
-                            value={channelKinds}
-                            onChange={(v) => setChannelKinds(v as TelegramPublishJobItem["channelKind"][])}
-                            style={{ width: "100%" }}
-                          >
-                            <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                              <Checkbox
-                                value="membership_full"
-                                disabled={
-                                  !canPublish ||
-                                  accessTypeValue !== "membership" ||
-                                  fullVideoSegments.length === 0 ||
-                                  fullVideoSegments.some((asset) => asset.status !== "ready")
-                                }
-                              >
-                                <Space>
-                                  <Tag color={CHANNEL_KIND_LABEL.membership_full.color}>{CHANNEL_KIND_LABEL.membership_full.label}</Tag>
-                                  <span style={{ color: "#666", fontSize: 12 }}>
-                                    {
-                                      accessTypeValue !== "membership"
-                                        ? "（未满足：仅 accessType=membership 可选）"
-                                        : fullVideoSegments.length === 0 || fullVideoSegments.some((asset) => asset.status !== "ready")
-                                          ? "（未满足：先在「素材上传」Tab 成功上传完整视频）"
-                                          : "✅ 将发送到服务端配置的 TELEGRAM_CHANNEL_MEMBERSHIP 私密主频道（用户交付时自动获取邀请）"
-                                    }
-                                  </span>
-                                </Space>
-                              </Checkbox>
-                              <Checkbox
-                                value="package_full"
-                                disabled={
-                                  !canPublish ||
-                                  accessTypeValue !== "package" ||
-                                  !packageIdValue ||
-                                  fullVideoSegments.length === 0 ||
-                                  fullVideoSegments.some((asset) => asset.status !== "ready") ||
-                                  (!!selectedPackage && !selectedPackage.channelConfigured)
-                                }
-                              >
-                                <Space>
-                                  <Tag color={CHANNEL_KIND_LABEL.package_full.color}>{CHANNEL_KIND_LABEL.package_full.label}</Tag>
-                                  <span style={{ color: "#666", fontSize: 12 }}>
-                                    {
-                                      accessTypeValue !== "package"
-                                        ? "（未满足：仅 accessType=package 可选）"
-                                        : !packageIdValue
-                                          ? "（未满足：请在基本信息选择一个内容包）"
-                                          : fullVideoSegments.length === 0 || fullVideoSegments.some((asset) => asset.status !== "ready")
-                                            ? "（未满足：先上传完整视频）"
-                                            : selectedPackage && !selectedPackage.channelConfigured
-                                              ? `（未满足：内容包 ${selectedPackage.title} 尚未在服务端配置加密 channelId，请先完成频道映射）`
-                                              : "✅ 将发送到所选内容包对应的独立私密频道（购买后一次性邀请进包频道）"
-                                    }
-                                  </span>
-                                </Space>
-                              </Checkbox>
-                            </Space>
-                          </Checkbox.Group>
+                          <Alert
+                            type="success"
+                            showIcon
+                            message="完整视频在同频内播放"
+                            description="会员或单片付费成功后，用户可直接在 H5、Web 与 Mini App 观看完整视频；Telegram 仅发布封面推广和 Bot 入口，不再传输完整视频。"
+                          />
                           <Space wrap>
                             <Button
                               type="primary"
                               icon={<SendOutlined />}
                               loading={startPublishing}
-                              disabled={
-                                !canPublish ||
-                                !editing?.id ||
-                                channelKinds.length === 0 ||
-                                accessTypeValue === "single"
-                              }
+                              disabled={!canPublish || !editing?.id}
                               onClick={async () => {
                                 if (!editing?.id) return;
                                 if (hasInputErrors(["telegramTags"])) {
@@ -2828,9 +2767,8 @@ const ContentsPage: React.FC = () => {
                             message="发布模式说明"
                             description={
                               <Space direction="vertical" size={2} style={{ fontSize: 12 }}>
-                                <span>· 当前主链路是 Web 平台播放；Telegram 仅作为完整版备用交付，不再依赖单独试看视频上传。</span>
-                                <span>· 此处用于查看状态、按需补发或取消。Bot 发送为异步：大视频可能需要较长时间，请查看下表状态与重试次数。</span>
-                                <span>· 最大重试 3 次，指数退避（5s / 10s / 20s），重试耗尽后可手动点击「重试」按钮重新入队。</span>
+                                <span>· 当前主链路是 Web 平台播放；Telegram 只发布免费流量入口的封面推广和 Bot 入口。</span>
+                                <span>· 此处可补发推广或查看任务状态；完整视频不会发送到 Telegram，因此不受其单文件上限影响。</span>
                               </Space>
                             }
                           />

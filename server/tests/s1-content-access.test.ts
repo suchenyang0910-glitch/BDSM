@@ -733,18 +733,15 @@ test("[S1-G] membership 内容 4 动作全链路：审计脱敏 + 4 动作按序
       `membership publish expected 2xx, got ${publishResp.statusCode}: ${publishResp.body}`,
     );
     const publishBody = publishResp.json() as any;
-    assert.equal(publishBody.telegramPublish?.queued, true, "publishing a membership video must create a private-channel delivery job");
-    assert.equal(publishBody.telegramPublish?.jobs?.length, 2, "membership content creates both a mandatory free-entry promotion and the private-channel job");
+    assert.equal(publishBody.telegramPublish?.queued, true, "publishing a membership video must create a free-entry promotion job");
+    assert.equal(publishBody.telegramPublish?.jobs?.length, 1, "membership content creates the mandatory free-entry promotion only");
     assert.ok(publishBody.telegramPublish?.jobs?.some((job: any) => job.channelKind === "public_free_preview"));
-    assert.ok(publishBody.telegramPublish?.jobs?.some((job: any) => job.channelKind === "membership_full"));
+    assert.ok(!publishBody.telegramPublish?.jobs?.some((job: any) => job.channelKind === "membership_full"));
     const queuedJobs = await prisma.telegramPublishJob.findMany({
       where: { contentId: newId },
       select: { channelKind: true, status: true },
     });
-    assert.deepEqual(queuedJobs, [
-      { channelKind: "public_free_preview", status: "queued" },
-      { channelKind: "membership_full", status: "queued" },
-    ]);
+    assert.deepEqual(queuedJobs, [{ channelKind: "public_free_preview", status: "queued" }]);
     assertNoSensitiveLeaks(publishResp.body, "membership publish 2xx");
 
     // 审计 4 动作按序存在，且脱敏

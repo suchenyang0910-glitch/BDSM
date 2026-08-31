@@ -63,8 +63,6 @@ import { decryptChatIdAesGcm } from "../utils/crypto.js";
 const ContentStatusZ = z.enum(["draft", "pending_review", "published", "archived", "scheduled"]);
 const BannerStatusZ = z.enum(["draft", "active", "inactive", "scheduled", "archived"]);
 const BannerTargetTypeZ = z.enum(["content", "category", "package", "membership", "external"]);
-// Telegram 本地 Bot API 对单文件上传的实际能力上限为 2GB；后台与 API 必须一致。
-const MAX_FULL_VIDEO_BYTES = 2n * 1024n * 1024n * 1024n;
 const VOD_SINGLE_UPLOAD_SESSION_TTL_MS = 15 * 60 * 1000;
 const VOD_MULTIPART_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 // 8 条并发分片：在大文件上传时更充分利用浏览器与对象存储带宽；单片大小、重试和断点续传策略保持不变。
@@ -812,6 +810,9 @@ async function validatePublishReady(
   return { ok: true };
 }
 
+// 完整内容的唯一交付主链路是 Samewave 受控播放。Telegram 仅承担免费流量入口
+// 的封面推广与 Bot 深链，不再传输完整源文件（Telegram 单文件大小限制不能成为
+// 平台上传与播放的限制）。保留旧枚举用于读取、取消历史任务和兼容旧客户端请求。
 type TelegramPublishPlanKind = "public_free_preview" | "membership_full" | "package_full";
 type TelegramPublishQueueResult =
   | { ok: true; jobs: any[]; normalizedTelegramTags: string[] }
@@ -895,12 +896,11 @@ async function queueTelegramPublishForContent(input: {
   }
 
   // 免费流量入口是视频发布的强制组成部分，而不是由后台复选框决定的可选项。
-  // 这样无论是首次自动发布，还是运营后续手动补发私密完整视频，都会同时补齐
+  // 无论是首次自动发布，还是运营后续手动补发推广，都会同时补齐
   // 全部已启用免费频道的封面推广任务。现有任务会在下方按目标幂等复用，不会重复发送。
-  const kinds = Array.from(new Set([
-    ...input.channelKinds,
-    "public_free_preview" as TelegramPublishPlanKind,
-  ]));
+  // 忽略旧客户端传来的 membership_full/package_full：完整视频只在平台受控
+  // 播放，不再提交给 Telegram，从根源消除 2GB Telegram 发布失败。
+  const kinds: TelegramPublishPlanKind[] = ["public_free_preview"];
   const plans: Array<{
     mediaAssetId?: string | null;
     videoAssetId?: string | null;
@@ -911,13 +911,6 @@ async function queueTelegramPublishForContent(input: {
     channelKindDb: TelegramPublishPlanKind;
     packageId?: string | null;
   }> = [];
-  // Migration populates historic single-file records. The fallback is deliberately
-  // retained for a deployment where code has restarted before the migration is run.
-  const fullSegments = content.fullVideoSegments.length > 0
-    ? content.fullVideoSegments
-    : content.fullVideoAsset
-      ? [{ id: null, segmentOrder: 1, videoAssetId: content.fullVideoAsset.id, videoAsset: content.fullVideoAsset }]
-      : [];
   for (const kind of kinds) {
     if (kind === "public_free_preview") {
       const promoCover = content.videoAssets[0];
@@ -946,32 +939,6 @@ async function queueTelegramPublishForContent(input: {
         });
       }
       continue;
-    }
-    if (kind === "membership_full") {
-      if (content.accessType !== "membership") {
-        return { ok: false, status: 409, error: "publish_kind_mismatch", message: "只有会员内容可发送到会员私密频道。" };
-      }
-      if (fullSegments.length === 0 || fullSegments.some((segment) => segment.videoAsset.status !== "verified" || segment.videoAsset.kind !== "full_source")) {
-        return { ok: false, status: 409, error: "full_video_asset_required", message: "会员内容必须先上传并校验完整视频。" };
-      }
-      for (const segment of fullSegments) {
-        plans.push({ videoAssetId: segment.videoAssetId, contentSegmentId: segment.id, segmentOrder: segment.segmentOrder, segmentCount: fullSegments.length, channelKindDb: kind });
-      }
-      continue;
-    }
-    if (kind === "package_full") {
-      if (content.accessType !== "package") {
-        return { ok: false, status: 409, error: "publish_kind_mismatch", message: "只有内容包内容可发送到内容包私密频道。" };
-      }
-      if (!content.package || resolvePackageChannelId({ channelId: content.package.channelId, channelIdCiphertext: content.package.channelIdCiphertext }) == null) {
-        return { ok: false, status: 409, error: "package_channel_not_configured", message: "内容包尚未配置受控交付频道。" };
-      }
-      if (fullSegments.length === 0 || fullSegments.some((segment) => segment.videoAsset.status !== "verified" || segment.videoAsset.kind !== "full_source")) {
-        return { ok: false, status: 409, error: "full_video_asset_required", message: "内容包内容必须先上传并校验完整视频。" };
-      }
-      for (const segment of fullSegments) {
-        plans.push({ videoAssetId: segment.videoAssetId, contentSegmentId: segment.id, segmentOrder: segment.segmentOrder, segmentCount: fullSegments.length, channelKindDb: kind, packageId: content.package.id });
-      }
     }
   }
   if (plans.length === 0) return { ok: false, status: 400, error: "publish_plan_empty", message: "没有任何合法的频道发布计划。" };
@@ -1068,7 +1035,7 @@ async function queueTelegramPublishForContent(input: {
  *
  * status=scheduled 且 scheduledAt 为空，代表运营者已经点击“发布”，但当时
  * 仍在转码。该状态不会对用户端公开；只有本函数再次通过完整发布门槛后才会
- * 切换为 published，并创建私密频道与全部免费流量入口任务。
+ * 切换为 published，并创建全部免费流量入口推广任务。
  */
 export async function autoPublishContentAfterTranscode(prisma: PrismaClient, contentId: string) {
   const before = await prisma.content.findUnique({
@@ -1089,8 +1056,6 @@ export async function autoPublishContentAfterTranscode(prisma: PrismaClient, con
   if (publishUpdate.count !== 1) return { ok: true, skipped: true as const, reason: "status_changed" };
 
   const channelKinds: TelegramPublishPlanKind[] = ["public_free_preview"];
-  if (before.accessType === "membership") channelKinds.unshift("membership_full");
-  if (before.accessType === "package") channelKinds.unshift("package_full");
   const systemMeta: any = {
     adminId: before.lastEditorId || null,
     adminRole: "system",
@@ -1103,7 +1068,7 @@ export async function autoPublishContentAfterTranscode(prisma: PrismaClient, con
     contentId,
     meta: systemMeta,
     channelKinds,
-    reason: "转码成功后自动发布：已创建私密频道与免费流量入口投放任务",
+    reason: "转码成功后自动发布：已创建全部免费流量入口投放任务",
   });
   if (!telegramPublish.ok) {
     emitSafetyEvent({
@@ -2938,7 +2903,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             ok: true,
             status: "scheduled",
             autoPublish: true,
-            message: `已登记自动发布：转码完成后将自动展示到用户端，并投放私密频道与全部免费流量入口（当前 ${preCheck.details?.progressPercent || 0}%）。`,
+          message: `已登记自动发布：转码完成后将自动展示到用户端，并投放全部免费流量入口（当前 ${preCheck.details?.progressPercent || 0}%）。`,
             details: preCheck.details,
           });
         }
@@ -2952,12 +2917,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         await writeAudit(tx, meta, "content.publish", "content", id, stripSensitiveFields(before), stripSensitiveFields(after), reason);
       });
 
-      // Telegram 私密频道是完整视频备用交付；所有内容仍必须同步创建免费流量入口
-      // 的封面推广任务，试看由 Web 播放链路承担。
-      const automaticKinds: TelegramPublishPlanKind[] = [];
-      if (before.accessType === "membership") automaticKinds.push("membership_full");
-      if (before.accessType === "package") automaticKinds.push("package_full");
-      automaticKinds.push("public_free_preview");
+      // 所有内容同步创建免费流量入口的封面推广任务；完整内容仅由 Web/H5/Mini
+      // App 的受控播放交付，避免 Telegram 的单文件上限影响发布。
+      const automaticKinds: TelegramPublishPlanKind[] = ["public_free_preview"];
       const telegramPublish = await queueTelegramPublishForContent({
         prisma,
         contentId: id,

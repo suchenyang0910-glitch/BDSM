@@ -1007,11 +1007,8 @@ test("Phase A: multipart full video auto-binds content and publish jobs referenc
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
       payload: { channelKinds: ["membership_full"], reason: "membership publish should reference video asset" },
     });
-    assert.equal(membershipPublish.statusCode, 201, membershipPublish.body);
-    const membershipJobs = (membershipPublish.json() as any).jobs;
-    assert.equal(membershipJobs.length, 2, membershipPublish.body);
-    assert.equal(membershipJobs.find((job: any) => job.channelKind === "membership_full")?.videoAssetId, membershipAssetId);
-    assert.equal(membershipJobs.find((job: any) => job.channelKind === "public_free_preview")?.videoAssetId, membershipCover.id);
+    assert.equal(membershipPublish.statusCode, 409, membershipPublish.body);
+    assert.equal((membershipPublish.json() as any).error, "transcode_not_ready");
 
     const packagePublish = await app.inject({
       method: "POST",
@@ -1019,45 +1016,15 @@ test("Phase A: multipart full video auto-binds content and publish jobs referenc
       headers: { cookie: editorCookie, "Content-Type": "application/json" },
       payload: { channelKinds: ["package_full"], reason: "package publish should reference video asset" },
     });
-    assert.equal(packagePublish.statusCode, 201, packagePublish.body);
-    const packageJobs = (packagePublish.json() as any).jobs;
-    assert.equal(packageJobs.length, 2, packagePublish.body);
-    assert.equal(packageJobs.find((job: any) => job.channelKind === "package_full")?.videoAssetId, packageAssetId);
-    assert.equal(packageJobs.find((job: any) => job.channelKind === "public_free_preview")?.videoAssetId, packageCover.id);
+    assert.equal(packagePublish.statusCode, 409, packagePublish.body);
+    assert.equal((packagePublish.json() as any).error, "transcode_not_ready");
 
     const storedJobs = await prisma.telegramPublishJob.findMany({
       where: { contentId: { in: [membershipContentId, packageContentId] } },
       orderBy: [{ contentId: "asc" }],
       select: { contentId: true, mediaAssetId: true, videoAssetId: true, channelKind: true },
     });
-    const sortByDeliveryKind = (rows: Array<{ contentId: string | null; mediaAssetId: string | null; videoAssetId: string | null; channelKind: string }>) =>
-      rows.slice().sort((left, right) => {
-        const rank = (channelKind: string) => {
-          switch (channelKind) {
-            case "membership_full":
-              return 1;
-            case "package_full":
-              return 2;
-            default:
-              return 9;
-          }
-        };
-        return rank(left.channelKind) - rank(right.channelKind) || String(left.contentId || "").localeCompare(String(right.contentId || ""));
-      });
-    assert.deepEqual(
-      sortByDeliveryKind(storedJobs.map((job) => ({
-        contentId: job.contentId,
-        mediaAssetId: job.mediaAssetId,
-        videoAssetId: job.videoAssetId,
-        channelKind: job.channelKind,
-      }))),
-      sortByDeliveryKind([
-        { contentId: membershipContentId, mediaAssetId: null, videoAssetId: membershipCover.id, channelKind: "public_free_preview" },
-        { contentId: membershipContentId, mediaAssetId: null, videoAssetId: membershipAssetId, channelKind: "membership_full" },
-        { contentId: packageContentId, mediaAssetId: null, videoAssetId: packageCover.id, channelKind: "public_free_preview" },
-        { contentId: packageContentId, mediaAssetId: null, videoAssetId: packageAssetId, channelKind: "package_full" },
-      ]),
-    );
+    assert.deepEqual(storedJobs, []);
   } finally {
     if (originalFreeChannel === undefined) delete process.env[freeChannelEnv];
     else process.env[freeChannelEnv] = originalFreeChannel;

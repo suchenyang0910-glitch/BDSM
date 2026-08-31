@@ -51,7 +51,7 @@ import {
 import { resolvePackageChannelId } from "./channelCrypto.js";
 
 import { headObject, streamObjectForRead, requireObjectStorageEnv } from "./objectStorage.js";
-import { appendTelegramTagLine, normalizeTelegramHashtagsFromInputs } from "./seoMetadata.js";
+import { normalizeTelegramHashtagsFromInputs } from "./seoMetadata.js";
 
 // ====================== 常量配置 ======================
 const DEFAULT_QUEUE_NAME = "telegram-publish-default";
@@ -371,6 +371,22 @@ export async function processPublishJob(
     return { ok: false, reason: "db_lock_failed" };
   }
 
+  // 旧版会把会员/内容包完整源文件交给 Telegram。平台已切换到受控播放，必须在
+  // 调用 Telegram 前取消这类遗留任务，防止超过 Telegram 单文件上限的大视频失败。
+  if (job.channelKind === "membership_full" || job.channelKind === "package_full") {
+    await prisma.telegramPublishJob.update({
+      where: { id: job.id },
+      data: {
+        status: "cancelled",
+        cancelledAt: new Date(),
+        lastErrorClass: "legacy_full_video_delivery_disabled",
+        lastErrorNote: "full_video_delivered_by_platform_playback",
+        nextRetryAt: null,
+      },
+    });
+    return { ok: true, skipped: true, reason: "legacy_full_video_delivery_disabled" };
+  }
+
   // 历史版本可能已在转码前入队。这里在真正调用 Telegram 前再做一次硬校验，
   // 避免任何竞态或旧任务把未完成的视频/推广提前发出。
   if (job.content?.status !== "published" || !job.content?.platformPlaybackEnabled) {
@@ -466,25 +482,13 @@ export async function processPublishJob(
     return { ok: false, reason: "target_channel_invalid" };
   }
 
-  // Step 3: 组装 caption。免费试看和私密完整视频都必须带标题、简介与标签。
+  // Step 3: 组装推广 caption。
   const normalizedTelegramTags = normalizeTelegramHashtagsFromInputs([
     Array.isArray((job as any).telegramTagsJson) ? (job as any).telegramTagsJson : [],
   ]);
   const isPreviewKind = job.channelKind === "public_free_preview" && (asset.kind === "preview_video" || asset.kind === "cover");
   let captionBundle: { caption?: string; parseMode?: "HTML" } = {};
-  const isFullVideoKind =
-    (job.channelKind === "membership_full" || job.channelKind === "package_full") &&
-    asset.kind === "full_source";
-  if (isFullVideoKind && job.content) {
-    const fullBundle = buildFullVideoCaption(job.content, {
-      order: (job as any).segmentOrder,
-      count: Number((job as any).sendOptionsJson?.segmentCount || 1),
-    });
-    captionBundle = {
-      caption: appendTelegramTagLine(fullBundle.caption, normalizedTelegramTags),
-      parseMode: fullBundle.parseMode,
-    };
-  } else if (typeof job.captionText === "string" && job.captionText.trim()) {
+  if (typeof job.captionText === "string" && job.captionText.trim()) {
     captionBundle = {
       // 队列创建阶段已将 public 试看文案与标签组合完成；此处不得再追加，
       // 否则同一组 hashtag 会在频道消息中出现两行。
@@ -516,7 +520,7 @@ export async function processPublishJob(
     }
     const readable = resp.Body as unknown as NodeJS.ReadableStream;
     // Telegram 客户端首帧会使用 sendVideo.thumbnail。封面不可用时只降级为 Telegram
-    // 自动生成缩略图，绝不影响完整视频发布。
+    // 自动生成缩略图，不影响免费入口推广。
     let thumbnail: SendMediaFromStoragePayload["thumbnail"] = null;
     const coverAsset = job.content?.coverAsset;
     if (
@@ -596,38 +600,17 @@ export async function processPublishJob(
         },
       });
       if (job!.contentId) {
-        const isFirstFullSegment =
-          (job!.channelKind === "membership_full" || job!.channelKind === "package_full") &&
-          ((job as any).segmentOrder == null || Number((job as any).segmentOrder) === 1);
-        const contentUpdate: any = isFirstFullSegment || job!.channelKind === "public_free_preview"
+        const contentUpdate: any = job!.channelKind === "public_free_preview"
           ? {
               telegramMessageId: BigInt(result.messageId!),
               telegramSentAt: now,
               telegramChatFingerprint: resolved.chatFingerprint,
             }
           : {};
-        // 完整视频的 Telegram metadata 是最终时长；免费试看仅在内容尚无时长时兜底回填。
-        if (
-          typeof result.durationSeconds === "number" && result.durationSeconds > 0 &&
-          job!.channelKind !== "public_free_preview" &&
-          Number((job as any).sendOptionsJson?.segmentCount || 1) === 1
-        ) {
-          contentUpdate.durationSeconds = result.durationSeconds;
-        }
         await tx.content.update({
           where: { id: job!.contentId },
           data: contentUpdate,
         });
-        if ((job as any).contentSegmentId) {
-          await (tx as any).contentFullVideoSegment.update({
-            where: { id: (job as any).contentSegmentId },
-            data: {
-              telegramMessageId: BigInt(result.messageId!),
-              telegramSentAt: now,
-              telegramChatFingerprint: resolved.chatFingerprint,
-            },
-          });
-        }
         if (typeof result.durationSeconds === "number" && result.durationSeconds > 0 && job!.channelKind === "public_free_preview") {
           await tx.content.updateMany({
             where: { id: job!.contentId, durationSeconds: null },
