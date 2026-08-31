@@ -975,6 +975,10 @@
         item = await apiCall("/api/articles/" + encodeURIComponent(slug));
         state.articles.details[slug] = item;
       }
+      if (state.route && state.route.view === "article" && state.route.id === slug) {
+        $("headerTitle").textContent = item.title || "文章详情";
+        $("headerSubtitle").textContent = item.summary || "文章导读";
+      }
       updatePageSeo(item.seo);
       const topics = (item.topics || []).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
       const source = (item.sourceName || item.sourceUrl) ? '<div class="article-source-row">' + (item.sourceName ? '<span>原始来源：' + escapeHtml(item.sourceName) + '</span>' : '') + (item.sourceUrl ? '<a class="article-source-link" href="' + escapeHtml(item.sourceUrl) + '" target="_blank" rel="noopener noreferrer">阅读原文 ↗</a>' : '') + '</div>' : "";
