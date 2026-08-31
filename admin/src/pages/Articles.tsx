@@ -106,9 +106,15 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const [markdownOpen, setMarkdownOpen] = React.useState(false);
   const [markdown, setMarkdown] = React.useState("");
   const [richPasteHtml, setRichPasteHtml] = React.useState("");
+  const constrainImages = () => {
+    editorRef.current?.querySelectorAll("img").forEach((image) => {
+      Object.assign((image as HTMLElement).style, { maxWidth: "100%", height: "auto", display: "block", boxSizing: "border-box" });
+    });
+  };
   const emit = () => {
     const safe = sanitizeEditorHtml(editorRef.current?.innerHTML || "");
     if (editorRef.current && editorRef.current.innerHTML !== safe) editorRef.current.innerHTML = safe;
+    constrainImages();
     lastValue.current = safe;
     onChange?.(safe);
   };
@@ -116,6 +122,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     if (!sourceMode && editorRef.current && editorRef.current.innerHTML !== value) {
       const safe = sanitizeEditorHtml(value);
       editorRef.current.innerHTML = safe;
+      constrainImages();
       lastValue.current = safe;
     }
   }, [value, sourceMode]);
@@ -158,7 +165,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
           document.execCommand("insertHTML", false, figure);
           emit();
         });
-      }} style={{ minHeight: 440, padding: 16, border: "1px solid #d9d9d9", borderRadius: 8, lineHeight: 1.8, outline: "none" }} />}
+      }} style={{ minHeight: 440, padding: 16, border: "1px solid #d9d9d9", borderRadius: 8, lineHeight: 1.8, outline: "none", overflowX: "hidden", boxSizing: "border-box" }} />}
     <Modal title="导入 Markdown" open={markdownOpen} onCancel={() => { setRichPasteHtml(""); setMarkdownOpen(false); }} onOk={() => { const converted = richPasteHtml || markdownToHtml(markdown); lastValue.current = converted; onChange?.(converted); setSourceMode(false); setRichPasteHtml(""); setMarkdownOpen(false); message.success(richPasteHtml ? "已保留文章详情的标题、引用、列表与图片格式" : "Markdown 已转换为可视化文章，可继续编辑"); }} okText="转换并载入" cancelText="取消" okButtonProps={{ disabled: !markdown.trim() }}>
       <Text type="secondary">将覆盖当前正文。支持标题、引用、列表、编号、强制换行、图片、链接和 Markdown 表格；直接从文章详情复制时会优先保留原有格式。</Text>
       <TextArea value={markdown} onChange={(event) => { setRichPasteHtml(""); setMarkdown(event.target.value); }} onPaste={(event) => { const html = event.clipboardData.getData("text/html"); const safe = html ? sanitizeEditorHtml(html) : ""; if (!safe) return; event.preventDefault(); setRichPasteHtml(safe); setMarkdown(event.clipboardData.getData("text/plain")); message.success("已识别文章详情格式，导入时将保留排版"); }} autoSize={{ minRows: 18, maxRows: 32 }} style={{ marginTop: 12 }} placeholder="# 文章标题\n\n正文…" spellCheck={false} />
