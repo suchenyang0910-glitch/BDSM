@@ -99,12 +99,12 @@ const ArticlesPage: React.FC = () => {
     <Card title="文章列表" extra={<Space><Button onClick={load}>刷新</Button><Button type="primary" icon={<PlusOutlined />} disabled={!canEdit} onClick={openCreate}>新建文章</Button></Space>}>
       <Table rowKey="id" columns={columns} dataSource={rows} loading={loading} pagination={{ pageSize: 10, showSizeChanger: false }} scroll={{ x: 980 }} />
     </Card>
-    <Drawer title={editing ? "编辑文章" : "新建文章"} width={760} open={drawerOpen} onClose={() => setDrawerOpen(false)} extra={<Button type="primary" loading={saving} onClick={save}>保存</Button>}>
+    <Drawer title={editing ? "编辑文章" : "新建文章"} width={980} open={drawerOpen} onClose={() => setDrawerOpen(false)} extra={<Button type="primary" loading={saving} onClick={save}>保存</Button>}>
       <Form form={form} layout="vertical" initialValues={EMPTY} preserve={false}>
         <Form.Item name="slug" label="URL 标识" rules={[{ required: true, pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/, message: "仅小写英文、数字与连字符，例如 bdsm-safety-guide" }]}><Input maxLength={160} disabled={!canEdit} /></Form.Item>
         <Form.Item name="title" label="文章标题" rules={[{ required: true, min: 2, max: 160 }]}><Input maxLength={160} disabled={!canEdit} /></Form.Item>
         <Form.Item name="summary" label="摘要" rules={[{ required: true, min: 10, max: 500 }]}><TextArea rows={3} maxLength={500} disabled={!canEdit} /></Form.Item>
-        <Form.Item name="bodyMarkdown" label="正文" rules={[{ required: true, min: 20, max: 50000 }]} extra="以空行分段；前台会安全转义并保留段落。"><TextArea rows={14} maxLength={50000} disabled={!canEdit} /></Form.Item>
+        <Form.Item name="bodyMarkdown" label="正文" rules={[{ required: true, min: 20, max: 50000 }]} extra="以空行分段；前台会安全转义并保留段落。"><TextArea autoSize={{ minRows: 28, maxRows: 48 }} maxLength={50000} disabled={!canEdit} /></Form.Item>
         <Space size={16} style={{ display: "flex" }}>
           <Form.Item name="sourceName" label="来源名称" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} /></Form.Item>
           <Form.Item name="sourceUrl" label="来源链接" style={{ flex: 1 }} rules={[{ type: "url", message: "请输入完整 https:// 链接" }]}><Input maxLength={500} disabled={!canEdit} /></Form.Item>
