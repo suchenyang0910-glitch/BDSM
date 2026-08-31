@@ -4,14 +4,20 @@ import { requireAdmin, type AdminSession } from "./admin.js";
 import { htmlToPlainText, sanitizeArticleHtml } from "../lib/articleHtml.js";
 
 const StatusZ = z.enum(["draft", "published", "archived"]);
+// Ant Design submits an untouched optional Input as an empty string. Normalize
+// it before validation so optional attribution fields are truly optional.
+const emptyStringToNull = <T extends z.ZodTypeAny>(schema: T) => z.preprocess(
+  (value) => typeof value === "string" && !value.trim() ? null : value,
+  schema,
+);
 const ArticleInputZ = z.object({
   slug: z.string().trim().toLowerCase().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(160),
   title: z.string().trim().min(2).max(160),
   summary: z.string().trim().min(10).max(500),
   bodyHtml: z.string().trim().min(20).max(50_000),
   coverImageUrl: z.string().trim().url().max(500).nullable().optional(),
-  sourceName: z.string().trim().max(120).nullable().optional(),
-  sourceUrl: z.string().trim().url().max(500).nullable().optional(),
+  sourceName: emptyStringToNull(z.string().trim().max(120).nullable().optional()),
+  sourceUrl: emptyStringToNull(z.string().trim().url().max(500).nullable().optional()),
   topics: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
   seoTitle: z.string().trim().max(160).nullable().optional(),
   seoDescription: z.string().trim().max(300).nullable().optional(),
