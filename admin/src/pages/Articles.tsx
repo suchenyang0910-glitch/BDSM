@@ -109,6 +109,30 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const [markdown, setMarkdown] = React.useState("");
   const [richPasteHtml, setRichPasteHtml] = React.useState("");
   const [hasSelectedImage, setHasSelectedImage] = React.useState(false);
+  const captureCaret = (): { path: number[]; offset: number } | null => {
+    const root = editorRef.current;
+    const selection = window.getSelection();
+    if (!root || !selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    if (!root.contains(range.startContainer)) return null;
+    const path: number[] = [];
+    let node: Node = range.startContainer;
+    while (node !== root && node.parentNode) { path.unshift(Array.prototype.indexOf.call(node.parentNode.childNodes, node)); node = node.parentNode; }
+    return node === root ? { path, offset: range.startOffset } : null;
+  };
+  const restoreCaret = (caret: { path: number[]; offset: number } | null) => {
+    const root = editorRef.current;
+    if (!root || !caret) return;
+    let node: Node = root;
+    for (const index of caret.path) { if (!node.childNodes[index]) return; node = node.childNodes[index]; }
+    const maxOffset = node.nodeType === Node.TEXT_NODE ? (node.textContent || "").length : node.childNodes.length;
+    const range = document.createRange();
+    range.setStart(node, Math.min(caret.offset, maxOffset));
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  };
   const clearSelectedImage = () => {
     const previous = selectedImageRef.current;
     if (previous) { previous.style.removeProperty("outline"); previous.style.removeProperty("outline-offset"); }
@@ -132,8 +156,9 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     });
   };
   const emit = () => {
+    const caret = captureCaret();
     const safe = sanitizeEditorHtml(editorRef.current?.innerHTML || "");
-    if (editorRef.current && editorRef.current.innerHTML !== safe) editorRef.current.innerHTML = safe;
+    if (editorRef.current && editorRef.current.innerHTML !== safe) { editorRef.current.innerHTML = safe; restoreCaret(caret); }
     constrainImages();
     lastValue.current = safe;
     onChange?.(safe);
@@ -182,7 +207,12 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     </Space>
     {sourceMode
       ? <TextArea value={value} onChange={(event) => { lastValue.current = event.target.value; onChange?.(event.target.value); }} autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={disabled} spellCheck={false} />
-      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onClick={(event) => { const target = event.target; if (target instanceof HTMLImageElement) selectImage(target); else clearSelectedImage(); }} onKeyDown={(event) => { if ((event.key === "Delete" || event.key === "Backspace") && selectedImageRef.current) { event.preventDefault(); deleteSelectedImage(); } }} onPaste={(event) => {
+      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onClick={(event) => { const target = event.target; if (target instanceof HTMLImageElement) selectImage(target); else clearSelectedImage(); }} onKeyDown={(event) => {
+        if ((event.key === "Delete" || event.key === "Backspace") && selectedImageRef.current) { event.preventDefault(); deleteSelectedImage(); return; }
+        const selection = window.getSelection();
+        const selectedElement = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
+        if (event.key === "Enter" && !event.shiftKey && !selectedElement?.closest("li")) { event.preventDefault(); document.execCommand("insertHTML", false, "<p><br></p>"); emit(); }
+      }} onPaste={(event) => {
         const image = Array.from(event.clipboardData.items).map((item) => item.kind === "file" ? item.getAsFile() : null).find((file): file is File => !!file && /^image\//i.test(file.type));
         event.preventDefault();
         if (!image || !onPasteImage) { document.execCommand("insertText", false, event.clipboardData.getData("text/plain")); emit(); return; }
