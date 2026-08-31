@@ -16,6 +16,81 @@ const EMPTY: AdminArticleInput = {
 const statusLabel: Record<AdminArticleItem["status"], string> = { draft: "草稿", published: "已发布", archived: "已下线" };
 const statusColor: Record<AdminArticleItem["status"], string> = { draft: "default", published: "green", archived: "orange" };
 
+const EDITOR_TAGS = new Set(["P", "H2", "H3", "H4", "STRONG", "EM", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG"]);
+const VOID_EDITOR_TAGS = new Set(["BR", "HR", "IMG"]);
+
+function sanitizeEditorHtml(input: string): string {
+  const documentNode = new DOMParser().parseFromString(String(input || ""), "text/html");
+  const escapeText = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const walk = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return escapeText(node.textContent || "");
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const element = node as HTMLElement;
+    const tag = element.tagName.toUpperCase();
+    if (!EDITOR_TAGS.has(tag)) return Array.from(element.childNodes).map(walk).join("");
+    const lower = tag.toLowerCase();
+    if (tag === "A") {
+      const href = element.getAttribute("href") || "";
+      try { if (new URL(href).protocol === "https:") return `<a href="${href.replace(/\"/g, "&quot;")}" target="_blank" rel="noopener noreferrer">${Array.from(element.childNodes).map(walk).join("")}</a>`; } catch { /* invalid URLs are unlinked */ }
+      return Array.from(element.childNodes).map(walk).join("");
+    }
+    if (tag === "IMG") {
+      const src = element.getAttribute("src") || "";
+      try { if (new URL(src).protocol === "https:") return `<img src="${src.replace(/\"/g, "&quot;")}" alt="${(element.getAttribute("alt") || "文章配图").replace(/\"/g, "&quot;")}">`; } catch { return ""; }
+      return "";
+    }
+    const children = Array.from(element.childNodes).map(walk).join("");
+    return VOID_EDITOR_TAGS.has(tag) ? `<${lower}>` : `<${lower}>${children}</${lower}>`;
+  };
+  return Array.from(documentNode.body.childNodes).map(walk).join("");
+}
+
+const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) => void; disabled?: boolean }> = ({ value = "", onChange, disabled }) => {
+  const editorRef = React.useRef<HTMLDivElement | null>(null);
+  const lastValue = React.useRef("");
+  const [sourceMode, setSourceMode] = React.useState(false);
+  const emit = () => {
+    const safe = sanitizeEditorHtml(editorRef.current?.innerHTML || "");
+    if (editorRef.current && editorRef.current.innerHTML !== safe) editorRef.current.innerHTML = safe;
+    lastValue.current = safe;
+    onChange?.(safe);
+  };
+  React.useEffect(() => {
+    if (!sourceMode && editorRef.current && editorRef.current.innerHTML !== value) {
+      const safe = sanitizeEditorHtml(value);
+      editorRef.current.innerHTML = safe;
+      lastValue.current = safe;
+    }
+  }, [value, sourceMode]);
+  const command = (name: string, commandValue?: string) => {
+    if (disabled) return;
+    editorRef.current?.focus();
+    if (name === "link") {
+      const href = window.prompt("输入完整 HTTPS 链接");
+      if (!href) return;
+      try { if (new URL(href).protocol !== "https:") throw new Error("unsafe"); } catch { message.error("仅支持 HTTPS 链接"); return; }
+      document.execCommand("createLink", false, href);
+    } else document.execCommand(name, false, commandValue);
+    emit();
+  };
+  return <div>
+    <Space wrap size={[6, 8]} style={{ marginBottom: 10 }}>
+      <Button size="small" onClick={() => command("formatBlock", "p")} disabled={disabled || sourceMode}>正文</Button>
+      <Button size="small" onClick={() => command("formatBlock", "h2")} disabled={disabled || sourceMode}>标题</Button>
+      <Button size="small" onClick={() => command("bold")} disabled={disabled || sourceMode}><strong>加粗</strong></Button>
+      <Button size="small" onClick={() => command("italic")} disabled={disabled || sourceMode}><em>斜体</em></Button>
+      <Button size="small" onClick={() => command("insertUnorderedList")} disabled={disabled || sourceMode}>列表</Button>
+      <Button size="small" onClick={() => command("insertOrderedList")} disabled={disabled || sourceMode}>编号</Button>
+      <Button size="small" onClick={() => command("formatBlock", "blockquote")} disabled={disabled || sourceMode}>引用</Button>
+      <Button size="small" onClick={() => command("link")} disabled={disabled || sourceMode}>链接</Button>
+      <Button size="small" type={sourceMode ? "primary" : "default"} onClick={() => { if (!sourceMode) emit(); setSourceMode((open) => !open); }}>{sourceMode ? "可视化编辑" : "HTML 源码"}</Button>
+    </Space>
+    {sourceMode
+      ? <TextArea value={value} onChange={(event) => { lastValue.current = event.target.value; onChange?.(event.target.value); }} autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={disabled} spellCheck={false} />
+      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onPaste={(event) => { event.preventDefault(); document.execCommand("insertText", false, event.clipboardData.getData("text/plain")); emit(); }} style={{ minHeight: 440, padding: 16, border: "1px solid #d9d9d9", borderRadius: 8, lineHeight: 1.8, outline: "none" }} />}
+  </div>;
+};
+
 const ArticlesPage: React.FC = () => {
   const [form] = Form.useForm<AdminArticleInput>();
   const [rows, setRows] = React.useState<AdminArticleItem[]>([]);
@@ -153,7 +228,7 @@ const ArticlesPage: React.FC = () => {
         <Form.Item name="summary" label="摘要" rules={[{ required: true, min: 10, max: 500 }]}><TextArea rows={3} maxLength={500} disabled={!canEdit} /></Form.Item>
         <Form.Item name="coverImageUrl" label="文章封面图片" extra={<Space direction="vertical" size={6}><Text type="secondary">建议 16:9、最小 1600×900。封面会显示在文章列表与详情顶部。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "cover")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传封面图片</Button></Upload></Space>}><Input placeholder="上传后自动填写，也可填写 HTTPS 图片地址" disabled={!canEdit} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.coverImageUrl !== current.coverImageUrl}>{() => form.getFieldValue("coverImageUrl") ? <img src={form.getFieldValue("coverImageUrl")} alt="文章封面预览" style={{ width: "100%", maxWidth: 480, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 10, marginBottom: 18 }} /> : null}</Form.Item>
-        <Form.Item name="bodyHtml" label="正文 HTML" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">可用标签：h2、h3、p、strong、em、ul、ol、li、blockquote、a、figure、img、figcaption、br、hr。图片会插入正文末尾，可剪切调整。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><TextArea autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={!canEdit} spellCheck={false} /></Form.Item>
+        <Form.Item name="bodyHtml" label="正文编辑器" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">支持可视化排版与 HTML 源码切换。正文图片会插入末尾，可在编辑器中剪切到目标段落。保存时服务端再次过滤危险内容。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><RichArticleEditor disabled={!canEdit} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.bodyHtml !== current.bodyHtml}>{() => <><Divider orientation="left">HTML 安全预览</Divider><iframe title="文章 HTML 预览" sandbox="" style={{ width: "100%", minHeight: 320, border: "1px solid #eee", borderRadius: 10 }} srcDoc={`<style>body{font-family:system-ui,sans-serif;line-height:1.75;padding:20px;color:#211c2d}img{max-width:100%;height:auto;border-radius:12px}figure{margin:20px 0}figcaption{color:#716b7d;font-size:13px;text-align:center}blockquote{margin:18px 0;padding:12px 16px;border-left:3px solid #8d52ff;background:#f6f1ff}a{color:#6d3ae8}</style>${String(form.getFieldValue("bodyHtml") || "")}`} /></>}</Form.Item>
         <Space size={16} style={{ display: "flex" }}>
           <Form.Item name="sourceName" label="来源名称（选填）" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} placeholder="填写后才会在文章正文底部展示" /></Form.Item>
