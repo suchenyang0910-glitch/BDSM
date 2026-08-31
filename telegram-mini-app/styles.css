@@ -1144,6 +1144,13 @@ img.is-image-unavailable {
 .article-detail-shell h3,
 .article-detail-shell p { margin: 0; }
 
+/* Keep article headings readable on the dark card surface instead of falling
+   back to a browser button text colour. */
+.article-intro h2,
+.article-card h3,
+.article-detail-shell h2,
+.article-detail-shell h3 { color: #fff; }
+
 .article-list { display: grid; gap: 12px; }
 
 .article-card {
@@ -1155,6 +1162,26 @@ img.is-image-unavailable {
   color: var(--text-primary);
   text-align: left;
 }
+
+.article-card-cover,
+.article-detail-cover {
+  width: 100%;
+  object-fit: cover;
+  border-radius: 12px;
+  background: var(--bg-page);
+}
+
+.article-card-cover { aspect-ratio: 16 / 9; }
+.article-detail-cover { aspect-ratio: 16 / 9; max-height: 520px; }
+.article-html-body { display: grid; gap: 14px; line-height: 1.8; }
+.article-html-body > * { margin: 0; }
+.article-html-body h2, .article-html-body h3 { margin-top: 10px; }
+.article-html-body ul, .article-html-body ol { margin: 0; padding-left: 22px; }
+.article-html-body blockquote { margin: 0; padding: 12px 14px; border-left: 3px solid var(--brand-primary); border-radius: 0 10px 10px 0; background: rgba(169, 104, 255, .1); }
+.article-html-body figure { display: grid; gap: 8px; margin: 0; }
+.article-html-body figure img { width: 100%; max-height: 520px; object-fit: contain; border-radius: 12px; background: var(--bg-page); }
+.article-html-body figcaption { color: var(--text-secondary); font-size: 12px; text-align: center; }
+.article-html-body a { color: var(--brand-primary); font-weight: 700; }
 
 .article-card-top,
 .article-detail-meta,
