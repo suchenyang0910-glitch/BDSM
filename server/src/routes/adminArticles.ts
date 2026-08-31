@@ -1,0 +1,137 @@
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
+import { requireAdmin, type AdminSession } from "./admin.js";
+
+const StatusZ = z.enum(["draft", "published", "archived"]);
+const ArticleInputZ = z.object({
+  slug: z.string().trim().toLowerCase().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(160),
+  title: z.string().trim().min(2).max(160),
+  summary: z.string().trim().min(10).max(500),
+  bodyMarkdown: z.string().trim().min(20).max(50_000),
+  sourceName: z.string().trim().max(120).nullable().optional(),
+  sourceUrl: z.string().trim().url().max(500).nullable().optional(),
+  topics: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
+  seoTitle: z.string().trim().max(160).nullable().optional(),
+  seoDescription: z.string().trim().max(300).nullable().optional(),
+  seoKeywords: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
+  geoKeywords: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
+  status: StatusZ.optional(),
+  reason: z.string().trim().max(500).optional(),
+});
+
+function meta(req: FastifyRequest) {
+  const session = (req as any).admin as AdminSession;
+  return { adminId: session.adminId, ip: (req.ip as string) || null, ua: (req.headers["user-agent"] as string) || null };
+}
+
+function publicShape(row: any) {
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    summary: row.summary,
+    bodyMarkdown: row.bodyMarkdown,
+    sourceName: row.sourceName,
+    sourceUrl: row.sourceUrl,
+    topics: row.topics || [],
+    seoTitle: row.seoTitle,
+    seoDescription: row.seoDescription,
+    seoKeywords: row.seoKeywords || [],
+    geoKeywords: row.geoKeywords || [],
+    status: row.status,
+    publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+async function audit(prisma: any, req: FastifyRequest, action: string, articleId: string, before: any, after: any, reason?: string) {
+  const actor = meta(req);
+  await prisma.adminAuditLog.create({
+    data: {
+      adminId: actor.adminId,
+      action,
+      objectType: "article",
+      objectId: articleId,
+      beforeValue: before,
+      afterValue: after,
+      reason: reason || null,
+      ipAddress: actor.ip,
+      userAgent: actor.ua,
+    },
+  });
+}
+
+export default async function adminArticleRoutes(fastify: FastifyInstance) {
+  const prisma = (fastify as any).prisma;
+
+  fastify.get("/admin/articles", { preHandler: [requireAdmin("content:view")] }, async () => {
+    const rows = await prisma.article.findMany({ orderBy: [{ updatedAt: "desc" }] });
+    return { items: rows.map(publicShape) };
+  });
+
+  fastify.post("/admin/articles", { preHandler: [requireAdmin("content:edit")] }, async (req, reply) => {
+    const parsed = ArticleInputZ.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_article_input", details: parsed.error.issues });
+    const { reason, ...input } = parsed.data;
+    const actor = meta(req);
+    const created = await prisma.article.create({
+      data: {
+        ...input,
+        sourceName: input.sourceName || null,
+        sourceUrl: input.sourceUrl || null,
+        seoTitle: input.seoTitle || null,
+        seoDescription: input.seoDescription || null,
+        createdBy: actor.adminId,
+        updatedBy: actor.adminId,
+        status: input.status || "draft",
+        publishedAt: input.status === "published" ? new Date() : null,
+      },
+    });
+    await audit(prisma, req, "article.create", created.id, null, publicShape(created), reason);
+    return reply.code(201).send({ ok: true, article: publicShape(created) });
+  });
+
+  fastify.patch<{ Params: { id: string } }>("/admin/articles/:id", { preHandler: [requireAdmin("content:edit")] }, async (req, reply) => {
+    const parsed = ArticleInputZ.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_article_input", details: parsed.error.issues });
+    const before = await prisma.article.findUnique({ where: { id: req.params.id } });
+    if (!before) return reply.code(404).send({ error: "article_not_found", message: "文章不存在。" });
+    const { reason, ...input } = parsed.data;
+    const actor = meta(req);
+    const status = input.status || before.status;
+    const after = await prisma.article.update({
+      where: { id: before.id },
+      data: {
+        ...input,
+        sourceName: input.sourceName || null,
+        sourceUrl: input.sourceUrl || null,
+        seoTitle: input.seoTitle || null,
+        seoDescription: input.seoDescription || null,
+        status,
+        publishedAt: status === "published" ? (before.publishedAt || new Date()) : null,
+        updatedBy: actor.adminId,
+      },
+    });
+    await audit(prisma, req, "article.update", after.id, publicShape(before), publicShape(after), reason);
+    return { ok: true, article: publicShape(after) };
+  });
+
+  fastify.post<{ Params: { id: string } }>("/admin/articles/:id/publish", { preHandler: [requireAdmin("content:publish")] }, async (req, reply) => {
+    const before = await prisma.article.findUnique({ where: { id: req.params.id } });
+    if (!before) return reply.code(404).send({ error: "article_not_found", message: "文章不存在。" });
+    const actor = meta(req);
+    const after = await prisma.article.update({ where: { id: before.id }, data: { status: "published", publishedAt: before.publishedAt || new Date(), updatedBy: actor.adminId } });
+    await audit(prisma, req, "article.publish", after.id, publicShape(before), publicShape(after));
+    return { ok: true, article: publicShape(after) };
+  });
+
+  fastify.post<{ Params: { id: string } }>("/admin/articles/:id/archive", { preHandler: [requireAdmin("content:publish")] }, async (req, reply) => {
+    const before = await prisma.article.findUnique({ where: { id: req.params.id } });
+    if (!before) return reply.code(404).send({ error: "article_not_found", message: "文章不存在。" });
+    const actor = meta(req);
+    const after = await prisma.article.update({ where: { id: before.id }, data: { status: "archived", updatedBy: actor.adminId } });
+    await audit(prisma, req, "article.archive", after.id, publicShape(before), publicShape(after));
+    return { ok: true, article: publicShape(after) };
+  });
+}

@@ -62,6 +62,8 @@ import type {
   AdminDashboardSummary,
   FreeChannelOption,
   PlatformMetadata,
+  AdminArticleItem,
+  AdminArticleInput,
   PublishVideoInput,
   PublishVideoResult,
   RegisterTelegramPublishInput,
@@ -326,6 +328,34 @@ export async function listAdminPackages(): Promise<{ data: AdminPackageItem[] }>
 
 export async function getAdminAnalyticsOverview(preset: "7d" | "30d" = "7d"): Promise<AdminAnalyticsOverview> {
   const res = await http.get("/admin/analytics/overview", { params: { preset } });
+  return res.data;
+}
+
+// ===========================================================================
+// CMS: Articles
+// ===========================================================================
+export async function listAdminArticles(): Promise<{ items: AdminArticleItem[] }> {
+  const res = await http.get("/admin/articles");
+  return res.data;
+}
+
+export async function createAdminArticle(input: AdminArticleInput): Promise<{ ok: true; article: AdminArticleItem }> {
+  const res = await http.post("/admin/articles", input);
+  return res.data;
+}
+
+export async function updateAdminArticle(id: string, input: AdminArticleInput): Promise<{ ok: true; article: AdminArticleItem }> {
+  const res = await http.patch(`/admin/articles/${encodeURIComponent(id)}`, input);
+  return res.data;
+}
+
+export async function publishAdminArticle(id: string): Promise<{ ok: true; article: AdminArticleItem }> {
+  const res = await http.post(`/admin/articles/${encodeURIComponent(id)}/publish`);
+  return res.data;
+}
+
+export async function archiveAdminArticle(id: string): Promise<{ ok: true; article: AdminArticleItem }> {
+  const res = await http.post(`/admin/articles/${encodeURIComponent(id)}/archive`);
   return res.data;
 }
 

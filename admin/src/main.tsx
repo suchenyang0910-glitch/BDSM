@@ -24,6 +24,7 @@ import AnalyticsPage from "./pages/Analytics";
 import TrafficEntriesPage from "./pages/TrafficEntries";
 import FinanceCenterPage from "./pages/FinanceCenter";
 import CampaignsPage from "./pages/Campaigns";
+import ArticlesPage from "./pages/Articles";
 import "dayjs/locale/zh-cn";
 import dayjs from "dayjs";
 
@@ -65,6 +66,7 @@ const App: React.FC = () => (
               <Route path="/users" element={<UsersPage />} />
               <Route path="/tickets" element={<SupportTicketsPage />} />
               <Route path="/contents" element={<ContentsPage />} />
+              <Route path="/articles" element={<ArticlesPage />} />
               <Route path="/packages" element={<PackagesPage />} />
               <Route path="/categories" element={<CategoriesPage />} />
               <Route path="/banners" element={<BannersPage />} />

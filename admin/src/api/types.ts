@@ -329,6 +329,43 @@ export type PlatformMetadata = {
   updatedBy: string | null;
 };
 
+export type AdminArticleStatus = "draft" | "published" | "archived";
+
+export type AdminArticleItem = {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  bodyMarkdown: string;
+  sourceName: string | null;
+  sourceUrl: string | null;
+  topics: string[];
+  seoTitle: string | null;
+  seoDescription: string | null;
+  seoKeywords: string[];
+  geoKeywords: string[];
+  status: AdminArticleStatus;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AdminArticleInput = {
+  slug: string;
+  title: string;
+  summary: string;
+  bodyMarkdown: string;
+  sourceName?: string | null;
+  sourceUrl?: string | null;
+  topics?: string[];
+  seoTitle?: string | null;
+  seoDescription?: string | null;
+  seoKeywords?: string[];
+  geoKeywords?: string[];
+  status?: AdminArticleStatus;
+  reason?: string;
+};
+
 export type ContentItem = {
   id: string;
   title: string;

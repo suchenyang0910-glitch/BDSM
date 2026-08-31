@@ -29,6 +29,7 @@ import playbackRoutes from "./routes/playback.js";
 import playbackMediaRoutes from "./routes/playbackMedia.js";
 import publicSeoRoutes from "./routes/publicSeo.js";
 import articleRoutes from "./routes/articles.js";
+import adminArticleRoutes from "./routes/adminArticles.js";
 import { botSelfTest, TELEGRAM_CONFIG } from "./services/telegramBot.js";
 import { startEntitlementsCron } from "./services/entitlementsCron.js";
 import { startUploadSessionCleanupCron } from "./services/uploadSessionCleanup.js";
@@ -336,6 +337,7 @@ async function main() {
   await app.register(telegramWebhookRoutes, { prefix: "" });
   await app.register(homeRoutes, { prefix: "/api" });
   await app.register(articleRoutes, { prefix: "/api" });
+  await app.register(adminArticleRoutes, { prefix: "/api" });
   await app.register(contentRoutes, { prefix: "/api" });
   await app.register(resourceRoutes, { prefix: "/api" });
   await app.register(orderRoutes, { prefix: "/api" });

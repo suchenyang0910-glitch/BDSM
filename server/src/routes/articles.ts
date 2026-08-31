@@ -56,14 +56,66 @@ const ARTICLES: Article[] = raw.map(function ([path, title, summary, publishedAt
   };
 });
 
+function toSections(bodyMarkdown: string): Array<{ heading: string; body: string }> {
+  const paragraphs = String(bodyMarkdown || "").split(/\r?\n\s*\r?\n/).map((part) => part.trim()).filter(Boolean);
+  return paragraphs.map((body, index) => ({ heading: index === 0 ? "正文" : "继续阅读", body }));
+}
+
+function dbArticleToPublic(row: any): Article {
+  const publishedAt = row.publishedAt ? new Date(row.publishedAt).toISOString() : new Date(row.updatedAt || Date.now()).toISOString();
+  const topics = Array.isArray(row.topics) ? row.topics : [];
+  const summary = row.summary || "";
+  return {
+    slug: row.slug,
+    title: row.title,
+    summary,
+    publishedAt,
+    sourceUrl: row.sourceUrl || "",
+    sourceName: row.sourceName || "同频文章",
+    readingMinutes: Math.max(1, Math.ceil(String(row.bodyMarkdown || "").length / 420)),
+    topics,
+    seo: {
+      title: row.seoTitle || `${row.title}｜同频文章`,
+      description: row.seoDescription || summary,
+      keywords: Array.isArray(row.seoKeywords) && row.seoKeywords.length ? row.seoKeywords : topics,
+      geoKeywords: Array.isArray(row.geoKeywords) && row.geoKeywords.length ? row.geoKeywords : GEO,
+      robots: "index,follow,max-snippet:-1",
+    },
+    sections: toSections(row.bodyMarkdown),
+  };
+}
+
+async function publishedDbArticles(fastify: FastifyInstance): Promise<Article[]> {
+  try {
+    const rows = await (fastify as any).prisma.article.findMany({
+      where: { status: "published" },
+      orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
+    });
+    return rows.map(dbArticleToPublic);
+  } catch (error) {
+    // The static guide remains available during a rolling migration or on a read-only preview database.
+    fastify.log.warn({ err: error }, "published article query unavailable; using static article guide only");
+    return [];
+  }
+}
+
+async function visibleArticles(fastify: FastifyInstance): Promise<Article[]> {
+  const managed = await publishedDbArticles(fastify);
+  const managedSlugs = new Set(managed.map((item) => item.slug));
+  return managed.concat(ARTICLES.filter((item) => !managedSlugs.has(item.slug)));
+}
+
 export default async function articleRoutes(fastify: FastifyInstance) {
-  fastify.get("/articles", async () => ({
-    items: ARTICLES.map(function ({ sections: _sections, ...item }) { return item; }),
-    total: ARTICLES.length,
-  }));
+  fastify.get("/articles", async () => {
+    const items = await visibleArticles(fastify);
+    return {
+      items: items.map(function ({ sections: _sections, ...item }) { return item; }),
+      total: items.length,
+    };
+  });
 
   fastify.get<{ Params: { slug: string } }>("/articles/:slug", async (request, reply) => {
-    const item = ARTICLES.find((article) => article.slug === request.params.slug);
+    const item = (await visibleArticles(fastify)).find((article) => article.slug === request.params.slug);
     if (!item) return reply.code(404).send({ error: "article_not_found", message: "文章不存在或已下线。" });
     return item;
   });

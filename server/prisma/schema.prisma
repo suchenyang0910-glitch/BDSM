@@ -62,6 +62,12 @@ enum HomepageVersionStatus {
   archived
 }
 
+enum ArticleStatus {
+  draft
+  published
+  archived
+}
+
 enum BannerStatus {
   draft
   scheduled
@@ -420,6 +426,30 @@ model PlatformMetadata {
   updatedBy        String?  @map("updated_by")
 
   @@map("platform_metadata")
+}
+
+model Article {
+  id            String        @id @default(uuid())
+  slug          String        @unique @db.VarChar(160)
+  title         String        @db.VarChar(160)
+  summary       String        @db.VarChar(500)
+  bodyMarkdown  String        @map("body_markdown") @db.Text
+  sourceName    String?       @map("source_name") @db.VarChar(120)
+  sourceUrl     String?       @map("source_url") @db.VarChar(500)
+  topics        String[]      @default([])
+  seoTitle      String?       @map("seo_title") @db.VarChar(160)
+  seoDescription String?      @map("seo_description") @db.VarChar(300)
+  seoKeywords   String[]      @default([]) @map("seo_keywords")
+  geoKeywords   String[]      @default([]) @map("geo_keywords")
+  status        ArticleStatus @default(draft)
+  publishedAt   DateTime?     @map("published_at")
+  createdBy     String?       @map("created_by")
+  updatedBy     String?       @map("updated_by")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  @@index([status, publishedAt])
+  @@map("articles")
 }
 
 model AnalyticsEvent {
