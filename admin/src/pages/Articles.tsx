@@ -123,6 +123,7 @@ const ArticlesPage: React.FC = () => {
   };
 
   const columns: ColumnsType<AdminArticleItem> = [
+    { title: "封面", dataIndex: "coverImageUrl", width: 128, render: (url: string | null, row) => url ? <img src={url} alt={`${row.title} 封面`} style={{ width: 96, height: 54, objectFit: "cover", borderRadius: 6 }} /> : <Text type="secondary">未设置</Text> },
     { title: "标题", dataIndex: "title", width: 260, render: (title, row) => <Space direction="vertical" size={0}><Text strong>{title}</Text><Text type="secondary">/{row.slug}</Text></Space> },
     { title: "状态", dataIndex: "status", width: 100, render: (status: AdminArticleItem["status"]) => <Tag color={statusColor[status]}>{statusLabel[status]}</Tag> },
     { title: "主题", dataIndex: "topics", render: (topics: string[]) => <Space size={[4, 4]} wrap>{topics.slice(0, 4).map((topic) => <Tag key={topic}>{topic}</Tag>)}</Space> },
