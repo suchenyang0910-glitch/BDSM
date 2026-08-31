@@ -112,6 +112,9 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
     const before = await prisma.article.findUnique({ where: { id: req.params.id } });
     if (!before) return reply.code(404).send({ error: "article_not_found", message: "文章不存在。" });
     const { reason, bodyHtml, coverImageUrl, ...input } = parsed.data;
+    if (before.status === "published" && input.slug !== before.slug) {
+      return reply.code(409).send({ error: "article_slug_locked", message: "文章已发布，URL 标识已锁定，避免既有分享链接失效。" });
+    }
     const safeHtml = sanitizeArticleHtml(bodyHtml);
     if (htmlToPlainText(safeHtml).length < 20) return reply.code(400).send({ error: "invalid_article_html", message: "正文 HTML 不包含足够的可读内容。" });
     const actor = meta(req);

@@ -15,6 +15,7 @@ const EMPTY: AdminArticleInput = {
 
 const statusLabel: Record<AdminArticleItem["status"], string> = { draft: "草稿", published: "已发布", archived: "已下线" };
 const statusColor: Record<AdminArticleItem["status"], string> = { draft: "default", published: "green", archived: "orange" };
+const articlePublicUrl = (slug: string) => `${window.location.origin}/#view=article&id=${encodeURIComponent(slug)}&from=articles`;
 
 const EDITOR_TAGS = new Set(["P", "H2", "H3", "H4", "STRONG", "EM", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD"]);
 const VOID_EDITOR_TAGS = new Set(["BR", "HR", "IMG"]);
@@ -258,6 +259,11 @@ const ArticlesPage: React.FC = () => {
     try { await publishAdminArticle(article.id); message.success("文章已发布，前台文章页将显示它"); await load(); }
     catch (error) { message.error(errMsg(error, "发布文章失败")); }
   };
+  const copyArticleLink = async (slug: string) => {
+    const url = articlePublicUrl(slug);
+    try { await navigator.clipboard.writeText(url); message.success("前台文章链接已复制"); }
+    catch { window.prompt("复制前台文章链接", url); }
+  };
   const archive = async (article: AdminArticleItem) => {
     try { await archiveAdminArticle(article.id); message.success("文章已下线"); await load(); }
     catch (error) { message.error(errMsg(error, "下线文章失败")); }
@@ -322,8 +328,10 @@ const ArticlesPage: React.FC = () => {
     { title: "状态", dataIndex: "status", width: 100, render: (status: AdminArticleItem["status"]) => <Tag color={statusColor[status]}>{statusLabel[status]}</Tag> },
     { title: "主题", dataIndex: "topics", render: (topics: string[]) => <Space size={[4, 4]} wrap>{topics.slice(0, 4).map((topic) => <Tag key={topic}>{topic}</Tag>)}</Space> },
     { title: "更新时间", dataIndex: "updatedAt", width: 180, render: (time) => new Date(time).toLocaleString("zh-CN", { hour12: false }) },
-    { title: "操作", width: 220, render: (_, row) => <Space wrap>
+    { title: "操作", width: 300, render: (_, row) => <Space wrap>
       <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)}>编辑</Button>
+      <Button size="small" onClick={() => window.open(articlePublicUrl(row.slug), "_blank", "noopener,noreferrer")}>打开前台</Button>
+      <Button size="small" onClick={() => void copyArticleLink(row.slug)}>复制链接</Button>
       {row.status !== "published" && <Button size="small" type="primary" disabled={!canPublish} onClick={() => publish(row)}>发布</Button>}
       {row.status !== "archived" && <Popconfirm title="确认下线这篇文章？" onConfirm={() => archive(row)}><Button size="small" danger disabled={!canPublish}>下线</Button></Popconfirm>}
     </Space> },
@@ -342,7 +350,11 @@ const ArticlesPage: React.FC = () => {
     </Card>
     <Drawer title={editing ? "编辑文章" : "新建文章"} width={980} open={drawerOpen} onClose={() => setDrawerOpen(false)} extra={<Button type="primary" loading={saving} onClick={save}>保存</Button>}>
       <Form form={form} layout="vertical" initialValues={EMPTY} preserve={false}>
-        <Form.Item name="slug" label="URL 标识" rules={[{ required: true, pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/, message: "仅小写英文、数字与连字符，例如 bdsm-safety-guide" }]}><Input maxLength={160} disabled={!canEdit} /></Form.Item>
+        <Form.Item name="slug" label="文章链接标识" extra={editing?.status === "published" ? "已发布文章的标识已锁定，确保已分享的链接持续有效。" : "保存草稿时可调整；发布后会锁定，形成稳定前台链接。"} rules={[{ required: true, pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/, message: "仅小写英文、数字与连字符，例如 bdsm-safety-guide" }]}><Input maxLength={160} disabled={!canEdit || editing?.status === "published"} /></Form.Item>
+        <Form.Item noStyle shouldUpdate={(previous, current) => previous.slug !== current.slug}>{() => {
+          const slug = String(form.getFieldValue("slug") || "").trim();
+          return slug ? <Form.Item label="前台直达链接"><Space.Compact style={{ width: "100%" }}><Input readOnly value={articlePublicUrl(slug)} /><Button onClick={() => void copyArticleLink(slug)}>复制</Button><Button onClick={() => window.open(articlePublicUrl(slug), "_blank", "noopener,noreferrer")}>打开</Button></Space.Compact></Form.Item> : null;
+        }}</Form.Item>
         <Form.Item name="title" label="文章标题" rules={[{ required: true, min: 2, max: 160 }]}><Input maxLength={160} disabled={!canEdit} /></Form.Item>
         <Form.Item name="summary" label="摘要" rules={[{ required: true, min: 10, max: 500 }]}><TextArea rows={3} maxLength={500} disabled={!canEdit} /></Form.Item>
         <Form.Item name="coverImageUrl" label="文章封面图片" extra={<Space direction="vertical" size={6}><Text type="secondary">建议 16:9、最小 1600×900。封面会显示在文章列表与详情顶部。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "cover")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传封面图片</Button></Upload></Space>}><Input placeholder="上传后自动填写，也可填写 HTTPS 图片地址" disabled={!canEdit} /></Form.Item>
