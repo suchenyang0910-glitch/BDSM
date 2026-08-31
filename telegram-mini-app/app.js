@@ -2070,16 +2070,16 @@
     $("bottomNav").classList.toggle("is-hidden", isDetail || isArticle || isHistory);
     $("appHeader").classList.toggle("is-home", isHome);
     $("appHeader").classList.toggle("is-article-detail", isArticle);
-    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "文章详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]));
+    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]));
     $("headerSubtitle").textContent = isDetail
       ? "查看权益与购买方式"
       : isArticle
-        ? "中文导读与原始来源"
+        ? ""
       : isHistory
         ? "按最近播放时间排序，可删除单条或清空记录"
       : (isHome ? "真实表达，在理解与边界中被看见" : titleMap[routeState.tab][1]);
-    $("headerSubtitle").hidden = false;
-    $("headerEyebrow").hidden = isHome;
+    $("headerSubtitle").hidden = isArticle;
+    $("headerEyebrow").hidden = isHome || isArticle;
 
     ["home", "library", "articles", "me"].forEach(function (tab) {
       $(tab + "View").classList.toggle("is-hidden", isDetail || isArticle || isHistory || routeState.tab !== tab);

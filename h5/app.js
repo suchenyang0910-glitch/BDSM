@@ -2909,18 +2909,18 @@
     $("bottomNav").classList.toggle("is-hidden", isDetail || isArticle || isHistory || isWallet);
     $("appHeader").classList.toggle("is-home", isHome);
     $("appHeader").classList.toggle("is-article-detail", isArticle);
-    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "文章详情" : (isHistory ? "观看历史" : (isWallet ? "支付与账单" : titleMap[routeState.tab][0])));
+    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "" : (isHistory ? "观看历史" : (isWallet ? "支付与账单" : titleMap[routeState.tab][0])));
     $("headerSubtitle").textContent = isDetail
       ? "试看后可直接解锁完整内容"
       : isArticle
-        ? "中文导读与原始来源"
+        ? ""
       : isHistory
         ? "按最近播放时间排序，可删除单条或清空记录"
       : isWallet
         ? "查看会员状态、订单与支付记录"
         : titleMap[routeState.tab][1];
-    $("headerSubtitle").hidden = false;
-    $("headerEyebrow").hidden = isHome;
+    $("headerSubtitle").hidden = isArticle;
+    $("headerEyebrow").hidden = isHome || isArticle;
 
     ["home", "library", "articles", "me"].forEach(function (tab) {
       $(tab + "View").classList.toggle("is-hidden", isDetail || isArticle || isHistory || isWallet || routeState.tab !== tab);
