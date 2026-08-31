@@ -47,10 +47,14 @@ function sanitizeEditorHtml(input: string): string {
 
 function markdownToHtml(markdown: string): string {
   const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const inline = (value: string) => escape(value)
+  const inline = (value: string) => escape(value.trim().replace(/\\$/, ""))
+    .replace(/!\[([^\]]*)\]\((https:\/\/[^\s)]+)\)/g, '<img src="$2" alt="$1">')
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\*([^*]+)\*/g, "<em>$1</em>")
     .replace(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  const hardBreak = (value: string) => /\\\s*$/.test(value);
+  const isListLine = (value: string) => /^[-*+]\s+|^\d+[.)]\s+/.test(value.trim());
+  const isBlockStart = (value: string) => /^(#{1,4})\s|^>\s?|^[-*+]\s+|^\d+[.)]\s+|^---+$/.test(value.trim());
   const cells = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
   const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
   const blocks: string[] = [];
@@ -68,12 +72,29 @@ function markdownToHtml(markdown: string): string {
     const heading = /^(#{1,4})\s+(.+)$/.exec(line);
     if (heading) { const level = Math.max(2, heading[1].length); blocks.push(`<h${level}>${inline(heading[2])}</h${level}>`); index += 1; continue; }
     if (/^---+$/.test(line)) { blocks.push("<hr>"); index += 1; continue; }
-    if (/^>\s?/.test(line)) { const quote: string[] = []; while (index < lines.length && /^>\s?/.test(lines[index].trim())) { quote.push(lines[index].trim().replace(/^>\s?/, "")); index += 1; } blocks.push(`<blockquote>${quote.map(inline).join("<br>")}</blockquote>`); continue; }
-    if (/^[-*+]\s+/.test(line)) { const items: string[] = []; while (index < lines.length && /^[-*+]\s+/.test(lines[index].trim())) { items.push(lines[index].trim().replace(/^[-*+]\s+/, "")); index += 1; } blocks.push(`<ul>${items.map((item) => `<li>${inline(item)}</li>`).join("")}</ul>`); continue; }
-    if (/^\d+[.)]\s+/.test(line)) { const items: string[] = []; while (index < lines.length && /^\d+[.)]\s+/.test(lines[index].trim())) { items.push(lines[index].trim().replace(/^\d+[.)]\s+/, "")); index += 1; } blocks.push(`<ol>${items.map((item) => `<li>${inline(item)}</li>`).join("")}</ol>`); continue; }
+    if (/^>\s?/.test(line)) {
+      const quote: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) { const raw = lines[index].trim().replace(/^>\s?/, ""); quote.push(inline(raw)); if (hardBreak(raw)) quote.push("<br>"); index += 1; }
+      blocks.push(`<blockquote>${quote.join("")}</blockquote>`); continue;
+    }
+    if (isListLine(line)) {
+      const ordered = /^\d+[.)]\s+/.test(line);
+      const itemPattern = ordered ? /^\d+[.)]\s+/ : /^[-*+]\s+/;
+      const items: string[] = [];
+      while (index < lines.length && itemPattern.test(lines[index].trim())) {
+        const itemLines: string[] = [];
+        let raw = lines[index].trim().replace(itemPattern, ""); itemLines.push(inline(raw)); index += 1;
+        while (index < lines.length && lines[index].trim() && !isListLine(lines[index]) && !isBlockStart(lines[index])) {
+          itemLines.push(hardBreak(raw) ? "<br>" : " ");
+          raw = lines[index].trim(); itemLines.push(inline(raw)); index += 1;
+        }
+        items.push(`<li>${itemLines.join("")}</li>`);
+      }
+      blocks.push(`<${ordered ? "ol" : "ul"}>${items.join("")}</${ordered ? "ol" : "ul"}>`); continue;
+    }
     const paragraph: string[] = [line]; index += 1;
-    while (index < lines.length && lines[index].trim() && !/^(#{1,4})\s|^>\s?|^[-*+]\s+|^\d+[.)]\s+|^---+$/.test(lines[index].trim())) { paragraph.push(lines[index].trim()); index += 1; }
-    blocks.push(`<p>${paragraph.map(inline).join("<br>")}</p>`);
+    while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index])) { paragraph.push(lines[index].trim()); index += 1; }
+    blocks.push(`<p>${paragraph.map((value, paragraphIndex) => `${paragraphIndex && hardBreak(paragraph[paragraphIndex - 1]) ? "<br>" : paragraphIndex ? " " : ""}${inline(value)}`).join("")}</p>`);
   }
   return sanitizeEditorHtml(blocks.join("\n"));
 }
@@ -84,6 +105,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const [sourceMode, setSourceMode] = React.useState(false);
   const [markdownOpen, setMarkdownOpen] = React.useState(false);
   const [markdown, setMarkdown] = React.useState("");
+  const [richPasteHtml, setRichPasteHtml] = React.useState("");
   const emit = () => {
     const safe = sanitizeEditorHtml(editorRef.current?.innerHTML || "");
     if (editorRef.current && editorRef.current.innerHTML !== safe) editorRef.current.innerHTML = safe;
@@ -137,9 +159,9 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
           emit();
         });
       }} style={{ minHeight: 440, padding: 16, border: "1px solid #d9d9d9", borderRadius: 8, lineHeight: 1.8, outline: "none" }} />}
-    <Modal title="导入 Markdown" open={markdownOpen} onCancel={() => setMarkdownOpen(false)} onOk={() => { const converted = markdownToHtml(markdown); lastValue.current = converted; onChange?.(converted); setSourceMode(false); setMarkdownOpen(false); message.success("Markdown 已转换为可视化文章，可继续编辑"); }} okText="转换并载入" cancelText="取消" okButtonProps={{ disabled: !markdown.trim() }}>
-      <Text type="secondary">将覆盖当前正文。支持标题、引用、列表、编号、分隔线、链接和 Markdown 表格。</Text>
-      <TextArea value={markdown} onChange={(event) => setMarkdown(event.target.value)} autoSize={{ minRows: 18, maxRows: 32 }} style={{ marginTop: 12 }} placeholder="# 文章标题\n\n正文…" spellCheck={false} />
+    <Modal title="导入 Markdown" open={markdownOpen} onCancel={() => { setRichPasteHtml(""); setMarkdownOpen(false); }} onOk={() => { const converted = richPasteHtml || markdownToHtml(markdown); lastValue.current = converted; onChange?.(converted); setSourceMode(false); setRichPasteHtml(""); setMarkdownOpen(false); message.success(richPasteHtml ? "已保留文章详情的标题、引用、列表与图片格式" : "Markdown 已转换为可视化文章，可继续编辑"); }} okText="转换并载入" cancelText="取消" okButtonProps={{ disabled: !markdown.trim() }}>
+      <Text type="secondary">将覆盖当前正文。支持标题、引用、列表、编号、强制换行、图片、链接和 Markdown 表格；直接从文章详情复制时会优先保留原有格式。</Text>
+      <TextArea value={markdown} onChange={(event) => { setRichPasteHtml(""); setMarkdown(event.target.value); }} onPaste={(event) => { const html = event.clipboardData.getData("text/html"); const safe = html ? sanitizeEditorHtml(html) : ""; if (!safe) return; event.preventDefault(); setRichPasteHtml(safe); setMarkdown(event.clipboardData.getData("text/plain")); message.success("已识别文章详情格式，导入时将保留排版"); }} autoSize={{ minRows: 18, maxRows: 32 }} style={{ marginTop: 12 }} placeholder="# 文章标题\n\n正文…" spellCheck={false} />
     </Modal>
   </div>;
 };
