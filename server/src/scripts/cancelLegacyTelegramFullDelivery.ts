@@ -1,9 +1,9 @@
 /**
  * One-time, idempotent release cleanup.
  *
- * Complete videos are delivered by Samewave controlled playback. Cancel only
- * unsent legacy Telegram full-video jobs; successful historical messages and
- * free-entry promotion jobs are deliberately left untouched.
+ * Complete videos are delivered by Samewave controlled playback. Cancel every
+ * unsent legacy Telegram full-video job, including previously exhausted jobs;
+ * successful historical messages and free-entry promotion jobs are untouched.
  */
 import { PrismaClient } from "@prisma/client";
 
@@ -14,7 +14,7 @@ async function main() {
   const result = await prisma.telegramPublishJob.updateMany({
     where: {
       channelKind: { in: ["membership_full", "package_full"] },
-      status: { in: ["queued", "failed", "processing"] },
+      status: { notIn: ["sent", "cancelled"] },
       sentAt: null,
     },
     data: {
