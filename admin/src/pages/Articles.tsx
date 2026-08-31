@@ -206,9 +206,8 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     rememberSelectedText();
     emit();
   };
-  const preserveSelectedText = (event: React.PointerEvent<HTMLElement>) => {
+  const preserveSelectedText = () => {
     rememberSelectedText();
-    event.preventDefault();
   };
   const deleteSelectedImage = () => {
     if (disabled || !selectedImageRef.current) return;
