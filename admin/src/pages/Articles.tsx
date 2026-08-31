@@ -101,11 +101,30 @@ function markdownToHtml(markdown: string): string {
 
 const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) => void; disabled?: boolean; onPasteImage?: (file: File) => Promise<string | null> }> = ({ value = "", onChange, disabled, onPasteImage }) => {
   const editorRef = React.useRef<HTMLDivElement | null>(null);
+  const selectedImageRef = React.useRef<HTMLImageElement | null>(null);
   const lastValue = React.useRef("");
   const [sourceMode, setSourceMode] = React.useState(false);
   const [markdownOpen, setMarkdownOpen] = React.useState(false);
   const [markdown, setMarkdown] = React.useState("");
   const [richPasteHtml, setRichPasteHtml] = React.useState("");
+  const [hasSelectedImage, setHasSelectedImage] = React.useState(false);
+  const clearSelectedImage = () => {
+    const previous = selectedImageRef.current;
+    if (previous) { previous.style.removeProperty("outline"); previous.style.removeProperty("outline-offset"); }
+    selectedImageRef.current = null;
+    setHasSelectedImage(false);
+  };
+  const selectImage = (image: HTMLImageElement) => {
+    clearSelectedImage();
+    selectedImageRef.current = image;
+    Object.assign(image.style, { outline: "3px solid #8d52ff", outlineOffset: "3px" });
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNode(image);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    setHasSelectedImage(true);
+  };
   const constrainImages = () => {
     editorRef.current?.querySelectorAll("img").forEach((image) => {
       Object.assign((image as HTMLElement).style, { maxWidth: "100%", height: "auto", display: "block", boxSizing: "border-box" });
@@ -137,6 +156,15 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     } else document.execCommand(name, false, commandValue);
     emit();
   };
+  const deleteSelectedImage = () => {
+    if (disabled || !selectedImageRef.current) return;
+    const image = selectedImageRef.current;
+    const figure = image.closest("figure");
+    (figure || image).remove();
+    clearSelectedImage();
+    emit();
+    message.success("图片已从正文删除");
+  };
   return <div>
     <Space wrap size={[6, 8]} style={{ marginBottom: 10 }}>
       <Button size="small" onClick={() => command("formatBlock", "p")} disabled={disabled || sourceMode}>正文</Button>
@@ -147,12 +175,13 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
       <Button size="small" onClick={() => command("insertOrderedList")} disabled={disabled || sourceMode}>编号</Button>
       <Button size="small" onClick={() => command("formatBlock", "blockquote")} disabled={disabled || sourceMode}>引用</Button>
       <Button size="small" onClick={() => command("link")} disabled={disabled || sourceMode}>链接</Button>
+      <Button size="small" danger onClick={deleteSelectedImage} disabled={disabled || sourceMode || !hasSelectedImage}>删除选中图片</Button>
       <Button size="small" onClick={() => setMarkdownOpen(true)} disabled={disabled}>导入 Markdown</Button>
       <Button size="small" type={sourceMode ? "primary" : "default"} onClick={() => { if (!sourceMode) emit(); setSourceMode((open) => !open); }}>{sourceMode ? "可视化编辑" : "HTML 源码"}</Button>
     </Space>
     {sourceMode
       ? <TextArea value={value} onChange={(event) => { lastValue.current = event.target.value; onChange?.(event.target.value); }} autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={disabled} spellCheck={false} />
-      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onPaste={(event) => {
+      : <div ref={editorRef} contentEditable={!disabled} suppressContentEditableWarning onInput={emit} onClick={(event) => { const target = event.target; if (target instanceof HTMLImageElement) selectImage(target); else clearSelectedImage(); }} onKeyDown={(event) => { if ((event.key === "Delete" || event.key === "Backspace") && selectedImageRef.current) { event.preventDefault(); deleteSelectedImage(); } }} onPaste={(event) => {
         const image = Array.from(event.clipboardData.items).map((item) => item.kind === "file" ? item.getAsFile() : null).find((file): file is File => !!file && /^image\//i.test(file.type));
         event.preventDefault();
         if (!image || !onPasteImage) { document.execCommand("insertText", false, event.clipboardData.getData("text/plain")); emit(); return; }
