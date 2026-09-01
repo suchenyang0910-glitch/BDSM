@@ -328,14 +328,22 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     }
     const blocks = selected.filter((block) => block.tagName !== "LI");
     if (!blocks.length || !blocks[0].parentNode) return false;
-    const list = document.createElement(tagName);
-    blocks[0].parentNode.insertBefore(list, blocks[0]);
+    // A new ordered-list command immediately after an existing list continues
+    // its numbering. A standalone list remains a fresh list starting at 1.
+    const previous = blocks[0].previousElementSibling;
+    const list = previous?.tagName.toLowerCase() === tagName ? previous as HTMLElement : document.createElement(tagName);
+    if (!previous || list !== previous) blocks[0].parentNode.insertBefore(list, blocks[0]);
     blocks.forEach((block) => {
       const item = document.createElement("li");
       item.innerHTML = block.innerHTML;
       list.appendChild(item);
       block.remove();
     });
+    const next = list.nextElementSibling;
+    if (next?.tagName.toLowerCase() === tagName) {
+      while (next.firstElementChild) list.appendChild(next.firstElementChild);
+      next.remove();
+    }
     selectContents(list);
     return true;
   };
