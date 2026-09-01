@@ -18,20 +18,23 @@ const statusColor: Record<AdminArticleItem["status"], string> = { draft: "defaul
 const articlePublicUrl = (slug: string) => `${window.location.origin}/#view=article&id=${encodeURIComponent(slug)}&from=articles`;
 
 const ARTICLE_TEXT_COLORS = [
-  { key: "violet", label: "紫色", swatch: "#9d67ff" },
-  { key: "pink", label: "粉色", swatch: "#f472b6" },
-  { key: "red", label: "红色", swatch: "#ef6b73" },
-  { key: "orange", label: "橙色", swatch: "#f59e0b" },
-  { key: "green", label: "绿色", swatch: "#34d399" },
-  { key: "blue", label: "蓝色", swatch: "#60a5fa" },
+  { key: "violet", label: "紫色", swatch: "#9d67ff", editorColor: "#7c3aed" },
+  { key: "pink", label: "粉色", swatch: "#f472b6", editorColor: "#be185d" },
+  { key: "red", label: "红色", swatch: "#ef6b73", editorColor: "#dc2626" },
+  { key: "orange", label: "橙色", swatch: "#f59e0b", editorColor: "#c2410c" },
+  { key: "green", label: "绿色", swatch: "#34d399", editorColor: "#15803d" },
+  { key: "blue", label: "蓝色", swatch: "#60a5fa", editorColor: "#2563eb" },
 ] as const;
 const ARTICLE_TEXT_COLOR_KEYS = new Set<string>(ARTICLE_TEXT_COLORS.map((color) => color.key));
+const ARTICLE_EDITOR_COLOR_VALUES = Object.fromEntries(ARTICLE_TEXT_COLORS.map((color) => [color.key, color.editorColor])) as Record<string, string>;
+const ARTICLE_PREVIEW_COLOR_CSS = ARTICLE_TEXT_COLORS.map((color) => `[data-article-color="${color.key}"]{color:${color.editorColor}}`).join("");
 const ARTICLE_SYMBOLS = ["★", "◆", "●", "✓", "✦", "→", "—", "※", "♥", "⚠"] as const;
 const EDITOR_TAGS = new Set(["P", "H2", "H3", "H4", "STRONG", "EM", "SPAN", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD"]);
 const VOID_EDITOR_TAGS = new Set(["BR", "HR", "IMG"]);
 
 function sanitizeEditorHtml(input: string): string {
-  const documentNode = new DOMParser().parseFromString(String(input || ""), "text/html");
+  const safeEscapedColors = String(input || "").replace(/&lt;span\s+data-article-color=(?:&quot;|")?(violet|pink|red|orange|green|blue)(?:&quot;|")?\s*&gt;([\s\S]*?)&lt;\/span&gt;/gi, (_match, color, children) => `<span data-article-color="${color}">${children}</span>`);
+  const documentNode = new DOMParser().parseFromString(safeEscapedColors, "text/html");
   const escapeText = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const walk = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) return escapeText(node.textContent || "");
@@ -265,11 +268,18 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
       Object.assign((image as HTMLElement).style, { maxWidth: "100%", height: "auto", display: "block", boxSizing: "border-box" });
     });
   };
+  const applyEditorTextColors = () => {
+    editorRef.current?.querySelectorAll<HTMLElement>("span[data-article-color]").forEach((element) => {
+      const color = element.getAttribute("data-article-color") || "";
+      element.style.color = ARTICLE_EDITOR_COLOR_VALUES[color] || "";
+    });
+  };
   const emit = () => {
     const caret = captureCaret();
     const safe = sanitizeEditorHtml(editorRef.current?.innerHTML || "");
     if (editorRef.current && editorRef.current.innerHTML !== safe) { editorRef.current.innerHTML = safe; restoreCaret(caret); }
     constrainImages();
+    applyEditorTextColors();
     lastValue.current = safe;
     onChange?.(safe);
   };
@@ -278,6 +288,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
       const safe = sanitizeEditorHtml(value);
       editorRef.current.innerHTML = safe;
       constrainImages();
+      applyEditorTextColors();
       lastValue.current = safe;
     }
   }, [value, sourceMode]);
@@ -554,7 +565,7 @@ const ArticlesPage: React.FC = () => {
         <Form.Item name="coverImageUrl" label="文章封面图片" extra={<Space direction="vertical" size={6}><Text type="secondary">建议 16:9、最小 1600×900。封面会显示在文章列表与详情顶部。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "cover")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传封面图片</Button></Upload></Space>}><Input placeholder="上传后自动填写，也可填写 HTTPS 图片地址" disabled={!canEdit} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.coverImageUrl !== current.coverImageUrl}>{() => form.getFieldValue("coverImageUrl") ? <img src={form.getFieldValue("coverImageUrl")} alt="文章封面预览" style={{ width: "100%", maxWidth: 480, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 10, marginBottom: 18 }} /> : null}</Form.Item>
         <Form.Item name="bodyHtml" label="正文编辑器" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">支持可视化排版、HTML 源码切换，以及直接粘贴图片自动上传。正文图片会插入末尾，可在编辑器中剪切到目标段落。保存时服务端再次过滤危险内容。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><RichArticleEditor disabled={!canEdit} onPasteImage={(file) => new Promise((resolve) => { void uploadArticleImage(file, "paste", resolve); })} /></Form.Item>
-        <Form.Item noStyle shouldUpdate={(previous, current) => previous.bodyHtml !== current.bodyHtml}>{() => <><Divider orientation="left">HTML 安全预览</Divider><iframe title="文章 HTML 预览" sandbox="" style={{ width: "100%", minHeight: 320, border: "1px solid #eee", borderRadius: 10 }} srcDoc={`<style>body{font-family:system-ui,sans-serif;line-height:1.75;padding:20px;color:#211c2d}img{max-width:100%;height:auto;border-radius:12px}figure{margin:20px 0}figcaption{color:#716b7d;font-size:13px;text-align:center}blockquote{margin:18px 0;padding:12px 16px;border-left:3px solid #8d52ff;background:#f6f1ff}a{color:#6d3ae8}</style>${String(form.getFieldValue("bodyHtml") || "")}`} /></>}</Form.Item>
+        <Form.Item noStyle shouldUpdate={(previous, current) => previous.bodyHtml !== current.bodyHtml}>{() => <><Divider orientation="left">HTML 安全预览</Divider><iframe title="文章 HTML 预览" sandbox="" style={{ width: "100%", minHeight: 320, border: "1px solid #eee", borderRadius: 10 }} srcDoc={`<style>body{font-family:system-ui,sans-serif;line-height:1.75;padding:20px;color:#211c2d}img{max-width:100%;height:auto;border-radius:12px}figure{margin:20px 0}figcaption{color:#716b7d;font-size:13px;text-align:center}blockquote{margin:18px 0;padding:12px 16px;border-left:3px solid #8d52ff;background:#f6f1ff}a{color:#6d3ae8}${ARTICLE_PREVIEW_COLOR_CSS}</style>${String(form.getFieldValue("bodyHtml") || "")}`} /></>}</Form.Item>
         <Space size={16} style={{ display: "flex" }}>
           <Form.Item name="sourceName" label="来源名称（选填）" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} placeholder="填写后才会在文章正文底部展示" /></Form.Item>
           <Form.Item name="sourceUrl" label="来源链接（选填）" style={{ flex: 1 }} rules={[{ type: "url", message: "请输入完整 https:// 链接" }]}><Input maxLength={500} disabled={!canEdit} placeholder="填写后才会在文章正文底部展示" /></Form.Item>

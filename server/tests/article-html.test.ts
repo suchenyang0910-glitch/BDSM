@@ -29,6 +29,11 @@ test("article HTML permits only the fixed editorial text-color tokens", () => {
   assert.doesNotMatch(html, /style=|onclick|danger/);
 });
 
+test("article HTML restores only previously escaped safe color markup", () => {
+  const html = sanitizeArticleHtml('<h2>&lt;span data-article-color="red"&gt;旧标题&lt;/span&gt;</h2><p>&lt;span data-article-color="danger"&gt;不恢复&lt;/span&gt;</p>');
+  assert.equal(html, '<h2><span data-article-color="red">旧标题</span></h2><p>&amp;lt;span data-article-color=&quot;danger&quot;&amp;gt;不恢复&amp;lt;/span&amp;gt;</p>');
+});
+
 test("public article API exposes a cover and already-sanitized HTML only", async () => {
   const app = Fastify();
   app.decorate("prisma", {

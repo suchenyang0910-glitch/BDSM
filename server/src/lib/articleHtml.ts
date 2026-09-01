@@ -2,6 +2,10 @@ const ALLOWED_TAGS = new Set(["p", "h2", "h3", "h4", "strong", "em", "span", "ul
 const VOID_TAGS = new Set(["br", "hr", "img"]);
 const ARTICLE_TEXT_COLORS = new Set(["violet", "pink", "red", "orange", "green", "blue"]);
 
+function restoreEscapedArticleColorMarkup(value: string): string {
+  return value.replace(/&lt;span\s+data-article-color=(?:&quot;|")?(violet|pink|red|orange|green|blue)(?:&quot;|")?\s*&gt;([\s\S]*?)&lt;\/span&gt;/gi, (_match, color, children) => `<span data-article-color="${color}">${children}</span>`);
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -21,7 +25,7 @@ function safeHttpsUrl(value: string): string | null {
  * reach the public client. Text outside allowed tags remains readable.
  */
 export function sanitizeArticleHtml(input: string): string {
-  const source = String(input || "").trim();
+  const source = restoreEscapedArticleColorMarkup(String(input || "")).trim();
   const tokenPattern = /<[^>]*>/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
