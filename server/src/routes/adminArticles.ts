@@ -26,6 +26,9 @@ const ArticleInputZ = z.object({
   status: StatusZ.optional(),
   reason: z.string().trim().max(500).optional(),
 });
+const ArticleBodyAutoSaveZ = z.object({
+  bodyHtml: z.string().trim().min(20).max(50_000),
+});
 
 function meta(req: FastifyRequest) {
   const session = (req as any).admin as AdminSession;
@@ -104,6 +107,25 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
     });
     await audit(prisma, req, "article.create", created.id, null, publicShape(created), reason);
     return reply.code(201).send({ ok: true, article: publicShape(created) });
+  });
+
+  // Keep autosave intentionally narrow: it must never change publication state,
+  // SEO, attribution, or the stable slug while an editor is still typing.
+  fastify.patch<{ Params: { id: string } }>("/admin/articles/:id/body", { preHandler: [requireAdmin("content:edit")] }, async (req, reply) => {
+    const parsed = ArticleBodyAutoSaveZ.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_article_html", message: "正文至少需要 20 个可读字符。" });
+    const before = await prisma.article.findUnique({ where: { id: req.params.id } });
+    if (!before) return reply.code(404).send({ error: "article_not_found", message: "文章不存在。" });
+    const safeHtml = sanitizeArticleHtml(parsed.data.bodyHtml);
+    if (htmlToPlainText(safeHtml).length < 20) return reply.code(400).send({ error: "invalid_article_html", message: "正文 HTML 不包含足够的可读内容。" });
+    if (safeHtml === (before.bodyHtml || "")) return { ok: true, article: publicShape(before) };
+    const actor = meta(req);
+    const after = await prisma.article.update({
+      where: { id: before.id },
+      data: { bodyHtml: safeHtml, bodyMarkdown: htmlToPlainText(safeHtml), updatedBy: actor.adminId },
+    });
+    await audit(prisma, req, "article.body_autosave", after.id, { bodyHtml: before.bodyHtml || "" }, { bodyHtml: after.bodyHtml || "" });
+    return { ok: true, article: publicShape(after) };
   });
 
   fastify.patch<{ Params: { id: string } }>("/admin/articles/:id", { preHandler: [requireAdmin("content:edit")] }, async (req, reply) => {

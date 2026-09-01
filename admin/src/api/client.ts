@@ -349,6 +349,11 @@ export async function updateAdminArticle(id: string, input: AdminArticleInput): 
   return res.data;
 }
 
+export async function autoSaveAdminArticleBody(id: string, bodyHtml: string): Promise<{ ok: true; article: AdminArticleItem }> {
+  const res = await http.patch(`/admin/articles/${encodeURIComponent(id)}/body`, { bodyHtml });
+  return res.data;
+}
+
 export async function publishAdminArticle(id: string): Promise<{ ok: true; article: AdminArticleItem }> {
   const res = await http.post(`/admin/articles/${encodeURIComponent(id)}/publish`);
   return res.data;

@@ -2,7 +2,7 @@ import React from "react";
 import { Alert, Button, Card, Divider, Drawer, Dropdown, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, EditOutlined, UploadOutlined } from "@ant-design/icons";
-import { adminMe, archiveAdminArticle, completeAdminBannerImageUpload, createAdminArticle, errMsg, initAdminBannerImageUpload, listAdminArticles, publishAdminArticle, updateAdminArticle } from "../api/client";
+import { adminMe, archiveAdminArticle, autoSaveAdminArticleBody, completeAdminBannerImageUpload, createAdminArticle, errMsg, initAdminBannerImageUpload, listAdminArticles, publishAdminArticle, updateAdminArticle } from "../api/client";
 import type { AdminArticleInput, AdminArticleItem, AdminMe } from "../api/types";
 
 const { TextArea } = Input;
@@ -207,6 +207,59 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     selectContents(wrapper);
     return true;
   };
+  const matchingInlineWrapper = (range: Range, tagName: "strong" | "em" | "a" | "span", attributes?: Record<string, string>) => {
+    const root = editorRef.current;
+    const find = (node: Node) => {
+      let element = node.nodeType === Node.ELEMENT_NODE ? node as HTMLElement : node.parentElement;
+      while (element && element !== root) {
+        const current = element;
+        const matchesTag = current.tagName.toLowerCase() === tagName;
+        const matchesAttributes = Object.entries(attributes || {}).every(([name, value]) => current.getAttribute(name) === value);
+        if (matchesTag && matchesAttributes) return current;
+        element = current.parentElement;
+      }
+      return null;
+    };
+    const start = find(range.startContainer);
+    const end = find(range.endContainer);
+    return start && start === end ? start : null;
+  };
+  const unwrapSelectedInline = (range: Range, wrapper: HTMLElement) => {
+    const parent = wrapper.parentNode;
+    if (!parent) return false;
+    const beforeRange = document.createRange();
+    beforeRange.selectNodeContents(wrapper);
+    beforeRange.setEnd(range.startContainer, range.startOffset);
+    const afterRange = document.createRange();
+    afterRange.selectNodeContents(wrapper);
+    afterRange.setStart(range.endContainer, range.endOffset);
+    const before = beforeRange.cloneContents();
+    const selected = range.cloneContents();
+    const after = afterRange.cloneContents();
+    const replacement = document.createDocumentFragment();
+    if (before.hasChildNodes()) { const part = wrapper.cloneNode(false) as HTMLElement; part.appendChild(before); replacement.appendChild(part); }
+    const startMarker = document.createComment("article-editor-selection-start");
+    const endMarker = document.createComment("article-editor-selection-end");
+    replacement.append(startMarker, selected, endMarker);
+    if (after.hasChildNodes()) { const part = wrapper.cloneNode(false) as HTMLElement; part.appendChild(after); replacement.appendChild(part); }
+    wrapper.replaceWith(replacement);
+    const selection = window.getSelection();
+    const nextRange = document.createRange();
+    nextRange.setStartAfter(startMarker);
+    nextRange.setEndBefore(endMarker);
+    selection?.removeAllRanges();
+    selection?.addRange(nextRange);
+    startMarker.remove();
+    endMarker.remove();
+    rememberSelectedText();
+    return true;
+  };
+  const toggleSelectedText = (tagName: "strong" | "em" | "a" | "span", attributes?: Record<string, string>) => {
+    const range = activeTextRange();
+    if (!range) return false;
+    const wrapper = matchingInlineWrapper(range, tagName, attributes);
+    return wrapper ? unwrapSelectedInline(range, wrapper) : wrapSelectedText(tagName, attributes);
+  };
   const selectedBlocks = (range: Range) => {
     const root = editorRef.current;
     if (!root) return [] as HTMLElement[];
@@ -226,14 +279,49 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     if (!range) return false;
     const blocks = selectedBlocks(range);
     if (!blocks.length) return false;
-    const formatted = blocks.map((block) => replaceBlockTag(block, tagName));
+    const target = tagName === "p" || blocks.every((block) => block.tagName.toLowerCase() === tagName) ? "p" : tagName;
+    const formatted = blocks.map((block) => replaceBlockTag(block, target));
     selectContents(formatted[0].parentElement && formatted.length > 1 ? formatted[0].parentElement : formatted[0]);
     return true;
   };
   const formatSelectedList = (tagName: "ul" | "ol") => {
     const range = activeTextRange();
     if (!range) return false;
-    const blocks = selectedBlocks(range).filter((block) => block.tagName !== "LI");
+    const selected = selectedBlocks(range);
+    const selectedItems = selected.filter((block) => block.tagName === "LI");
+    const selectedLists = new Map<HTMLElement, Set<HTMLElement>>();
+    selectedItems.forEach((item) => {
+      const list = item.parentElement;
+      if (list && list.tagName.toLowerCase() === tagName) {
+        const items = selectedLists.get(list) || new Set<HTMLElement>();
+        items.add(item);
+        selectedLists.set(list, items);
+      }
+    });
+    if (selectedLists.size) {
+      selectedLists.forEach((items, list) => {
+        const replacement = document.createDocumentFragment();
+        let retained: HTMLElement[] = [];
+        const flushRetained = () => {
+          if (!retained.length) return;
+          const remainingList = document.createElement(tagName);
+          retained.forEach((item) => remainingList.appendChild(item));
+          replacement.appendChild(remainingList);
+          retained = [];
+        };
+        Array.from(list.children).forEach((child) => {
+          if (!(child instanceof HTMLElement) || child.tagName !== "LI") return;
+          if (!items.has(child)) { retained.push(child); return; }
+          flushRetained();
+          const paragraph = document.createElement("p");
+          paragraph.innerHTML = child.innerHTML;
+          replacement.appendChild(paragraph);
+        });
+        list.replaceWith(replacement);
+      });
+      return true;
+    }
+    const blocks = selected.filter((block) => block.tagName !== "LI");
     if (!blocks.length || !blocks[0].parentNode) return false;
     const list = document.createElement(tagName);
     blocks[0].parentNode.insertBefore(list, blocks[0]);
@@ -341,12 +429,15 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     if (disabled) return;
     let changed = false;
     if (name === "link") {
-      if (!activeTextRange()) return;
+      const range = activeTextRange();
+      if (!range) return;
+      const wrapper = matchingInlineWrapper(range, "a");
+      if (wrapper) { unwrapSelectedInline(range, wrapper); emit(); return; }
       setLinkUrl("");
       setLinkDialogOpen(true);
       return;
-    } else if (name === "bold") changed = wrapSelectedText("strong");
-    else if (name === "italic") changed = wrapSelectedText("em");
+    } else if (name === "bold") changed = toggleSelectedText("strong");
+    else if (name === "italic") changed = toggleSelectedText("em");
     else if (name === "insertUnorderedList") changed = formatSelectedList("ul");
     else if (name === "insertOrderedList") changed = formatSelectedList("ol");
     else if (name === "formatBlock" && (commandValue === "p" || commandValue === "h1" || commandValue === "h2" || commandValue === "h3" || commandValue === "h4" || commandValue === "h5" || commandValue === "blockquote")) changed = formatSelectedBlocks(commandValue);
@@ -355,7 +446,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   };
   const applyTextColor = (color: string) => {
     if (!ARTICLE_TEXT_COLOR_KEYS.has(color)) return;
-    if (!wrapSelectedText("span", { "data-article-color": color })) return;
+    if (!toggleSelectedText("span", { "data-article-color": color })) return;
     emit();
   };
   const insertSymbol = (symbol: string) => {
@@ -466,6 +557,10 @@ const ArticlesPage: React.FC = () => {
   const [editing, setEditing] = React.useState<AdminArticleItem | null>(null);
   const [imageUploading, setImageUploading] = React.useState(false);
   const [me, setMe] = React.useState<AdminMe | null>(null);
+  const [autoSaveState, setAutoSaveState] = React.useState<"idle" | "pending" | "saving" | "saved" | "failed">("idle");
+  const [autoSavedAt, setAutoSavedAt] = React.useState<Date | null>(null);
+  const savedBodyRef = React.useRef("");
+  const bodyHtml = Form.useWatch("bodyHtml", form);
   const canEdit = ["super_admin", "operator", "editor"].includes(me?.role || "");
   const canPublish = ["super_admin", "operator", "editor"].includes(me?.role || "");
 
@@ -484,13 +579,42 @@ const ArticlesPage: React.FC = () => {
 
   React.useEffect(() => { load(); }, [load]);
 
+  React.useEffect(() => {
+    if (!drawerOpen || !editing || !canEdit) return;
+    const nextBody = String(bodyHtml || "");
+    if (nextBody === savedBodyRef.current) return;
+    // Let normal form validation handle short/incomplete text; retry begins as
+    // soon as the editor contains a valid article body again.
+    if (nextBody.trim().length < 20) { setAutoSaveState("idle"); return; }
+    setAutoSaveState("pending");
+    const timer = window.setTimeout(() => {
+      setAutoSaveState("saving");
+      void autoSaveAdminArticleBody(editing.id, nextBody).then((result) => {
+        savedBodyRef.current = result.article.bodyHtml;
+        setEditing(result.article);
+        setRows((current) => current.map((article) => article.id === result.article.id ? result.article : article));
+        setAutoSavedAt(new Date());
+        setAutoSaveState("saved");
+      }).catch(() => {
+        setAutoSaveState("failed");
+      });
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [bodyHtml, canEdit, drawerOpen, editing]);
+
   const openCreate = () => {
     setEditing(null);
+    savedBodyRef.current = "";
+    setAutoSavedAt(null);
+    setAutoSaveState("idle");
     form.setFieldsValue(EMPTY);
     setDrawerOpen(true);
   };
   const openEdit = (article: AdminArticleItem) => {
     setEditing(article);
+    savedBodyRef.current = article.bodyHtml;
+    setAutoSavedAt(null);
+    setAutoSaveState("idle");
     form.setFieldsValue({ ...article, reason: "" });
     setDrawerOpen(true);
   };
@@ -498,8 +622,8 @@ const ArticlesPage: React.FC = () => {
     try {
       const value = await form.validateFields();
       setSaving(true);
-      if (editing) await updateAdminArticle(editing.id, value);
-      else await createAdminArticle(value);
+      const result = editing ? await updateAdminArticle(editing.id, value) : await createAdminArticle(value);
+      savedBodyRef.current = result.article.bodyHtml;
       message.success(editing ? "文章已保存" : "文章草稿已创建");
       setDrawerOpen(false);
       await load();
@@ -613,7 +737,7 @@ const ArticlesPage: React.FC = () => {
         <Form.Item name="summary" label="摘要" rules={[{ required: true, min: 10, max: 500 }]}><TextArea rows={3} maxLength={500} disabled={!canEdit} /></Form.Item>
         <Form.Item name="coverImageUrl" label="文章封面图片" extra={<Space direction="vertical" size={6}><Text type="secondary">建议 16:9、最小 1600×900。封面会显示在文章列表与详情顶部。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "cover")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传封面图片</Button></Upload></Space>}><Input placeholder="上传后自动填写，也可填写 HTTPS 图片地址" disabled={!canEdit} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.coverImageUrl !== current.coverImageUrl}>{() => form.getFieldValue("coverImageUrl") ? <img src={form.getFieldValue("coverImageUrl")} alt="文章封面预览" style={{ width: "100%", maxWidth: 480, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 10, marginBottom: 18 }} /> : null}</Form.Item>
-        <Form.Item name="bodyHtml" label="正文编辑器" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">支持可视化排版、HTML 源码切换，以及直接粘贴图片自动上传。正文图片会插入末尾，可在编辑器中剪切到目标段落。保存时服务端再次过滤危险内容。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><RichArticleEditor disabled={!canEdit} onPasteImage={(file) => new Promise((resolve) => { void uploadArticleImage(file, "paste", resolve); })} /></Form.Item>
+        <Form.Item name="bodyHtml" label="正文编辑器" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">支持可视化排版、HTML 源码切换，以及直接粘贴图片自动上传。正文图片会插入末尾，可在编辑器中剪切到目标段落。保存时服务端再次过滤危险内容。</Text>{editing ? <Text type={autoSaveState === "failed" ? "danger" : "secondary"}>{autoSaveState === "pending" ? "正文自动保存：等待输入结束…" : autoSaveState === "saving" ? "正文自动保存：正在保存…" : autoSaveState === "saved" ? `正文已自动保存 · ${autoSavedAt?.toLocaleTimeString("zh-CN", { hour12: false }) || "刚刚"}` : autoSaveState === "failed" ? "正文自动保存失败，请检查网络后继续编辑或点击右上角保存" : "正文会在停止输入后自动保存"}</Text> : <Text type="secondary">新建文章需先点击右上角保存创建草稿，之后正文会自动保存。</Text>}<Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><RichArticleEditor disabled={!canEdit} onPasteImage={(file) => new Promise((resolve) => { void uploadArticleImage(file, "paste", resolve); })} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.bodyHtml !== current.bodyHtml}>{() => <><Divider orientation="left">HTML 安全预览</Divider><iframe title="文章 HTML 预览" sandbox="" style={{ width: "100%", minHeight: 320, border: "1px solid #eee", borderRadius: 10 }} srcDoc={`<style>body{font-family:system-ui,sans-serif;line-height:1.75;padding:20px;color:#211c2d}img{max-width:100%;height:auto;border-radius:12px}figure{margin:20px 0}figcaption{color:#716b7d;font-size:13px;text-align:center}blockquote{margin:18px 0;padding:12px 16px;border-left:3px solid #8d52ff;background:#f6f1ff}a{color:#6d3ae8}${ARTICLE_PREVIEW_COLOR_CSS}</style>${String(form.getFieldValue("bodyHtml") || "")}`} /></>}</Form.Item>
         <Space size={16} style={{ display: "flex" }}>
           <Form.Item name="sourceName" label="来源名称（选填）" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} placeholder="填写后才会在文章正文底部展示" /></Form.Item>
