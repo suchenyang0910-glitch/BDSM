@@ -1,9 +1,9 @@
 const ALLOWED_TAGS = new Set(["p", "h1", "h2", "h3", "h4", "h5", "strong", "em", "span", "ul", "ol", "li", "blockquote", "figure", "figcaption", "br", "hr", "a", "img", "table", "thead", "tbody", "tr", "th", "td"]);
 const VOID_TAGS = new Set(["br", "hr", "img"]);
-const ARTICLE_TEXT_COLORS = new Set(["violet", "pink", "red", "orange", "green", "blue"]);
+const ARTICLE_TEXT_COLORS = new Set(["black", "violet", "pink", "red", "orange", "green", "blue"]);
 
 function restoreEscapedArticleColorMarkup(value: string): string {
-  return value.replace(/&lt;span\s+data-article-color=(?:&quot;|")?(violet|pink|red|orange|green|blue)(?:&quot;|")?\s*&gt;([\s\S]*?)&lt;\/span&gt;/gi, (_match, color, children) => `<span data-article-color="${color}">${children}</span>`);
+  return value.replace(/&lt;span\s+data-article-color=(?:&quot;|")?(black|violet|pink|red|orange|green|blue)(?:&quot;|")?\s*&gt;([\s\S]*?)&lt;\/span&gt;/gi, (_match, color, children) => `<span data-article-color="${color}">${children}</span>`);
 }
 
 function escapeHtml(value: string): string {

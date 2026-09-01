@@ -1198,6 +1198,7 @@ img.is-image-unavailable {
 .article-html-body figcaption { color: var(--text-secondary); font-size: 12px; text-align: center; }
 .article-html-body a { color: var(--brand-primary); font-weight: 700; }
 .article-html-body [data-article-color="violet"] { color: #b782ff; }
+.article-html-body [data-article-color="black"] { color: #111827; }
 .article-html-body [data-article-color="pink"] { color: #ff8fc7; }
 .article-html-body [data-article-color="red"] { color: #ff8a92; }
 .article-html-body [data-article-color="orange"] { color: #ffc069; }

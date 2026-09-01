@@ -18,6 +18,7 @@ const statusColor: Record<AdminArticleItem["status"], string> = { draft: "defaul
 const articlePublicUrl = (slug: string) => `${window.location.origin}/#view=article&id=${encodeURIComponent(slug)}&from=articles`;
 
 const ARTICLE_TEXT_COLORS = [
+  { key: "black", label: "黑色", swatch: "#111827", editorColor: "#111827" },
   { key: "violet", label: "紫色", swatch: "#9d67ff", editorColor: "#7c3aed" },
   { key: "pink", label: "粉色", swatch: "#f472b6", editorColor: "#be185d" },
   { key: "red", label: "红色", swatch: "#ef6b73", editorColor: "#dc2626" },
@@ -33,7 +34,7 @@ const EDITOR_TAGS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "STRONG", "EM", 
 const VOID_EDITOR_TAGS = new Set(["BR", "HR", "IMG"]);
 
 function sanitizeEditorHtml(input: string): string {
-  const safeEscapedColors = String(input || "").replace(/&lt;span\s+data-article-color=(?:&quot;|")?(violet|pink|red|orange|green|blue)(?:&quot;|")?\s*&gt;([\s\S]*?)&lt;\/span&gt;/gi, (_match, color, children) => `<span data-article-color="${color}">${children}</span>`);
+  const safeEscapedColors = String(input || "").replace(/&lt;span\s+data-article-color=(?:&quot;|")?(black|violet|pink|red|orange|green|blue)(?:&quot;|")?\s*&gt;([\s\S]*?)&lt;\/span&gt;/gi, (_match, color, children) => `<span data-article-color="${color}">${children}</span>`);
   const documentNode = new DOMParser().parseFromString(safeEscapedColors, "text/html");
   const escapeText = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const walk = (node: Node): string => {
@@ -154,7 +155,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     selection?.removeAllRanges();
     selection?.addRange(range);
   };
-  const rememberSelectedText = () => {
+  const captureSelectedText = (clearWhenCollapsed: boolean) => {
     const root = editorRef.current;
     const selection = window.getSelection();
     if (!root || !selection?.rangeCount) return;
@@ -164,9 +165,10 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     // can restore it; only an in-editor caret clears the active selection.
     if (!root.contains(range.commonAncestorContainer)) return;
     lastEditorRangeRef.current = range.cloneRange();
-    if (range.collapsed) { selectedTextRangeRef.current = null; return; }
+    if (range.collapsed) { if (clearWhenCollapsed) selectedTextRangeRef.current = null; return; }
     selectedTextRangeRef.current = range.cloneRange();
   };
+  const rememberSelectedText = () => captureSelectedText(true);
   const restoreSelectedText = () => {
     const root = editorRef.current;
     const range = selectedTextRangeRef.current;
@@ -446,7 +448,15 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   };
   const applyTextColor = (color: string) => {
     if (!ARTICLE_TEXT_COLOR_KEYS.has(color)) return;
-    if (!toggleSelectedText("span", { "data-article-color": color })) return;
+    const range = activeTextRange();
+    if (!range) return;
+    // Color is an application choice, not a toggle: choosing green again keeps
+    // the selection green. If a colored run is selected, replace its token.
+    const wrapper = matchingInlineWrapper(range, "span");
+    if (wrapper) {
+      wrapper.setAttribute("data-article-color", color);
+      selectContents(wrapper);
+    } else if (!wrapSelectedText("span", { "data-article-color": color })) return;
     emit();
   };
   const insertSymbol = (symbol: string) => {
@@ -481,7 +491,9 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     setLinkUrl("");
   };
   const preserveSelectedText = () => {
-    rememberSelectedText();
+    // Toolbar focus may collapse the native selection before the color menu
+    // item is clicked. Keep the last non-collapsed editor range intact.
+    captureSelectedText(false);
   };
   const deleteSelectedImage = () => {
     if (disabled || !selectedImageRef.current) return;

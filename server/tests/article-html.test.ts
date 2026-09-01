@@ -29,8 +29,8 @@ test("article HTML preserves all five editorial heading levels", () => {
 });
 
 test("article HTML permits only the fixed editorial text-color tokens", () => {
-  const html = sanitizeArticleHtml('<p><span data-article-color="violet" style="color:red">重点</span><span data-article-color="danger" onclick="x()">普通</span></p>');
-  assert.equal(html, '<p><span data-article-color="violet">重点</span><span>普通</span></p>');
+  const html = sanitizeArticleHtml('<p><span data-article-color="black" style="color:red">黑色重点</span><span data-article-color="violet">重点</span><span data-article-color="danger" onclick="x()">普通</span></p>');
+  assert.equal(html, '<p><span data-article-color="black">黑色重点</span><span data-article-color="violet">重点</span><span>普通</span></p>');
   assert.doesNotMatch(html, /style=|onclick|danger/);
 });
 
