@@ -274,6 +274,42 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
       element.style.color = ARTICLE_EDITOR_COLOR_VALUES[color] || "";
     });
   };
+  const insertParagraphAtCaret = () => {
+    const root = editorRef.current;
+    const selection = window.getSelection();
+    if (!root || !selection?.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    if (!root.contains(range.commonAncestorContainer)) return false;
+
+    range.deleteContents();
+    range.collapse(true);
+    const anchor = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer as Element : range.startContainer.parentElement;
+    const block = anchor?.closest<HTMLElement>("p, h2, h3, h4, blockquote");
+    const next = document.createElement("p");
+
+    if (block && root.contains(block) && block.parentNode) {
+      const tailRange = document.createRange();
+      tailRange.setStart(range.startContainer, range.startOffset);
+      tailRange.setEnd(block, block.childNodes.length);
+      const tail = tailRange.extractContents();
+      next.appendChild(tail);
+      if (!block.childNodes.length) block.appendChild(document.createElement("br"));
+      block.parentNode.insertBefore(next, block.nextSibling);
+    } else {
+      root.appendChild(next);
+    }
+    if (!next.childNodes.length) next.appendChild(document.createElement("br"));
+
+    const nextRange = document.createRange();
+    nextRange.setStart(next, 0);
+    nextRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+    lastEditorRangeRef.current = nextRange.cloneRange();
+    selectedTextRangeRef.current = null;
+    emit();
+    return true;
+  };
   const emit = () => {
     const caret = captureCaret();
     const safe = sanitizeEditorHtml(editorRef.current?.innerHTML || "");
@@ -382,7 +418,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
         if ((event.key === "Delete" || event.key === "Backspace") && selectedImageRef.current) { event.preventDefault(); deleteSelectedImage(); return; }
         const selection = window.getSelection();
         const selectedElement = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement;
-        if (event.key === "Enter" && !event.shiftKey && !selectedElement?.closest("li")) { event.preventDefault(); document.execCommand("insertHTML", false, "<p><br></p>"); emit(); }
+        if (event.key === "Enter" && !event.shiftKey && !selectedElement?.closest("li")) { event.preventDefault(); insertParagraphAtCaret(); }
       }} onPaste={(event) => {
         const image = Array.from(event.clipboardData.items).map((item) => item.kind === "file" ? item.getAsFile() : null).find((file): file is File => !!file && /^image\//i.test(file.type));
         event.preventDefault();
