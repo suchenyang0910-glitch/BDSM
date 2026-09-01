@@ -201,14 +201,18 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     selection?.addRange(nextRange);
     rememberSelectedText();
   };
-  const wrapSelectedText = (tagName: "strong" | "em" | "a" | "span", attributes?: Record<string, string>) => {
-    const range = activeTextRange();
-    if (!range) return false;
+  const wrapRange = (range: Range, tagName: "strong" | "em" | "a" | "span", attributes?: Record<string, string>) => {
     const wrapper = document.createElement(tagName);
     Object.entries(attributes || {}).forEach(([name, value]) => wrapper.setAttribute(name, value));
     const fragment = range.extractContents();
     wrapper.appendChild(fragment);
     range.insertNode(wrapper);
+    return wrapper;
+  };
+  const wrapSelectedText = (tagName: "strong" | "em" | "a" | "span", attributes?: Record<string, string>) => {
+    const range = activeTextRange();
+    if (!range) return false;
+    const wrapper = wrapRange(range, tagName, attributes);
     selectContents(wrapper);
     return true;
   };
@@ -262,6 +266,34 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const toggleSelectedText = (tagName: "strong" | "em" | "a" | "span", attributes?: Record<string, string>) => {
     const range = activeTextRange();
     if (!range) return false;
+    const blocks = selectedBlocks(range);
+    if (blocks.length > 1) {
+      const ranges = blocks.map((block) => {
+        const blockRange = document.createRange();
+        blockRange.selectNodeContents(block);
+        if (block.contains(range.startContainer)) blockRange.setStart(range.startContainer, range.startOffset);
+        if (block.contains(range.endContainer)) blockRange.setEnd(range.endContainer, range.endOffset);
+        return { block, range: blockRange };
+      }).filter(({ range: blockRange }) => !blockRange.collapsed);
+      if (!ranges.length) return false;
+      // A multi-line selection must be formatted line by line. Wrapping the
+      // whole cross-block Range produces invalid HTML and only the last line
+      // reliably receives the inline format.
+      const shouldRemove = ranges.every(({ range: blockRange }) => !!matchingInlineWrapper(blockRange, tagName, attributes));
+      for (const item of ranges) {
+        const wrapper = matchingInlineWrapper(item.range, tagName, attributes);
+        if (shouldRemove && wrapper) unwrapSelectedInline(item.range, wrapper);
+        else wrapRange(item.range, tagName, attributes);
+      }
+      const selection = window.getSelection();
+      const nextRange = document.createRange();
+      nextRange.setStart(blocks[0], 0);
+      nextRange.setEnd(blocks[blocks.length - 1], blocks[blocks.length - 1].childNodes.length);
+      selection?.removeAllRanges();
+      selection?.addRange(nextRange);
+      rememberSelectedText();
+      return true;
+    }
     const wrapper = matchingInlineWrapper(range, tagName, attributes);
     return wrapper ? unwrapSelectedInline(range, wrapper) : wrapSelectedText(tagName, attributes);
   };
