@@ -123,6 +123,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const selectedImageRef = React.useRef<HTMLImageElement | null>(null);
   const selectedTextRangeRef = React.useRef<Range | null>(null);
   const lastEditorRangeRef = React.useRef<Range | null>(null);
+  const selectionLockRef = React.useRef(false);
   const lastValue = React.useRef("");
   const [sourceMode, setSourceMode] = React.useState(false);
   const [markdownOpen, setMarkdownOpen] = React.useState(false);
@@ -165,7 +166,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     // can restore it; only an in-editor caret clears the active selection.
     if (!root.contains(range.commonAncestorContainer)) return;
     lastEditorRangeRef.current = range.cloneRange();
-    if (range.collapsed) { if (clearWhenCollapsed) selectedTextRangeRef.current = null; return; }
+    if (range.collapsed) { if (clearWhenCollapsed && !selectionLockRef.current) selectedTextRangeRef.current = null; return; }
     selectedTextRangeRef.current = range.cloneRange();
   };
   const rememberSelectedText = () => captureSelectedText(true);
@@ -182,12 +183,14 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const activeTextRange = () => {
     const root = editorRef.current;
     if (!root || !restoreSelectedText()) {
+      selectionLockRef.current = false;
       message.info("请先在正文中选中文案，再使用排版工具");
       return null;
     }
     const selection = window.getSelection();
     if (!selection?.rangeCount) return null;
     const range = selection.getRangeAt(0);
+    selectionLockRef.current = false;
     return root.contains(range.commonAncestorContainer) && !range.collapsed ? range : null;
   };
   const selectContents = (node: Node) => {
@@ -493,6 +496,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const preserveSelectedText = () => {
     // Toolbar focus may collapse the native selection before the color menu
     // item is clicked. Keep the last non-collapsed editor range intact.
+    selectionLockRef.current = true;
     captureSelectedText(false);
   };
   const deleteSelectedImage = () => {
@@ -518,7 +522,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("insertOrderedList")} disabled={disabled || sourceMode}>编号</Button>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "blockquote")} disabled={disabled || sourceMode}>引用</Button>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("link")} disabled={disabled || sourceMode}>链接</Button>
-      <Dropdown trigger={["click"]} disabled={disabled || sourceMode} menu={{ items: ARTICLE_TEXT_COLORS.map((color) => ({ key: color.key, label: <Space size={6}><span aria-hidden style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: color.swatch, border: "1px solid rgba(0,0,0,.18)" }} />{color.label}</Space> })), onClick: ({ key }) => applyTextColor(String(key)) }}>
+      <Dropdown trigger={["click"]} disabled={disabled || sourceMode} onOpenChange={(open) => { if (!open) window.setTimeout(() => { selectionLockRef.current = false; }, 0); }} menu={{ items: ARTICLE_TEXT_COLORS.map((color) => ({ key: color.key, label: <Space size={6}><span aria-hidden style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: color.swatch, border: "1px solid rgba(0,0,0,.18)" }} />{color.label}</Space> })), onClick: ({ key }) => applyTextColor(String(key)) }}>
         <Button size="small" onPointerDown={preserveSelectedText} onMouseDown={(event) => { preserveSelectedText(); event.preventDefault(); }} disabled={disabled || sourceMode}>文字颜色</Button>
       </Dropdown>
       <Dropdown trigger={["click"]} disabled={disabled || sourceMode} menu={{ items: ARTICLE_SYMBOLS.map((symbol) => ({ key: symbol, label: symbol })), onClick: ({ key }) => insertSymbol(String(key)) }}>
