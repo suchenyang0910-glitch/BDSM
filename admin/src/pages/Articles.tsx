@@ -307,7 +307,16 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     selection.addRange(nextRange);
     lastEditorRangeRef.current = nextRange.cloneRange();
     selectedTextRangeRef.current = null;
+    const nextCaret = captureCaret();
     emit();
+    // Form.Item propagates the sanitized value back into this controlled editor.
+    // Restore after that render pass so an Enter at the document end cannot land
+    // on the editor root (which appears as a jump back to the beginning).
+    window.requestAnimationFrame(() => {
+      restoreCaret(nextCaret);
+      const restored = window.getSelection();
+      if (restored?.rangeCount) lastEditorRangeRef.current = restored.getRangeAt(0).cloneRange();
+    });
     return true;
   };
   const emit = () => {
