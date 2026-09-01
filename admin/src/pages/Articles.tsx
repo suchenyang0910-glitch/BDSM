@@ -519,7 +519,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "blockquote")} disabled={disabled || sourceMode}>引用</Button>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("link")} disabled={disabled || sourceMode}>链接</Button>
       <Dropdown trigger={["click"]} disabled={disabled || sourceMode} menu={{ items: ARTICLE_TEXT_COLORS.map((color) => ({ key: color.key, label: <Space size={6}><span aria-hidden style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: color.swatch, border: "1px solid rgba(0,0,0,.18)" }} />{color.label}</Space> })), onClick: ({ key }) => applyTextColor(String(key)) }}>
-        <Button size="small" onPointerDown={preserveSelectedText} disabled={disabled || sourceMode}>文字颜色</Button>
+        <Button size="small" onPointerDown={preserveSelectedText} onMouseDown={(event) => { preserveSelectedText(); event.preventDefault(); }} disabled={disabled || sourceMode}>文字颜色</Button>
       </Dropdown>
       <Dropdown trigger={["click"]} disabled={disabled || sourceMode} menu={{ items: ARTICLE_SYMBOLS.map((symbol) => ({ key: symbol, label: symbol })), onClick: ({ key }) => insertSymbol(String(key)) }}>
         <Button size="small" onPointerDown={preserveSelectedText} disabled={disabled || sourceMode}>符号</Button>
