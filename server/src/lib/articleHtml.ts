@@ -1,4 +1,4 @@
-const ALLOWED_TAGS = new Set(["p", "h2", "h3", "h4", "strong", "em", "span", "ul", "ol", "li", "blockquote", "figure", "figcaption", "br", "hr", "a", "img", "table", "thead", "tbody", "tr", "th", "td"]);
+const ALLOWED_TAGS = new Set(["p", "h1", "h2", "h3", "h4", "h5", "strong", "em", "span", "ul", "ol", "li", "blockquote", "figure", "figcaption", "br", "hr", "a", "img", "table", "thead", "tbody", "tr", "th", "td"]);
 const VOID_TAGS = new Set(["br", "hr", "img"]);
 const ARTICLE_TEXT_COLORS = new Set(["violet", "pink", "red", "orange", "green", "blue"]);
 
@@ -72,7 +72,7 @@ export function sanitizeArticleHtml(input: string): string {
 export function htmlToPlainText(html: string): string {
   return sanitizeArticleHtml(html)
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|h2|h3|h4|li|blockquote|figure|figcaption)>/gi, "\n")
+    .replace(/<\/(p|h1|h2|h3|h4|h5|li|blockquote|figure|figcaption)>/gi, "\n")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")

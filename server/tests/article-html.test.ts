@@ -23,6 +23,11 @@ test("article HTML keeps accessible table structure without attributes", () => {
   assert.equal(html, "<table><thead><tr><th>状态</th></tr></thead><tbody><tr><td>停止</td></tr></tbody></table>");
 });
 
+test("article HTML preserves all five editorial heading levels", () => {
+  const html = sanitizeArticleHtml("<h1>一级</h1><h2>二级</h2><h3>三级</h3><h4>四级</h4><h5>五级</h5><h6>不允许</h6>");
+  assert.equal(html, "<h1>一级</h1><h2>二级</h2><h3>三级</h3><h4>四级</h4><h5>五级</h5>&lt;h6&gt;不允许&lt;/h6&gt;");
+});
+
 test("article HTML permits only the fixed editorial text-color tokens", () => {
   const html = sanitizeArticleHtml('<p><span data-article-color="violet" style="color:red">重点</span><span data-article-color="danger" onclick="x()">普通</span></p>');
   assert.equal(html, '<p><span data-article-color="violet">重点</span><span>普通</span></p>');

@@ -29,7 +29,7 @@ const ARTICLE_TEXT_COLOR_KEYS = new Set<string>(ARTICLE_TEXT_COLORS.map((color) 
 const ARTICLE_EDITOR_COLOR_VALUES = Object.fromEntries(ARTICLE_TEXT_COLORS.map((color) => [color.key, color.editorColor])) as Record<string, string>;
 const ARTICLE_PREVIEW_COLOR_CSS = ARTICLE_TEXT_COLORS.map((color) => `[data-article-color="${color.key}"]{color:${color.editorColor}}`).join("");
 const ARTICLE_SYMBOLS = ["★", "◆", "●", "✓", "✦", "→", "—", "※", "♥", "⚠"] as const;
-const EDITOR_TAGS = new Set(["P", "H2", "H3", "H4", "STRONG", "EM", "SPAN", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD"]);
+const EDITOR_TAGS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "STRONG", "EM", "SPAN", "UL", "OL", "LI", "BLOCKQUOTE", "FIGURE", "FIGCAPTION", "BR", "HR", "A", "IMG", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD"]);
 const VOID_EDITOR_TAGS = new Set(["BR", "HR", "IMG"]);
 
 function sanitizeEditorHtml(input: string): string {
@@ -72,7 +72,7 @@ function markdownToHtml(markdown: string): string {
     .replace(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   const hardBreak = (value: string) => /\\\s*$/.test(value);
   const isListLine = (value: string) => /^[-*+]\s+|^\d+[.)]\s+/.test(value.trim());
-  const isBlockStart = (value: string) => /^(#{1,4})\s|^>\s?|^[-*+]\s+|^\d+[.)]\s+|^---+$/.test(value.trim());
+  const isBlockStart = (value: string) => /^(#{1,5})\s|^>\s?|^[-*+]\s+|^\d+[.)]\s+|^---+$/.test(value.trim());
   const cells = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
   const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
   const blocks: string[] = [];
@@ -87,8 +87,8 @@ function markdownToHtml(markdown: string): string {
       blocks.push(`<table><thead><tr>${header.map((cell) => `<th>${inline(cell)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${header.map((_, cellIndex) => `<td>${inline(row[cellIndex] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
       continue;
     }
-    const heading = /^(#{1,4})\s+(.+)$/.exec(line);
-    if (heading) { const level = Math.max(2, heading[1].length); blocks.push(`<h${level}>${inline(heading[2])}</h${level}>`); index += 1; continue; }
+    const heading = /^(#{1,5})\s+(.+)$/.exec(line);
+    if (heading) { const level = heading[1].length; blocks.push(`<h${level}>${inline(heading[2])}</h${level}>`); index += 1; continue; }
     if (/^---+$/.test(line)) { blocks.push("<hr>"); index += 1; continue; }
     if (/^>\s?/.test(line)) {
       const quote: string[] = [];
@@ -210,18 +210,18 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   const selectedBlocks = (range: Range) => {
     const root = editorRef.current;
     if (!root) return [] as HTMLElement[];
-    return Array.from(root.querySelectorAll<HTMLElement>("p, h2, h3, h4, blockquote, li"))
+    return Array.from(root.querySelectorAll<HTMLElement>("p, h1, h2, h3, h4, h5, blockquote, li"))
       .filter((block) => range.intersectsNode(block))
-      .filter((block) => !Array.from(block.parentElement?.querySelectorAll<HTMLElement>("p, h2, h3, h4, blockquote, li") || []).some((child) => child !== block && child.contains(block) && range.intersectsNode(child)));
+      .filter((block) => !Array.from(block.parentElement?.querySelectorAll<HTMLElement>("p, h1, h2, h3, h4, h5, blockquote, li") || []).some((child) => child !== block && child.contains(block) && range.intersectsNode(child)));
   };
-  const replaceBlockTag = (block: HTMLElement, tagName: "p" | "h2" | "blockquote") => {
+  const replaceBlockTag = (block: HTMLElement, tagName: "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "blockquote") => {
     if (block.tagName.toLowerCase() === tagName) return block;
     const replacement = document.createElement(tagName);
     replacement.innerHTML = block.innerHTML;
     block.replaceWith(replacement);
     return replacement;
   };
-  const formatSelectedBlocks = (tagName: "p" | "h2" | "blockquote") => {
+  const formatSelectedBlocks = (tagName: "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "blockquote") => {
     const range = activeTextRange();
     if (!range) return false;
     const blocks = selectedBlocks(range);
@@ -349,7 +349,7 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
     else if (name === "italic") changed = wrapSelectedText("em");
     else if (name === "insertUnorderedList") changed = formatSelectedList("ul");
     else if (name === "insertOrderedList") changed = formatSelectedList("ol");
-    else if (name === "formatBlock" && (commandValue === "p" || commandValue === "h2" || commandValue === "blockquote")) changed = formatSelectedBlocks(commandValue);
+    else if (name === "formatBlock" && (commandValue === "p" || commandValue === "h1" || commandValue === "h2" || commandValue === "h3" || commandValue === "h4" || commandValue === "h5" || commandValue === "blockquote")) changed = formatSelectedBlocks(commandValue);
     if (!changed) { message.info("请先选中一段正文，再使用此排版工具"); return; }
     emit();
   };
@@ -404,7 +404,11 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   return <div>
     <Space wrap size={[6, 8]} style={{ marginBottom: 10 }}>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "p")} disabled={disabled || sourceMode}>正文</Button>
-      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "h2")} disabled={disabled || sourceMode}>标题</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "h1")} disabled={disabled || sourceMode}>一级标题</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "h2")} disabled={disabled || sourceMode}>二级标题</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "h3")} disabled={disabled || sourceMode}>三级标题</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "h4")} disabled={disabled || sourceMode}>四级标题</Button>
+      <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("formatBlock", "h5")} disabled={disabled || sourceMode}>五级标题</Button>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("bold")} disabled={disabled || sourceMode}><strong>加粗</strong></Button>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("italic")} disabled={disabled || sourceMode}><em>斜体</em></Button>
       <Button size="small" onPointerDown={preserveSelectedText} onClick={() => command("insertUnorderedList")} disabled={disabled || sourceMode}>列表</Button>

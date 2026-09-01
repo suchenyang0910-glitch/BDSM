@@ -1185,7 +1185,12 @@ img.is-image-unavailable {
 .article-detail-cover { aspect-ratio: 16 / 9; max-height: 520px; }
 .article-html-body { display: grid; gap: 14px; line-height: 1.8; }
 .article-html-body > * { margin: 0; }
-.article-html-body h2, .article-html-body h3 { margin-top: 10px; }
+.article-html-body h1, .article-html-body h2, .article-html-body h3, .article-html-body h4, .article-html-body h5 { margin: 10px 0 0; color: var(--text-primary); line-height: 1.35; }
+.article-html-body h1 { font-size: 24px; }
+.article-html-body h2 { font-size: 21px; }
+.article-html-body h3 { font-size: 18px; }
+.article-html-body h4 { font-size: 16px; }
+.article-html-body h5 { font-size: 14px; }
 .article-html-body ul, .article-html-body ol { margin: 0; padding-left: 22px; }
 .article-html-body blockquote { margin: 0; padding: 12px 14px; border-left: 3px solid var(--brand-primary); border-radius: 0 10px 10px 0; background: rgba(169, 104, 255, .1); }
 .article-html-body figure { display: grid; gap: 8px; margin: 0; }
