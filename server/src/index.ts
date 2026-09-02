@@ -1,3 +1,4 @@
+import "./bootstrapEnv.js";
 import fastify from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
@@ -30,6 +31,8 @@ import playbackMediaRoutes from "./routes/playbackMedia.js";
 import publicSeoRoutes from "./routes/publicSeo.js";
 import articleRoutes from "./routes/articles.js";
 import adminArticleRoutes from "./routes/adminArticles.js";
+import interactionRoutes from "./routes/interactions.js";
+import adminInteractionRoutes from "./routes/adminInteractions.js";
 import { botSelfTest, TELEGRAM_CONFIG } from "./services/telegramBot.js";
 import { startEntitlementsCron } from "./services/entitlementsCron.js";
 import { startUploadSessionCleanupCron } from "./services/uploadSessionCleanup.js";
@@ -345,6 +348,8 @@ async function main() {
   await app.register(homeRoutes, { prefix: "/api" });
   await app.register(articleRoutes, { prefix: "/api" });
   await app.register(adminArticleRoutes, { prefix: "/api" });
+  await app.register(interactionRoutes, { prefix: "/api" });
+  await app.register(adminInteractionRoutes, { prefix: "/api" });
   await app.register(contentRoutes, { prefix: "/api" });
   await app.register(resourceRoutes, { prefix: "/api" });
   await app.register(orderRoutes, { prefix: "/api" });

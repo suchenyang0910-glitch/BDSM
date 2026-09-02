@@ -89,6 +89,7 @@
       id: "",
       fromTab: "home",
     },
+    interactions: {},
   };
 
   function $(id) {
@@ -841,10 +842,473 @@
         (item.coverImageUrl ? '<img class="article-detail-cover" src="' + escapeHtml(item.coverImageUrl) + '" alt="' + escapeHtml(item.title) + '">' : "") +
         "<h2>" + escapeHtml(item.title) + "</h2><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +
         '<div class="article-html-body">' + String(item.bodyHtml || "") + "</div>" +
+        renderInteractionPanelShell("article", {
+          targetType: "article",
+          targetId: item.id || "",
+          title: item.title || "文章",
+          emptyHint: item.id ? "" : "当前文章处于静态应急模式，互动暂不可用。",
+        }) +
         '<footer class="article-attribution">归属：SAMEWAVE</footer>';
+      if (item.id) {
+        initializeInteractionPanel("article", {
+          targetType: "article",
+          targetId: item.id,
+          title: item.title || "文章",
+        });
+      }
     } catch (err) {
       host.innerHTML = '<div class="inline-state">文章加载失败：' + escapeHtml(apiText(err)) + "</div>";
     }
+  }
+
+  const INTERACTION_REPORT_REASONS = [
+    { code: "spam", label: "垃圾/广告" },
+    { code: "abuse", label: "骚扰/辱骂" },
+    { code: "illegal", label: "违法/违规" },
+    { code: "sexual_violence", label: "性暴力/非自愿" },
+    { code: "other", label: "其他" },
+  ];
+
+  function interactionState(prefix) {
+    if (!state.interactions[prefix]) {
+      state.interactions[prefix] = {
+        targetType: "",
+        targetId: "",
+        title: "",
+        sort: "hot",
+        items: [],
+        nextCursor: null,
+        summary: { likeCount: 0, commentCount: 0, likedByMe: false },
+        replyingToId: "",
+        replyDraft: "",
+        reportSubject: null,
+        loadingComments: false,
+      };
+    }
+    return state.interactions[prefix];
+  }
+
+  function interactionNode(prefix, suffix) {
+    return $(prefix + suffix);
+  }
+
+  function renderInteractionPanelShell(prefix, options) {
+    const targetId = options && options.targetId ? String(options.targetId) : "";
+    if (!targetId) {
+      return '<section class="interaction-panel"><div class="inline-state">' + escapeHtml(options && options.emptyHint ? options.emptyHint : "互动暂未开放。") + '</div></section>';
+    }
+    return '' +
+      '<section id="' + prefix + 'InteractionPanel" class="interaction-panel">' +
+        '<div class="interaction-summary-bar">' +
+          '<button id="' + prefix + 'LikeButton" class="interaction-chip" type="button">赞 <strong id="' + prefix + 'LikeCount">0</strong></button>' +
+          '<div class="interaction-summary-copy"><strong id="' + prefix + 'CommentCount">0</strong><span>条评论</span></div>' +
+          '<button id="' + prefix + 'ReportButton" class="text-button" type="button">举报内容</button>' +
+        '</div>' +
+        '<div class="interaction-composer">' +
+          '<textarea id="' + prefix + 'CommentInput" class="interaction-textarea" rows="4" maxlength="500" placeholder="留下你的看法，最多 500 字。"></textarea>' +
+          '<div class="interaction-composer-foot">' +
+            '<span id="' + prefix + 'ComposerHint" class="muted-copy">仅支持纯文本与 Emoji，未审核评论不会公开显示。</span>' +
+            '<span id="' + prefix + 'ComposerCount" class="interaction-counter">0/500</span>' +
+          '</div>' +
+          '<div class="interaction-composer-actions">' +
+            '<button id="' + prefix + 'CommentSubmit" class="primary-button" type="button">发表评论</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="interaction-sort-bar">' +
+          '<div class="segment" role="tablist" aria-label="评论排序">' +
+            '<button id="' + prefix + 'SortHot" class="segment-button is-active" type="button">热门</button>' +
+            '<button id="' + prefix + 'SortNew" class="segment-button" type="button">最新</button>' +
+          '</div>' +
+        '</div>' +
+        '<div id="' + prefix + 'InteractionState" class="inline-state is-hidden"></div>' +
+        '<div id="' + prefix + 'CommentList" class="interaction-comment-list"></div>' +
+        '<button id="' + prefix + 'LoadMore" class="ghost-button is-hidden" type="button">加载更多评论</button>' +
+      '</section>' +
+      '<section id="' + prefix + 'ReportSheet" class="interaction-report-sheet is-hidden" aria-live="polite">' +
+        '<div class="interaction-report-card">' +
+          '<div class="interaction-report-head"><strong>举报原因</strong><button id="' + prefix + 'ReportCancel" class="ghost-button" type="button">取消</button></div>' +
+          '<label class="interaction-field-label" for="' + prefix + 'ReportReason">请选择原因</label>' +
+          '<select id="' + prefix + 'ReportReason" class="interaction-select">' +
+            INTERACTION_REPORT_REASONS.map(function (item) { return '<option value="' + item.code + '">' + item.label + '</option>'; }).join("") +
+          '</select>' +
+          '<label class="interaction-field-label" for="' + prefix + 'ReportDetail">补充说明</label>' +
+          '<textarea id="' + prefix + 'ReportDetail" class="interaction-textarea" rows="3" maxlength="500" placeholder="选填，最多 500 字。"></textarea>' +
+          '<button id="' + prefix + 'ReportSubmit" class="primary-button" type="button">提交举报</button>' +
+        '</div>' +
+      '</section>';
+  }
+
+  function normalizeCommentRows(items) {
+    return Array.isArray(items) ? items : [];
+  }
+
+  function formatCommentTimestamp(value) {
+    const date = value ? new Date(value) : null;
+    if (!date || Number.isNaN(date.getTime())) return "刚刚";
+    const diff = Date.now() - date.getTime();
+    if (diff < 60 * 1000) return "刚刚";
+    if (diff < 60 * 60 * 1000) return Math.max(1, Math.floor(diff / (60 * 1000))) + " 分钟前";
+    if (diff < 24 * 60 * 60 * 1000) return Math.max(1, Math.floor(diff / (60 * 60 * 1000))) + " 小时前";
+    return formatArticleDate(date.toISOString());
+  }
+
+  function findInteractionComment(items, commentId) {
+    for (let i = 0; i < items.length; i += 1) {
+      if (items[i].id === commentId) return items[i];
+      const replies = Array.isArray(items[i].replies) ? items[i].replies : [];
+      for (let j = 0; j < replies.length; j += 1) {
+        if (replies[j].id === commentId) return replies[j];
+      }
+    }
+    return null;
+  }
+
+  function updateInteractionSummaryDom(prefix) {
+    const current = interactionState(prefix);
+    const likeButton = interactionNode(prefix, "LikeButton");
+    const likeCount = interactionNode(prefix, "LikeCount");
+    const commentCount = interactionNode(prefix, "CommentCount");
+    if (likeButton) likeButton.classList.toggle("is-active", !!current.summary.likedByMe);
+    if (likeCount) likeCount.textContent = String(current.summary.likeCount || 0);
+    if (commentCount) commentCount.textContent = String(current.summary.commentCount || 0);
+  }
+
+  function updateInteractionComposerCount(prefix) {
+    const input = interactionNode(prefix, "CommentInput");
+    const counter = interactionNode(prefix, "ComposerCount");
+    if (!input || !counter) return;
+    counter.textContent = String((input.value || "").length) + "/500";
+  }
+
+  function setInteractionStateText(prefix, message, visible) {
+    const node = interactionNode(prefix, "InteractionState");
+    if (!node) return;
+    node.textContent = message || "";
+    node.classList.toggle("is-hidden", !visible || !message);
+  }
+
+  function renderInteractionCommentItem(prefix, comment, isReply) {
+    const current = interactionState(prefix);
+    const currentUserId = state.session && state.session.userId ? String(state.session.userId) : "";
+    const replies = Array.isArray(comment.replies) ? comment.replies : [];
+    const canDelete = !!currentUserId && comment.author && String(comment.author.id) === currentUserId;
+    const replyBox = !isReply && current.replyingToId === comment.id
+      ? '<div class="interaction-reply-box">' +
+          '<textarea id="' + prefix + 'ReplyInput" class="interaction-textarea" rows="3" maxlength="300" placeholder="回复 ' + escapeHtml((comment.author && comment.author.displayName) || "同频成员") + '，最多 300 字。">' + escapeHtml(current.replyDraft || "") + '</textarea>' +
+          '<div class="interaction-composer-foot"><span class="muted-copy">仅支持回复一级评论。</span><span id="' + prefix + 'ReplyCount" class="interaction-counter">' + String((current.replyDraft || "").length) + '/300</span></div>' +
+          '<div class="interaction-composer-actions"><button class="ghost-button" type="button" data-interaction-cancel-reply="' + escapeHtml(comment.id) + '">取消</button><button class="primary-button" type="button" data-interaction-submit-reply="' + escapeHtml(comment.id) + '">发送回复</button></div>' +
+        '</div>'
+      : "";
+    return '' +
+      '<article class="interaction-comment' + (isReply ? ' is-reply' : '') + '">' +
+        '<div class="interaction-comment-head"><strong>' + escapeHtml(comment.author && comment.author.displayName ? comment.author.displayName : "同频成员") + '</strong><span>' + escapeHtml(formatCommentTimestamp(comment.createdAt)) + '</span></div>' +
+        '<p class="interaction-comment-body">' + escapeHtml(comment.body || "") + '</p>' +
+        '<div class="interaction-comment-actions">' +
+          '<button class="interaction-link-button' + (comment.likedByMe ? ' is-active' : '') + '" type="button" data-interaction-like-comment="' + escapeHtml(comment.id) + '">赞 ' + escapeHtml(String(comment.likeCount || 0)) + '</button>' +
+          (!isReply ? '<button class="interaction-link-button" type="button" data-interaction-reply="' + escapeHtml(comment.id) + '">回复</button>' : '') +
+          '<button class="interaction-link-button" type="button" data-interaction-report-comment="' + escapeHtml(comment.id) + '">举报</button>' +
+          (canDelete ? '<button class="interaction-link-button interaction-link-danger" type="button" data-interaction-delete-comment="' + escapeHtml(comment.id) + '">删除</button>' : '') +
+        '</div>' +
+        replyBox +
+        (replies.length ? '<div class="interaction-reply-list">' + replies.map(function (reply) { return renderInteractionCommentItem(prefix, reply, true); }).join("") + '</div>' : '') +
+        (!isReply && Number(comment.replyCount || 0) > replies.length ? '<p class="interaction-more-replies">当前已展示前 ' + escapeHtml(String(replies.length)) + ' 条回复。</p>' : '') +
+      '</article>';
+  }
+
+  function bindInteractionCommentActions(prefix) {
+    const current = interactionState(prefix);
+    const replyInput = interactionNode(prefix, "ReplyInput");
+    const replyCount = interactionNode(prefix, "ReplyCount");
+    if (replyInput && replyCount) {
+      replyInput.oninput = function () {
+        current.replyDraft = replyInput.value || "";
+        replyCount.textContent = String(current.replyDraft.length) + "/300";
+      };
+    }
+    Array.prototype.forEach.call(document.querySelectorAll("[data-interaction-like-comment]"), function (button) {
+      button.onclick = function () { toggleInteractionCommentLike(prefix, button.getAttribute("data-interaction-like-comment")); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-interaction-reply]"), function (button) {
+      button.onclick = function () {
+        current.replyingToId = button.getAttribute("data-interaction-reply") || "";
+        current.replyDraft = "";
+        renderInteractionComments(prefix);
+      };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-interaction-cancel-reply]"), function (button) {
+      button.onclick = function () {
+        current.replyingToId = "";
+        current.replyDraft = "";
+        renderInteractionComments(prefix);
+      };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-interaction-submit-reply]"), function (button) {
+      button.onclick = function () {
+        submitInteractionComment(prefix, {
+          parentId: button.getAttribute("data-interaction-submit-reply") || "",
+          body: current.replyDraft || "",
+        });
+      };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-interaction-report-comment]"), function (button) {
+      button.onclick = function () { openInteractionReportSheet(prefix, { commentId: button.getAttribute("data-interaction-report-comment") || "" }); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-interaction-delete-comment]"), function (button) {
+      button.onclick = function () { deleteInteractionComment(prefix, button.getAttribute("data-interaction-delete-comment") || ""); };
+    });
+  }
+
+  function renderInteractionComments(prefix) {
+    const current = interactionState(prefix);
+    const host = interactionNode(prefix, "CommentList");
+    const loadMore = interactionNode(prefix, "LoadMore");
+    if (!host) return;
+    if (!current.items.length) host.innerHTML = '<div class="empty-state">还没有公开评论，来抢第一个发言位置。</div>';
+    else host.innerHTML = current.items.map(function (comment) { return renderInteractionCommentItem(prefix, comment, false); }).join("");
+    if (loadMore) loadMore.classList.toggle("is-hidden", !current.nextCursor);
+    bindInteractionCommentActions(prefix);
+  }
+
+  async function loadInteractionSummary(prefix) {
+    const current = interactionState(prefix);
+    const query = new URLSearchParams({ targetType: current.targetType, targetId: current.targetId });
+    const payload = await apiCall("/api/interactions/summary?" + query.toString());
+    if (interactionState(prefix).targetId !== current.targetId) return;
+    current.summary = payload && payload.summary ? payload.summary : { likeCount: 0, commentCount: 0, likedByMe: false };
+    updateInteractionSummaryDom(prefix);
+  }
+
+  async function loadInteractionComments(prefix, options) {
+    const current = interactionState(prefix);
+    if (!current.targetId || current.loadingComments) return;
+    current.loadingComments = true;
+    const append = !!(options && options.append);
+    if (!append) setInteractionStateText(prefix, "正在加载评论…", true);
+    try {
+      const query = new URLSearchParams({
+        targetType: current.targetType,
+        targetId: current.targetId,
+        sort: current.sort,
+        pageSize: "10",
+      });
+      if (append && current.nextCursor) query.set("cursor", current.nextCursor);
+      const payload = await apiCall("/api/interactions/comments?" + query.toString());
+      if (interactionState(prefix).targetId !== current.targetId) return;
+      current.items = append ? current.items.concat(normalizeCommentRows(payload && payload.items)) : normalizeCommentRows(payload && payload.items);
+      current.nextCursor = payload && payload.nextCursor ? payload.nextCursor : null;
+      renderInteractionComments(prefix);
+      setInteractionStateText(prefix, "", false);
+    } catch (err) {
+      if (!append) setInteractionStateText(prefix, "评论加载失败：" + apiText(err), true);
+      else showInlineMessage("加载更多评论失败：" + apiText(err));
+    } finally {
+      current.loadingComments = false;
+    }
+  }
+
+  async function refreshInteractionPanel(prefix) {
+    await Promise.all([
+      loadInteractionSummary(prefix),
+      loadInteractionComments(prefix, { append: false }),
+    ]);
+  }
+
+  async function toggleInteractionTargetLike(prefix) {
+    const current = interactionState(prefix);
+    const before = { likedByMe: !!current.summary.likedByMe, likeCount: Number(current.summary.likeCount || 0) };
+    current.summary.likedByMe = !before.likedByMe;
+    current.summary.likeCount = Math.max(0, before.likeCount + (current.summary.likedByMe ? 1 : -1));
+    updateInteractionSummaryDom(prefix);
+    try {
+      const payload = await apiCall("/api/interactions/likes/toggle", {
+        method: "POST",
+        body: JSON.stringify({
+          targetType: current.targetType,
+          targetId: current.targetId,
+          subjectKind: "target",
+        }),
+      });
+      current.summary.likedByMe = !!payload.liked;
+      current.summary.likeCount = Number(payload.likeCount || 0);
+      updateInteractionSummaryDom(prefix);
+    } catch (err) {
+      current.summary.likedByMe = before.likedByMe;
+      current.summary.likeCount = before.likeCount;
+      updateInteractionSummaryDom(prefix);
+      showInlineMessage("点赞未保存：" + apiText(err));
+    }
+  }
+
+  async function toggleInteractionCommentLike(prefix, commentId) {
+    const current = interactionState(prefix);
+    const comment = findInteractionComment(current.items, commentId);
+    if (!comment) return;
+    const before = { likedByMe: !!comment.likedByMe, likeCount: Number(comment.likeCount || 0) };
+    comment.likedByMe = !before.likedByMe;
+    comment.likeCount = Math.max(0, before.likeCount + (comment.likedByMe ? 1 : -1));
+    renderInteractionComments(prefix);
+    try {
+      const payload = await apiCall("/api/interactions/likes/toggle", {
+        method: "POST",
+        body: JSON.stringify({
+          targetType: current.targetType,
+          targetId: current.targetId,
+          subjectKind: "comment",
+          commentId: commentId,
+        }),
+      });
+      comment.likedByMe = !!payload.liked;
+      comment.likeCount = Number(payload.likeCount || 0);
+      renderInteractionComments(prefix);
+    } catch (err) {
+      comment.likedByMe = before.likedByMe;
+      comment.likeCount = before.likeCount;
+      renderInteractionComments(prefix);
+      showInlineMessage("评论点赞未保存：" + apiText(err));
+    }
+  }
+
+  async function submitInteractionComment(prefix, options) {
+    const current = interactionState(prefix);
+    const parentId = options && options.parentId ? String(options.parentId) : "";
+    const composer = interactionNode(prefix, "CommentInput");
+    const body = String(options && options.body ? options.body : composer ? composer.value : "").trim();
+    const maxLength = parentId ? 300 : 500;
+    if (!body || body.length < 2) {
+      showInlineMessage("评论至少输入 2 个字。");
+      return;
+    }
+    if (body.length > maxLength) {
+      showInlineMessage((parentId ? "回复" : "评论") + "最多 " + maxLength + " 字。");
+      return;
+    }
+    try {
+      const payload = await apiCall("/api/interactions/comments", {
+        method: "POST",
+        body: JSON.stringify({
+          targetType: current.targetType,
+          targetId: current.targetId,
+          parentId: parentId || undefined,
+          body: body,
+        }),
+      });
+      if (parentId) {
+        current.replyingToId = "";
+        current.replyDraft = "";
+      } else if (composer) {
+        composer.value = "";
+        updateInteractionComposerCount(prefix);
+      }
+      if (payload && payload.comment && payload.comment.status === "pending") showInlineMessage("评论已提交审核，通过后会公开显示。");
+      else showInlineMessage(parentId ? "回复已发送。" : "评论已发布。");
+      await refreshInteractionPanel(prefix);
+    } catch (err) {
+      showInlineMessage((parentId ? "回复失败：" : "评论失败：") + apiText(err));
+    }
+  }
+
+  function openInteractionReportSheet(prefix, subject) {
+    const current = interactionState(prefix);
+    current.reportSubject = subject || null;
+    const sheet = interactionNode(prefix, "ReportSheet");
+    const reason = interactionNode(prefix, "ReportReason");
+    const detail = interactionNode(prefix, "ReportDetail");
+    if (reason) reason.value = "other";
+    if (detail) detail.value = "";
+    if (sheet) sheet.classList.remove("is-hidden");
+  }
+
+  function closeInteractionReportSheet(prefix) {
+    const sheet = interactionNode(prefix, "ReportSheet");
+    if (sheet) sheet.classList.add("is-hidden");
+    interactionState(prefix).reportSubject = null;
+  }
+
+  async function submitInteractionReport(prefix) {
+    const current = interactionState(prefix);
+    const reason = interactionNode(prefix, "ReportReason");
+    const detail = interactionNode(prefix, "ReportDetail");
+    try {
+      await apiCall("/api/interactions/reports", {
+        method: "POST",
+        body: JSON.stringify({
+          targetType: current.targetType,
+          targetId: current.targetId,
+          commentId: current.reportSubject && current.reportSubject.commentId ? current.reportSubject.commentId : undefined,
+          reasonCode: reason ? reason.value : "other",
+          detailText: detail && String(detail.value || "").trim() ? String(detail.value || "").trim() : undefined,
+        }),
+      });
+      closeInteractionReportSheet(prefix);
+      showInlineMessage("举报已提交，我们会尽快处理。");
+    } catch (err) {
+      showInlineMessage("举报失败：" + apiText(err));
+    }
+  }
+
+  async function deleteInteractionComment(prefix, commentId) {
+    if (!commentId) return;
+    if (!window.confirm("确认删除这条评论吗？删除后会同步更新计数。")) return;
+    try {
+      await apiCall("/api/interactions/comments/" + encodeURIComponent(commentId), {
+        method: "DELETE",
+      });
+      showInlineMessage("评论已删除。");
+      await refreshInteractionPanel(prefix);
+    } catch (err) {
+      showInlineMessage("删除失败：" + apiText(err));
+    }
+  }
+
+  function initializeInteractionPanel(prefix, input) {
+    const current = interactionState(prefix);
+    const changed = current.targetType !== input.targetType || current.targetId !== input.targetId;
+    current.targetType = input.targetType;
+    current.targetId = input.targetId;
+    current.title = input.title || "";
+    if (changed) {
+      current.items = [];
+      current.nextCursor = null;
+      current.summary = { likeCount: 0, commentCount: 0, likedByMe: false };
+      current.replyingToId = "";
+      current.replyDraft = "";
+      current.sort = "hot";
+    }
+    const likeButton = interactionNode(prefix, "LikeButton");
+    const reportButton = interactionNode(prefix, "ReportButton");
+    const submitButton = interactionNode(prefix, "CommentSubmit");
+    const inputNode = interactionNode(prefix, "CommentInput");
+    const loadMore = interactionNode(prefix, "LoadMore");
+    const sortHot = interactionNode(prefix, "SortHot");
+    const sortNew = interactionNode(prefix, "SortNew");
+    const reportSubmit = interactionNode(prefix, "ReportSubmit");
+    const reportCancel = interactionNode(prefix, "ReportCancel");
+    if (likeButton) likeButton.onclick = function () { toggleInteractionTargetLike(prefix); };
+    if (reportButton) reportButton.onclick = function () { openInteractionReportSheet(prefix, null); };
+    if (submitButton) submitButton.onclick = function () { submitInteractionComment(prefix, { body: inputNode ? inputNode.value : "" }); };
+    if (inputNode) {
+      inputNode.oninput = function () { updateInteractionComposerCount(prefix); };
+      updateInteractionComposerCount(prefix);
+    }
+    if (loadMore) loadMore.onclick = function () { loadInteractionComments(prefix, { append: true }); };
+    if (sortHot) sortHot.onclick = function () {
+      current.sort = "hot";
+      sortHot.classList.add("is-active");
+      if (sortNew) sortNew.classList.remove("is-active");
+      current.nextCursor = null;
+      loadInteractionComments(prefix, { append: false });
+    };
+    if (sortNew) sortNew.onclick = function () {
+      current.sort = "new";
+      sortNew.classList.add("is-active");
+      if (sortHot) sortHot.classList.remove("is-active");
+      current.nextCursor = null;
+      loadInteractionComments(prefix, { append: false });
+    };
+    if (reportSubmit) reportSubmit.onclick = function () { submitInteractionReport(prefix); };
+    if (reportCancel) reportCancel.onclick = function () { closeInteractionReportSheet(prefix); };
+    renderInteractionComments(prefix);
+    void refreshInteractionPanel(prefix);
   }
 
   function createSkeletonCards(count) {
@@ -1542,6 +2006,11 @@
       (pendingOrder ? '<div class="stack-note">当前有待支付订单：' + escapeHtml(pendingOrder.orderNo) + '，可在「我的 > 我的订单」继续支付。</div>' : "") +
       '</div>' +
       (detail.accessType !== "public" ? '<div class="detail-purchase-list"></div>' : "") +
+      renderInteractionPanelShell("detail", {
+        targetType: "video_content",
+        targetId: detail.id,
+        title: detail.title || "视频内容",
+      }) +
       '<div class="sticky-action-bar"><button id="detailPrimaryButton" class="primary-button" type="button">' + escapeHtml(primaryAction.text) + '</button><button id="detailBackButton" class="ghost-button" type="button">返回</button></div>' +
       "</div>";
 
@@ -1566,6 +2035,11 @@
     if (previewUpgradeButton) previewUpgradeButton.addEventListener("click", function () { startPurchase(detail); });
     $("detailBackButton").addEventListener("click", function () {
       setHashForTab(state.route.fromTab || "home");
+    });
+    initializeInteractionPanel("detail", {
+      targetType: "video_content",
+      targetId: detail.id,
+      title: detail.title || "视频内容",
     });
     attachDetailPlayer(detail);
     void prefetchDetailPreview(detail);

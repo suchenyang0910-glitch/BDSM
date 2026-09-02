@@ -1507,6 +1507,141 @@ img.is-image-unavailable {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.interaction-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.interaction-summary-bar,
+.interaction-summary-copy,
+.interaction-composer-foot,
+.interaction-composer-actions,
+.interaction-comment-head,
+.interaction-comment-actions,
+.interaction-report-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.interaction-summary-bar,
+.interaction-composer-foot,
+.interaction-comment-head,
+.interaction-comment-actions,
+.interaction-report-head {
+  justify-content: space-between;
+}
+
+.interaction-summary-copy {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.interaction-summary-copy strong {
+  color: var(--text-primary);
+  font-size: 18px;
+}
+
+.interaction-chip,
+.interaction-link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+.interaction-chip.is-active,
+.interaction-link-button.is-active {
+  color: var(--brand-primary);
+}
+
+.interaction-link-danger {
+  color: var(--state-danger);
+}
+
+.interaction-textarea,
+.interaction-select {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(21, 18, 30, 0.82);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.interaction-textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.interaction-textarea::placeholder {
+  color: rgba(214, 214, 224, 0.55);
+}
+
+.interaction-counter,
+.interaction-more-replies,
+.interaction-field-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.interaction-comment-list,
+.interaction-reply-list {
+  display: grid;
+  gap: 10px;
+}
+
+.interaction-comment {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 16px;
+  background: rgba(19, 16, 27, 0.9);
+}
+
+.interaction-comment.is-reply {
+  background: rgba(31, 26, 43, 0.86);
+}
+
+.interaction-comment-head span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.interaction-comment-body {
+  margin: 0;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  line-height: 1.7;
+}
+
+.interaction-reply-box {
+  display: grid;
+  gap: 10px;
+  padding-top: 6px;
+}
+
+.interaction-report-sheet {
+  margin-top: 12px;
+}
+
+.interaction-report-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(205, 179, 255, 0.24);
+  border-radius: 16px;
+  background: rgba(31, 26, 43, 0.94);
+}
+
 .sticky-action-bar {
   position: sticky;
   bottom: calc(72px + env(safe-area-inset-bottom));

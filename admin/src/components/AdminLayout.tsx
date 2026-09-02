@@ -50,6 +50,7 @@ const PAGE_TITLE_BY_PATH: Record<string, string> = {
   "/tickets": "订单与权益 · 客服工单",
   "/contents": "内容管理 · 视频内容",
   "/articles": "内容管理 · 文章中心",
+  "/interaction-reports": "内容管理 · 互动审核",
   "/packages": "内容管理 · 内容包管理",
   "/categories": "内容管理 · 分类与标签",
   "/banners": "内容管理 · Banner 运营位",
@@ -73,6 +74,7 @@ const AdminLayout: React.FC = () => {
     if (p.startsWith("/finance")) return "/finance";
     if (p.startsWith("/contents")) return "/contents";
     if (p.startsWith("/articles")) return "/articles";
+    if (p.startsWith("/interaction-reports")) return "/interaction-reports";
     if (p.startsWith("/packages")) return "/packages";
     if (p.startsWith("/categories")) return "/categories";
     if (p.startsWith("/banners")) return "/banners";
@@ -90,7 +92,7 @@ const AdminLayout: React.FC = () => {
   const openKeys = (() => {
     const p = location.pathname;
     const keys: string[] = ["orders"];
-    if (["/contents", "/articles", "/packages", "/categories", "/banners", "/homepage"].some((k) => p.startsWith(k))) keys.push("content");
+    if (["/contents", "/articles", "/interaction-reports", "/packages", "/categories", "/banners", "/homepage"].some((k) => p.startsWith(k))) keys.push("content");
     if (["/channels", "/platform-metadata"].some((k) => p.startsWith(k))) keys.push("settings");
     return keys;
   })();
@@ -175,6 +177,7 @@ const AdminLayout: React.FC = () => {
               children: [
                 { key: "/contents", icon: <VideoCameraOutlined />, label: "视频内容" },
                 { key: "/articles", icon: <ReadOutlined />, label: "文章中心" },
+                { key: "/interaction-reports", icon: <MessageOutlined />, label: "互动审核" },
                 { key: "/packages", icon: <AppstoreOutlined />, label: "内容包管理" },
                 { key: "/categories", icon: <TagsOutlined />, label: "分类与标签" },
                 { key: "/banners", icon: <HomeOutlined />, label: "Banner 运营位" },

@@ -1440,3 +1440,88 @@ export type AdminDashboardSummary = {
   cards: AdminDashboardCards;
   stage2Readiness: AdminDashboardStage2Readiness;
 };
+
+export type InteractionTargetType = "video_content" | "article" | "circle_post";
+export type InteractionReportStatus = "open" | "reviewing" | "actioned" | "dismissed";
+export type InteractionCommentStatus = "pending" | "approved" | "hidden" | "rejected" | "deleted";
+
+export type AdminInteractionReportComment = {
+  id: string;
+  body: string;
+  status: InteractionCommentStatus;
+  likeCount: number;
+  replyCount: number;
+};
+
+export type AdminInteractionReportItem = {
+  id: string;
+  status: InteractionReportStatus;
+  targetType: InteractionTargetType;
+  targetId: string;
+  reasonCode: string;
+  detailText: string | null;
+  createdAt: string;
+  reviewedAt: string | null;
+  resolutionNote: string | null;
+  reporter: { id: string; displayName?: string | null } | null;
+  reviewer: { id: string; displayName?: string | null; email?: string | null } | null;
+  comment: AdminInteractionReportComment | null;
+};
+
+export type AdminInteractionReportListResp = {
+  total: number;
+  page: number;
+  pageSize: number;
+  items: AdminInteractionReportItem[];
+};
+
+export type AdminInteractionReportListFilter = {
+  page?: number;
+  pageSize?: number;
+  status?: InteractionReportStatus;
+  targetType?: InteractionTargetType;
+};
+
+export type AdminInteractionCommentQueueItem = {
+  id: string;
+  targetType: InteractionTargetType;
+  targetId: string;
+  parentId: string | null;
+  rootId: string | null;
+  body: string;
+  status: InteractionCommentStatus;
+  likeCount: number;
+  replyCount: number;
+  createdAt: string;
+  updatedAt: string;
+  moderatedAt: string | null;
+  moderationReason: string | null;
+  author: { id: string; displayName?: string | null } | null;
+  target: { id: string; title: string; status: string } | null;
+};
+
+export type AdminInteractionCommentListResp = {
+  total: number;
+  page: number;
+  pageSize: number;
+  items: AdminInteractionCommentQueueItem[];
+};
+
+export type AdminInteractionCommentListFilter = {
+  page?: number;
+  pageSize?: number;
+  status?: InteractionCommentStatus;
+  targetType?: InteractionTargetType;
+};
+
+export type ReviewInteractionReportInput = {
+  status: InteractionReportStatus;
+  resolutionNote?: string;
+  commentStatus?: Extract<InteractionCommentStatus, "approved" | "hidden" | "rejected" | "deleted">;
+  commentReason?: string;
+};
+
+export type ModerateInteractionCommentInput = {
+  status: Extract<InteractionCommentStatus, "approved" | "hidden" | "rejected" | "deleted">;
+  reason?: string;
+};

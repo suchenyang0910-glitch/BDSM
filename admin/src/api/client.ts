@@ -83,6 +83,12 @@ import type {
   AdminCampaignListResp,
   CreateAdminCampaignInput,
   UpdateAdminCampaignInput,
+  AdminInteractionReportListResp,
+  AdminInteractionReportListFilter,
+  AdminInteractionCommentListResp,
+  AdminInteractionCommentListFilter,
+  ReviewInteractionReportInput,
+  ModerateInteractionCommentInput,
 } from "./types";
 
 const http = axios.create({
@@ -714,4 +720,42 @@ export function buildAdminFinanceExportUrl(kind: "overview" | "orders" | "reconc
     if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
   }
   return `/api/admin/finance/export?${search.toString()}`;
+}
+
+export async function listAdminInteractionReports(
+  q: AdminInteractionReportListFilter = {},
+): Promise<AdminInteractionReportListResp> {
+  const params: Record<string, any> = {};
+  for (const [key, value] of Object.entries(q)) {
+    if (value !== undefined && value !== null && String(value) !== "") params[key] = value;
+  }
+  const res = await http.get("/admin/interactions/reports", { params });
+  return res.data;
+}
+
+export async function listAdminInteractionComments(
+  q: AdminInteractionCommentListFilter = {},
+): Promise<AdminInteractionCommentListResp> {
+  const params: Record<string, any> = {};
+  for (const [key, value] of Object.entries(q)) {
+    if (value !== undefined && value !== null && String(value) !== "") params[key] = value;
+  }
+  const res = await http.get("/admin/interactions/comments", { params });
+  return res.data;
+}
+
+export async function reviewAdminInteractionReport(
+  id: string,
+  input: ReviewInteractionReportInput,
+): Promise<{ ok: true; report: any }> {
+  const res = await http.post(`/admin/interactions/reports/${encodeURIComponent(id)}/review`, input);
+  return res.data;
+}
+
+export async function moderateAdminInteractionComment(
+  id: string,
+  input: ModerateInteractionCommentInput,
+): Promise<{ ok: true; comment: any }> {
+  const res = await http.post(`/admin/interactions/comments/${encodeURIComponent(id)}/moderate`, input);
+  return res.data;
 }

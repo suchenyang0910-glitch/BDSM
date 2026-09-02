@@ -5,6 +5,7 @@ type LoadScriptEnvOptions = {
   cwd?: string;
   explicitEnvFile?: string | null;
   preferTestEnv?: boolean;
+  overrideExisting?: boolean;
 };
 
 export function readArgFromArgv(argv: string[], name: string): string | null {
@@ -39,7 +40,7 @@ export function loadScriptEnvFiles(options: LoadScriptEnvOptions = {}): string[]
       const match = line.match(/^([A-Z0-9_]+)=(.*)$/);
       if (!match) continue;
       const key = match[1];
-      if (process.env[key]) continue;
+      if (process.env[key] && !options.overrideExisting) continue;
       let value = match[2].trim();
       if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1);

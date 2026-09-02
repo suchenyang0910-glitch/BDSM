@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { legacyMarkdownToHtml, sanitizeArticleHtml } from "../lib/articleHtml.js";
 
 type Article = {
+  id: string | null;
   slug: string;
   title: string;
   summary: string;
@@ -42,6 +43,7 @@ const raw: Array<[string, string, string, string, string[]]> = [
 export const STATIC_ARTICLES: Article[] = raw.map(function ([path, title, summary, publishedAt, topics]) {
   const slug = path.replace(/^kink-bdsm\//, "");
   return {
+    id: null,
     slug,
     title,
     summary,
@@ -61,6 +63,7 @@ function dbArticleToPublic(row: any): Article {
   const topics = Array.isArray(row.topics) ? row.topics : [];
   const summary = row.summary || "";
   return {
+    id: row.id || null,
     slug: row.slug,
     title: row.title,
     summary,

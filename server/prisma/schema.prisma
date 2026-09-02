@@ -68,6 +68,32 @@ enum ArticleStatus {
   archived
 }
 
+enum InteractionTargetType {
+  video_content
+  article
+  circle_post
+}
+
+enum InteractionSubjectKind {
+  target
+  comment
+}
+
+enum InteractionCommentStatus {
+  pending
+  approved
+  hidden
+  rejected
+  deleted
+}
+
+enum InteractionReportStatus {
+  open
+  reviewing
+  actioned
+  dismissed
+}
+
 enum BannerStatus {
   draft
   scheduled
@@ -225,6 +251,9 @@ model User {
   watchProgresses WatchProgress[]
   playbackSessions PlaybackSession[]
   playbackRevokeOutboxes PlaybackRevokeOutbox[]
+  interactionComments InteractionComment[]
+  interactionLikes  InteractionLike[]
+  interactionReports InteractionReport[]
   mergedFromUsers User[]    @relation("UserMergeTarget")
   mergedTargetUser User?    @relation("UserMergeTarget", fields: [mergedIntoUserId], references: [id], onDelete: SetNull)
 
@@ -560,6 +589,84 @@ model UserContentPreference {
   @@map("user_content_preferences")
 }
 
+model InteractionComment {
+  id               String                   @id @default(uuid())
+  targetType       InteractionTargetType    @map("target_type")
+  targetId         String                   @map("target_id") @db.VarChar(64)
+  userId           String                   @map("user_id")
+  parentId         String?                  @map("parent_id")
+  rootId           String?                  @map("root_id")
+  body             String                   @db.VarChar(500)
+  likeCount        Int                      @default(0) @map("like_count")
+  replyCount       Int                      @default(0) @map("reply_count")
+  status           InteractionCommentStatus @default(approved)
+  moderationReason String?                  @map("moderation_reason") @db.VarChar(500)
+  moderatedBy      String?                  @map("moderated_by")
+  moderatedAt      DateTime?                @map("moderated_at")
+  deletedAt        DateTime?                @map("deleted_at")
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+
+  user             User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent           InteractionComment?      @relation("InteractionCommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  root             InteractionComment?      @relation("InteractionCommentThread", fields: [rootId], references: [id], onDelete: Cascade)
+  replies          InteractionComment[]     @relation("InteractionCommentReplies")
+  threadItems      InteractionComment[]     @relation("InteractionCommentThread")
+  likes            InteractionLike[]
+  reports          InteractionReport[]
+  moderator        AdminUser?               @relation("InteractionCommentModerator", fields: [moderatedBy], references: [id], onDelete: SetNull)
+
+  @@index([targetType, targetId, status, createdAt])
+  @@index([targetType, targetId, parentId, createdAt])
+  @@index([userId, createdAt])
+  @@index([rootId, createdAt])
+  @@map("interaction_comments")
+}
+
+model InteractionLike {
+  id               String                 @id @default(uuid())
+  subjectKind      InteractionSubjectKind @map("subject_kind")
+  subjectKey       String                 @map("subject_key") @db.VarChar(160)
+  targetType       InteractionTargetType  @map("target_type")
+  targetId         String                 @map("target_id") @db.VarChar(64)
+  userId           String                 @map("user_id")
+  commentId        String?                @map("comment_id")
+  createdAt        DateTime               @default(now()) @map("created_at")
+
+  user             User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment          InteractionComment?    @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, subjectKey])
+  @@index([targetType, targetId, createdAt])
+  @@index([commentId, createdAt])
+  @@map("interaction_likes")
+}
+
+model InteractionReport {
+  id               String                  @id @default(uuid())
+  targetType       InteractionTargetType   @map("target_type")
+  targetId         String                  @map("target_id") @db.VarChar(64)
+  reporterUserId   String                  @map("reporter_user_id")
+  commentId        String?                 @map("comment_id")
+  reasonCode       String                  @map("reason_code") @db.VarChar(32)
+  detailText       String?                 @map("detail_text") @db.VarChar(500)
+  status           InteractionReportStatus @default(open)
+  reviewedBy       String?                 @map("reviewed_by")
+  reviewedAt       DateTime?               @map("reviewed_at")
+  resolutionNote   String?                 @map("resolution_note") @db.VarChar(500)
+  createdAt        DateTime                @default(now()) @map("created_at")
+  updatedAt        DateTime                @updatedAt @map("updated_at")
+
+  reporter         User                    @relation(fields: [reporterUserId], references: [id], onDelete: Cascade)
+  comment          InteractionComment?     @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  reviewer         AdminUser?              @relation("InteractionReportReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([targetType, targetId, status, createdAt])
+  @@index([reporterUserId, createdAt])
+  @@index([commentId, createdAt])
+  @@map("interaction_reports")
+}
+
 model ContentCategory {
   contentId    String   @map("content_id")
   categoryId   String   @map("category_id")
@@ -804,6 +911,8 @@ model AdminUser {
   linkedChannelMessages TelegramChannelMessage[] @relation("ChannelMessageLinkAdmin")
   createdUploadSessions UploadSession[] @relation("UploadSessionCreator")
   requestedPlaybackRevokes PlaybackRevokeOutbox[]
+  moderatedInteractionComments InteractionComment[] @relation("InteractionCommentModerator")
+  reviewedInteractionReports InteractionReport[] @relation("InteractionReportReviewer")
 
   @@map("admin_users")
 }

@@ -159,6 +159,9 @@ export function assertTestDatabaseName(dbName: string): void {
 
 const ALL_TABLES_ORDERED = [
   "telegram_channel_messages",
+  "interaction_reports",
+  "interaction_likes",
+  "interaction_comments",
   "playback_revoke_outbox",
   "playback_grants",
   "playback_sessions",
@@ -787,13 +790,29 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
   ]);
 
   const [catAll, catFeatured] = await Promise.all([
-    prisma.category.create({ data: { id: TEST_KNOWN_IDS.categoryAll, name: "全部", slug: "all", sortOrder: 0, status: "active" } }),
-    prisma.category.create({ data: { id: TEST_KNOWN_IDS.categoryFeatured, name: "精选", slug: "featured", sortOrder: 1, status: "active" } }),
+    prisma.category.upsert({
+      where: { id: TEST_KNOWN_IDS.categoryAll },
+      update: { name: "全部", slug: "all", sortOrder: 0, status: "active" },
+      create: { id: TEST_KNOWN_IDS.categoryAll, name: "全部", slug: "all", sortOrder: 0, status: "active" },
+    }),
+    prisma.category.upsert({
+      where: { id: TEST_KNOWN_IDS.categoryFeatured },
+      update: { name: "精选", slug: "featured", sortOrder: 1, status: "active" },
+      create: { id: TEST_KNOWN_IDS.categoryFeatured, name: "精选", slug: "featured", sortOrder: 1, status: "active" },
+    }),
   ]);
 
   const [prodSingle, prodPackage, prodMembership] = await Promise.all([
-    prisma.product.create({
-      data: {
+    prisma.product.upsert({
+      where: { id: TEST_KNOWN_IDS.singleProductKey },
+      update: {
+        type: "single",
+        title: "单个：公开内容购买",
+        priceMinor: BigInt(150_000_000),
+        currency: "XTR",
+        status: "active",
+      },
+      create: {
         id: TEST_KNOWN_IDS.singleProductKey,
         type: "single",
         title: "单个：公开内容购买",
@@ -802,8 +821,16 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         status: "active",
       },
     }),
-    prisma.product.create({
-      data: {
+    prisma.product.upsert({
+      where: { id: TEST_KNOWN_IDS.packageProductKey },
+      update: {
+        type: "package",
+        title: "入门精选 · 6 集打包",
+        priceMinor: BigInt(1200_000_000),
+        currency: "XTR",
+        status: "active",
+      },
+      create: {
         id: TEST_KNOWN_IDS.packageProductKey,
         type: "package",
         title: "入门精选 · 6 集打包",
@@ -812,8 +839,17 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         status: "active",
       },
     }),
-    prisma.product.create({
-      data: {
+    prisma.product.upsert({
+      where: { id: TEST_KNOWN_IDS.membershipProductKey },
+      update: {
+        type: "membership",
+        title: "同频会员 · 30 天",
+        priceMinor: BigInt(2980_000_000),
+        currency: "XTR",
+        durationDays: 30,
+        status: "active",
+      },
+      create: {
         id: TEST_KNOWN_IDS.membershipProductKey,
         type: "membership",
         title: "同频会员 · 30 天",
@@ -825,8 +861,14 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
     }),
   ]);
 
-  const contentPackage = await prisma.contentPackage.create({
-    data: {
+  const contentPackage = await prisma.contentPackage.upsert({
+    where: { id: TEST_KNOWN_IDS.contentPackageKey },
+    update: {
+      title: "入门精选合集",
+      status: "published",
+      productId: prodPackage.id,
+    },
+    create: {
       id: TEST_KNOWN_IDS.contentPackageKey,
       title: "入门精选合集",
       status: "published",
@@ -852,8 +894,24 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
   });
 
   const [topicPub, topic1, topic2, topicDraft] = await Promise.all([
-    prisma.content.create({
-      data: {
+    prisma.content.upsert({
+      where: { id: TEST_KNOWN_IDS.contentPublic },
+      update: {
+        title: "免费：什么是正念？5 分钟入门",
+        accessType: "public",
+        status: "published",
+        platformPlaybackEnabled: true,
+        durationSeconds: 300,
+        seoKeywords: ["免费视频", "冥想入门"],
+        geoKeywords: ["正念主题"],
+        isRecommended: true,
+        isNewArrival: true,
+        featuredSort: 1,
+        tags: ["入门", "免费"],
+        thumbnailUrl: null,
+        sortOrder: 1,
+      },
+      create: {
         id: TEST_KNOWN_IDS.contentPublic,
         title: "免费：什么是正念？5 分钟入门",
         accessType: "public",
@@ -870,8 +928,22 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         sortOrder: 1,
       },
     }),
-    prisma.content.create({
-      data: {
+    prisma.content.upsert({
+      where: { id: TEST_KNOWN_IDS.contentPackage },
+      update: {
+        title: "呼吸与身体扫描入门",
+        accessType: "package",
+        status: "published",
+        platformPlaybackEnabled: true,
+        durationSeconds: 600,
+        seoTitle: "打包内容 SEO 标题",
+        packageId: contentPackage.id,
+        isFeatured: true,
+        featuredSort: 2,
+        tags: ["冥想", "呼吸"],
+        sortOrder: 2,
+      },
+      create: {
         id: TEST_KNOWN_IDS.contentPackage,
         title: "呼吸与身体扫描入门",
         accessType: "package",
@@ -886,8 +958,21 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         sortOrder: 2,
       },
     }),
-    prisma.content.create({
-      data: {
+    prisma.content.upsert({
+      where: { id: TEST_KNOWN_IDS.contentMembership },
+      update: {
+        title: "深度睡眠引导",
+        accessType: "membership",
+        status: "published",
+        platformPlaybackEnabled: true,
+        durationSeconds: 1200,
+        seoDescription: "会员内容 SEO 描述",
+        isRecommended: true,
+        featuredSort: 3,
+        tags: ["睡眠"],
+        sortOrder: 3,
+      },
+      create: {
         id: TEST_KNOWN_IDS.contentMembership,
         title: "深度睡眠引导",
         accessType: "membership",
@@ -901,8 +986,17 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         sortOrder: 3,
       },
     }),
-    prisma.content.create({
-      data: {
+    prisma.content.upsert({
+      where: { id: TEST_KNOWN_IDS.contentDraft },
+      update: {
+        title: "（草稿）职场焦虑缓解",
+        accessType: "single",
+        status: "draft",
+        productId: prodSingle.id,
+        durationSeconds: 900,
+        sortOrder: 0,
+      },
+      create: {
         id: TEST_KNOWN_IDS.contentDraft,
         title: "（草稿）职场焦虑缓解",
         accessType: "single",
@@ -953,12 +1047,20 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
           status: "active",
         },
       ],
+      skipDuplicates: true,
     }),
   ]);
 
   await Promise.all([
-    prisma.adminUser.create({
-      data: {
+    prisma.adminUser.upsert({
+      where: { email: TEST_CREDENTIALS.superAdmin.email },
+      update: {
+        passwordHash: superPw,
+        displayName: "测试 · 超级管理员",
+        role: "super_admin",
+        status: "active",
+      },
+      create: {
         email: TEST_CREDENTIALS.superAdmin.email,
         passwordHash: superPw,
         displayName: "测试 · 超级管理员",
@@ -966,8 +1068,15 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         status: "active",
       },
     }),
-    prisma.adminUser.create({
-      data: {
+    prisma.adminUser.upsert({
+      where: { email: TEST_CREDENTIALS.operator.email },
+      update: {
+        passwordHash: opPw,
+        displayName: "测试 · 运营",
+        role: "operator",
+        status: "active",
+      },
+      create: {
         email: TEST_CREDENTIALS.operator.email,
         passwordHash: opPw,
         displayName: "测试 · 运营",
@@ -975,8 +1084,15 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         status: "active",
       },
     }),
-    prisma.adminUser.create({
-      data: {
+    prisma.adminUser.upsert({
+      where: { email: TEST_CREDENTIALS.finance.email },
+      update: {
+        passwordHash: finPw,
+        displayName: "测试 · 财务",
+        role: "finance",
+        status: "active",
+      },
+      create: {
         email: TEST_CREDENTIALS.finance.email,
         passwordHash: finPw,
         displayName: "测试 · 财务",
@@ -984,8 +1100,15 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         status: "active",
       },
     }),
-    prisma.adminUser.create({
-      data: {
+    prisma.adminUser.upsert({
+      where: { email: TEST_CREDENTIALS.customerService.email },
+      update: {
+        passwordHash: csPw,
+        displayName: "测试 · 客服",
+        role: "customer_service",
+        status: "active",
+      },
+      create: {
         email: TEST_CREDENTIALS.customerService.email,
         passwordHash: csPw,
         displayName: "测试 · 客服",
@@ -993,8 +1116,15 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         status: "active",
       },
     }),
-    prisma.adminUser.create({
-      data: {
+    prisma.adminUser.upsert({
+      where: { email: TEST_CREDENTIALS.auditor.email },
+      update: {
+        passwordHash: audPw,
+        displayName: "测试 · 审计",
+        role: "auditor",
+        status: "active",
+      },
+      create: {
         email: TEST_CREDENTIALS.auditor.email,
         passwordHash: audPw,
         displayName: "测试 · 审计",
@@ -1002,8 +1132,15 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
         status: "active",
       },
     }),
-    prisma.adminUser.create({
-      data: {
+    prisma.adminUser.upsert({
+      where: { email: TEST_CREDENTIALS.editor.email },
+      update: {
+        passwordHash: edPw,
+        displayName: "测试 · 内容编辑（可发布）",
+        role: "editor",
+        status: "active",
+      },
+      create: {
         email: TEST_CREDENTIALS.editor.email,
         passwordHash: edPw,
         displayName: "测试 · 内容编辑（可发布）",
