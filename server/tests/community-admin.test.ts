@@ -12,6 +12,10 @@ import {
   seedTestData,
 } from "./_testHarness.js";
 
+process.env.COMMUNITY_ENABLED = "true";
+process.env.COMMUNITY_POSTING_ENABLED = "true";
+process.env.COMMUNITY_VIDEO_UPLOAD_ENABLED = "true";
+
 function cookieFromResponse(res: { headers: Record<string, unknown> }) {
   const setCookie = res.headers["set-cookie"];
   const cookies: string[] = Array.isArray(setCookie)

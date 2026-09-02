@@ -19,6 +19,7 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "traffic_entry:edit",
     "campaign:view",
     "campaign:edit",
+    "community:manage_video_creator",
     "settings:view",
   ],
   finance: [
@@ -65,6 +66,7 @@ export const ADMIN_ROLE_PERMISSIONS: Record<string, string[]> = {
     "traffic_entry:edit",
     "campaign:view",
     "campaign:edit",
+    "community:manage_video_creator",
     "settings:view",
   ],
   auditor: [

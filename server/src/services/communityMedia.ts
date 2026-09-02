@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   buildCommunityHlsManifestKey,
   buildCommunityHlsPrefix,
@@ -23,6 +23,12 @@ export type CommunityMediaConfig = {
   ffmpegTimeoutMs: number;
   ffprobeTimeoutMs: number;
   tmpDir: string;
+};
+
+export type CommunityMediaProbe = {
+  width: number | null;
+  height: number | null;
+  durationSeconds: number | null;
 };
 
 export function loadCommunityMediaConfig(env: NodeJS.ProcessEnv = process.env): CommunityMediaConfig {
@@ -103,7 +109,7 @@ async function uploadTextToObject(input: { objectKey: string; body: string; cont
   }));
 }
 
-async function probeMedia(input: { filePath: string; cfg: CommunityMediaConfig }): Promise<{ width: number | null; height: number | null; durationSeconds: number | null }> {
+export async function probeCommunityMediaFile(input: { filePath: string; cfg: CommunityMediaConfig }): Promise<CommunityMediaProbe> {
   if (input.cfg.runnerMode === "mock") {
     return { width: 720, height: 1280, durationSeconds: 12 };
   }
@@ -139,6 +145,37 @@ async function probeMedia(input: { filePath: string; cfg: CommunityMediaConfig }
   };
 }
 
+export async function inspectCommunityObjectMedia(input: {
+  objectKey: string;
+  cfg?: CommunityMediaConfig;
+}): Promise<CommunityMediaProbe> {
+  const cfg = input.cfg || loadCommunityMediaConfig();
+  const workDir = await ensureTmpDir(cfg.tmpDir);
+  try {
+    const srcPath = path.join(workDir, "source");
+    await downloadObjectToFile(input.objectKey, srcPath);
+    return await probeCommunityMediaFile({ filePath: srcPath, cfg });
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+export async function computeCommunityObjectSha256(input: {
+  objectKey: string;
+  cfg?: CommunityMediaConfig;
+}): Promise<string> {
+  const cfg = input.cfg || loadCommunityMediaConfig();
+  const workDir = await ensureTmpDir(cfg.tmpDir);
+  try {
+    const srcPath = path.join(workDir, "source");
+    await downloadObjectToFile(input.objectKey, srcPath);
+    const bytes = await readFile(srcPath);
+    return createHash("sha256").update(bytes).digest("base64");
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
 export async function generateCommunityImageThumbnail(input: {
   sourceObjectKey: string;
   thumbnailObjectKey: string;
@@ -150,7 +187,7 @@ export async function generateCommunityImageThumbnail(input: {
     const srcPath = path.join(workDir, "source");
     const thumbPath = path.join(workDir, "thumb.jpg");
     await downloadObjectToFile(input.sourceObjectKey, srcPath);
-    const probe = await probeMedia({ filePath: srcPath, cfg });
+    const probe = await probeCommunityMediaFile({ filePath: srcPath, cfg });
     if (cfg.runnerMode === "mock") {
       await uploadTextToObject({ objectKey: input.thumbnailObjectKey, body: "mock-community-thumb", contentType: "image/jpeg" });
       return {
@@ -162,7 +199,7 @@ export async function generateCommunityImageThumbnail(input: {
     await runCommand(cfg.ffmpegPath, [
       "-y",
       "-i", srcPath,
-      "-vf", "scale='if(gt(iw,ih),min(720,iw),-2)':'if(gt(ih,iw),min(720,ih),-2)'",
+      "-vf", "scale=if(gte(iw\\,ih)\\,min(720\\,iw)\\,-2):if(gte(ih\\,iw)\\,min(720\\,ih)\\,-2)",
       "-frames:v", "1",
       thumbPath,
     ], cfg.ffmpegTimeoutMs);
@@ -195,7 +232,7 @@ export async function processCommunityVideoAsset(prisma: PrismaClient, assetId: 
       data: { transcodeStatus: "processing", transcodeProgressPercent: 10, playbackManifestKey: manifestKey, playbackPrefixKey: prefixKey, posterObjectKey: posterKey },
     });
     await downloadObjectToFile(asset.objectKey, srcPath);
-    const probe = await probeMedia({ filePath: srcPath, cfg });
+    const probe = await probeCommunityMediaFile({ filePath: srcPath, cfg });
     if (cfg.runnerMode === "mock") {
       await uploadTextToObject({ objectKey: `${prefixKey}/master.m3u8`, body: "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\nseg-000.ts\n", contentType: "application/vnd.apple.mpegurl" });
       await uploadTextToObject({ objectKey: `${prefixKey}/seg-000.ts`, body: "mock-community-segment", contentType: "video/mp2t" });
@@ -206,7 +243,7 @@ export async function processCommunityVideoAsset(prisma: PrismaClient, assetId: 
       await runCommand(cfg.ffmpegPath, [
         "-y",
         "-i", srcPath,
-        "-vf", "scale='if(gt(iw,720),720,iw)':-2",
+        "-vf", "scale=if(gt(iw\\,720)\\,720\\,iw):-2",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "24",
@@ -224,10 +261,8 @@ export async function processCommunityVideoAsset(prisma: PrismaClient, assetId: 
         "-i", srcPath,
         "-ss", "00:00:01",
         "-frames:v", "1",
-        posterKey.endsWith(".webp") ? "-f" : "",
-        "image2",
         path.join(workDir, "poster.jpg"),
-      ].filter(Boolean), cfg.ffmpegTimeoutMs);
+      ], cfg.ffmpegTimeoutMs);
       const files = await readdir(hlsDir);
       for (const fileName of files) {
         const objectKey = `${prefixKey}/${fileName}`;
@@ -288,7 +323,7 @@ export async function processNextCommunityVideoAsset(prisma: PrismaClient, cfg?:
 }
 
 export function buildCommunityManifestPath(postId: string, assetId: string, relative = "master.m3u8") {
-  return `/community/media/${encodeURIComponent(postId)}/videos/${encodeURIComponent(assetId)}/${relative.split("/").map(encodeURIComponent).join("/")}`;
+  return `/api/community/media/${encodeURIComponent(postId)}/videos/${encodeURIComponent(assetId)}/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export function rewriteCommunityManifest(postId: string, assetId: string, text: string) {

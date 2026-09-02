@@ -15,6 +15,9 @@ process.env.OBJECT_STORAGE_BUCKET = process.env.OBJECT_STORAGE_BUCKET || "intune
 process.env.OBJECT_STORAGE_ACCESS_KEY = process.env.OBJECT_STORAGE_ACCESS_KEY || "test-access";
 process.env.OBJECT_STORAGE_SECRET_KEY = process.env.OBJECT_STORAGE_SECRET_KEY || "test-secret";
 process.env.COMMUNITY_MEDIA_RUNNER = "mock";
+process.env.COMMUNITY_ENABLED = "true";
+process.env.COMMUNITY_POSTING_ENABLED = "true";
+process.env.COMMUNITY_VIDEO_UPLOAD_ENABLED = "true";
 
 function cookieFromResponse(res: { headers: Record<string, unknown> }): string {
   const setCookie = res.headers["set-cookie"];
@@ -67,6 +70,16 @@ async function createUser(prisma: any, displayName: string) {
       displayName,
       status: "active",
       telegramUserId: BigInt(Date.now()) + BigInt(Math.floor(Math.random() * 100000)),
+    },
+  });
+}
+
+async function grantCommunityVideoCreator(prisma: any, userId: string) {
+  return (prisma as any).communityVideoCreatorGrant.create({
+    data: {
+      userId,
+      active: true,
+      reason: "test grant",
     },
   });
 }
@@ -130,6 +143,34 @@ test("community upload sessions are author-only and server-generated keys stay i
     assert.match(String(session.objectKey), new RegExp(`^community/posts/${post.id}/images/.+/source`));
     assert.equal(String(session.objectKey).includes("hacked"), false);
   } finally {
+    await app.close();
+  }
+});
+
+test("community media routes stay dark when COMMUNITY_ENABLED=false", { concurrency: false }, async () => {
+  const previous = {
+    enabled: process.env.COMMUNITY_ENABLED,
+    posting: process.env.COMMUNITY_POSTING_ENABLED,
+    video: process.env.COMMUNITY_VIDEO_UPLOAD_ENABLED,
+  };
+  process.env.COMMUNITY_ENABLED = "false";
+  process.env.COMMUNITY_POSTING_ENABLED = "false";
+  process.env.COMMUNITY_VIDEO_UPLOAD_ENABLED = "false";
+  const app = await createApp(prisma);
+  try {
+    const user = await createUser(prisma, "社区功能关闭用户");
+    const cookie = await loginUser(app, user.id);
+    const resp = await app.inject({
+      method: "POST",
+      url: `/api/community/posts/${encodeURIComponent("missing-post")}/assets/upload-session`,
+      headers: { cookie, "Content-Type": "application/json" },
+      payload: { kind: "image", filename: "cover.jpg", mimeType: "image/jpeg", byteSize: 1024, sha256: "A".repeat(44) },
+    });
+    assert.equal(resp.statusCode, 404, resp.body);
+  } finally {
+    process.env.COMMUNITY_ENABLED = previous.enabled || "true";
+    process.env.COMMUNITY_POSTING_ENABLED = previous.posting || "true";
+    process.env.COMMUNITY_VIDEO_UPLOAD_ENABLED = previous.video || "true";
     await app.close();
   }
 });
@@ -236,6 +277,7 @@ test("community video multipart upload is controlled and playback requires publi
   globalThis.fetch = async () => new Response("#EXTM3U\nseg-000.ts\n", { status: 200, headers: { "content-type": "application/vnd.apple.mpegurl" } });
   try {
     const author = await createUser(prisma, "社区作者视频 C");
+    await grantCommunityVideoCreator(prisma, author.id);
     const post = await prisma.communityPost.create({
       data: {
         authorId: author.id,
@@ -303,7 +345,7 @@ test("community video multipart upload is controlled and playback requires publi
       url: `/api/community/media/${encodeURIComponent(post.id)}/videos/${encodeURIComponent(asset!.id)}/master.m3u8`,
     });
     assert.equal(manifest.statusCode, 200, manifest.body);
-    assert.match(manifest.body, new RegExp(`/community/media/${post.id}/videos/${asset!.id}/seg-000\\.ts`));
+    assert.match(manifest.body, new RegExp(`/api/community/media/${post.id}/videos/${asset!.id}/seg-000\\.ts`));
 
     const segment = await app.inject({
       method: "GET",
@@ -319,6 +361,91 @@ test("community video multipart upload is controlled and playback requires publi
     assert.equal(removed.statusCode, 404, removed.body);
   } finally {
     globalThis.fetch = originalFetch;
+    restoreS3();
+    await app.close();
+  }
+});
+
+test("community video upload requires creator whitelist and enforces daily quota", { concurrency: false }, async () => {
+  const app = await createApp(prisma);
+  const restoreS3 = installS3CommandMock((command) => {
+    const name = command?.constructor?.name;
+    if (name === "CreateMultipartUploadCommand") return { UploadId: "community-upload-quota" };
+    return undefined;
+  });
+  try {
+    const author = await createUser(prisma, "社区作者视频白名单 D");
+    const cookie = await loginUser(app, author.id);
+    const firstPost = await prisma.communityPost.create({
+      data: { authorId: author.id, body: "视频帖子一", status: "pending" },
+    });
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/community/posts/${encodeURIComponent(firstPost.id)}/assets/upload-session`,
+      headers: { cookie, "Content-Type": "application/json" },
+      payload: { kind: "video", filename: "clip.mp4", mimeType: "video/mp4", byteSize: 4096, sha256: "D".repeat(44) },
+    });
+    assert.equal(blocked.statusCode, 403, blocked.body);
+    assert.equal((blocked.json() as any).error, "community_video_creator_required");
+
+    await grantCommunityVideoCreator(prisma, author.id);
+    const allowed = await app.inject({
+      method: "POST",
+      url: `/api/community/posts/${encodeURIComponent(firstPost.id)}/assets/upload-session`,
+      headers: { cookie, "Content-Type": "application/json" },
+      payload: { kind: "video", filename: "clip.mp4", mimeType: "video/mp4", byteSize: 4096, sha256: "D".repeat(44) },
+    });
+    assert.equal(allowed.statusCode, 200, allowed.body);
+
+    const secondPost = await prisma.communityPost.create({
+      data: { authorId: author.id, body: "视频帖子二", status: "pending" },
+    });
+    const quotaBlocked = await app.inject({
+      method: "POST",
+      url: `/api/community/posts/${encodeURIComponent(secondPost.id)}/assets/upload-session`,
+      headers: { cookie, "Content-Type": "application/json" },
+      payload: { kind: "video", filename: "clip-2.mp4", mimeType: "video/mp4", byteSize: 4096, sha256: "E".repeat(44) },
+    });
+    assert.equal(quotaBlocked.statusCode, 429, quotaBlocked.body);
+    assert.equal((quotaBlocked.json() as any).error, "community_video_quota_exceeded");
+  } finally {
+    restoreS3();
+    await app.close();
+  }
+});
+
+test("community image upload caps each post at nine assets", { concurrency: false }, async () => {
+  const app = await createApp(prisma);
+  const restoreS3 = installS3CommandMock(() => undefined);
+  try {
+    const author = await createUser(prisma, "社区作者图片上限 E");
+    const cookie = await loginUser(app, author.id);
+    const post = await prisma.communityPost.create({
+      data: { authorId: author.id, body: "图片帖子", status: "pending", mediaCount: 9 },
+    });
+    for (let index = 0; index < 9; index += 1) {
+      await prisma.communityPostAsset.create({
+        data: {
+          id: `community-image-limit-${index}-${Date.now()}`,
+          postId: post.id,
+          ordinal: index,
+          kind: "image",
+          objectKey: `community/posts/${post.id}/images/existing-${index}/source.jpg`,
+          moderationStatus: "pending",
+          transcodeStatus: "pending",
+        },
+      });
+    }
+    const resp = await app.inject({
+      method: "POST",
+      url: `/api/community/posts/${encodeURIComponent(post.id)}/assets/upload-session`,
+      headers: { cookie, "Content-Type": "application/json" },
+      payload: { kind: "image", filename: "extra.jpg", mimeType: "image/jpeg", byteSize: 1024, sha256: "F".repeat(44) },
+    });
+    assert.equal(resp.statusCode, 409, resp.body);
+    assert.equal((resp.json() as any).error, "community_image_limit_exceeded");
+  } finally {
     restoreS3();
     await app.close();
   }

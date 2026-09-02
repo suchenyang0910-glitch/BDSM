@@ -489,11 +489,9 @@ export async function createCommunityMultipartUpload(
   const cmd = new CreateMultipartUploadCommand({
     Bucket: env.bucket,
     Key: input.objectKey,
-    ChecksumAlgorithm: "SHA256",
     ContentType: input.mimeType || "application/octet-stream",
     Metadata: {
       uploadsessionid: input.sessionId,
-      sha256: String(input.expectedSha256).trim(),
       scope: "community",
     },
   });

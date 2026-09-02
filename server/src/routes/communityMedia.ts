@@ -16,7 +16,14 @@ import {
   completeCommunityMultipartUpload,
   createPrivatePresignedReadUrl,
 } from "../services/objectStorage.js";
-import { generateCommunityImageThumbnail, rewriteCommunityManifest } from "../services/communityMedia.js";
+import {
+  computeCommunityObjectSha256,
+  generateCommunityImageThumbnail,
+  inspectCommunityObjectMedia,
+  loadCommunityMediaConfig,
+  rewriteCommunityManifest,
+} from "../services/communityMedia.js";
+import { loadCommunityFeatureConfig, startOfCurrentUtcDay } from "../services/communityConfig.js";
 import { z } from "zod";
 import { emitSafetyEvent } from "../utils/structuredError.js";
 
@@ -61,6 +68,18 @@ function nextUploadSessionExpiry() {
   return new Date(Date.now() + 15 * 60_000);
 }
 
+function isPrismaUniqueConflict(error: any) {
+  return !!error && typeof error === "object" && error.code === "P2002";
+}
+
+async function hasActiveCommunityVideoCreatorGrant(prisma: any, userId: string) {
+  const grant = await (prisma as any).communityVideoCreatorGrant?.findUnique?.({
+    where: { userId },
+    select: { active: true },
+  });
+  return !!grant?.active;
+}
+
 async function requireOwnedPendingPost(prisma: any, postId: string, userId: string) {
   const post = await prisma.communityPost.findUnique({
     where: { id: postId },
@@ -91,8 +110,14 @@ async function loadVisibleCommunityAsset(prisma: any, postId: string, assetId: s
 
 export default async function communityMediaRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
+  const featureConfig = loadCommunityFeatureConfig(process.env);
+  const mediaConfig = loadCommunityMediaConfig(process.env);
 
-  fastify.post("/community/posts/:postId/assets/upload-session", async (req: any, reply) => {
+  if (!featureConfig.enabled) {
+    return;
+  }
+
+  if (featureConfig.postingEnabled) fastify.post("/community/posts/:postId/assets/upload-session", async (req: any, reply) => {
     const userId = requireUser(req, reply);
     if (!userId) return;
     const parsed = createUploadSchema.safeParse(req.body || {});
@@ -110,16 +135,21 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
     if (body.kind === "video" && !communityVideoMimeAllowed(body.mimeType)) {
       return reply.status(400).send({ error: "community_video_mime_invalid", message: "圈子短视频仅支持 MP4/WEBM/MOV。" });
     }
-    if (body.kind === "image" && body.byteSize > 10n * 1024n * 1024n) {
+    if (body.kind === "image" && body.byteSize > featureConfig.maxImageBytesPerAsset) {
       return reply.status(400).send({ error: "community_image_too_large", message: "圈子图片单张不能超过 10MB。" });
     }
-    if (body.kind === "video" && body.byteSize > 1024n * 1024n * 1024n) {
-      return reply.status(400).send({ error: "community_video_too_large", message: "圈子短视频不能超过 1GB。" });
+    if (body.kind === "video" && body.byteSize > featureConfig.maxVideoBytesPerAsset) {
+      return reply.status(400).send({ error: "community_video_too_large", message: "圈子短视频不能超过 300MiB。" });
+    }
+    if (body.kind === "video" && !featureConfig.videoUploadEnabled) {
+      return reply.status(403).send({ error: "community_video_upload_disabled", message: "圈子短视频上传尚未开放。" });
+    }
+    if (body.kind === "video" && !(await hasActiveCommunityVideoCreatorGrant(prisma, userId))) {
+      return reply.status(403).send({ error: "community_video_creator_required", message: "仅白名单创作者可上传圈子短视频。" });
     }
 
     const assetId = randomUUID();
     const sessionId = randomUUID();
-    const nextOrdinal = await prisma.communityPostAsset.count({ where: { postId } });
     const objectKey = generateCommunityObjectKey(body.kind === "image" ? "image_source" : "video_source", postId, assetId, body.filename);
     const thumbnailObjectKey = body.kind === "image" ? generateCommunityObjectKey("image_thumbnail", postId, assetId, body.filename) : null;
     const posterObjectKey = body.kind === "video" ? generateCommunityObjectKey("video_poster", postId, assetId, body.filename) : null;
@@ -156,7 +186,82 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
       return reply.status(503).send({ error: "community_object_storage_unavailable", message: "对象存储暂不可用，请稍后再试。" });
     }
 
-    await prisma.$transaction(async (tx: any) => {
+    try {
+      await prisma.$transaction(async (tx: any) => {
+        const lockedPosts = await tx.$queryRawUnsafe(`SELECT id, author_id, status FROM "community_posts" WHERE id = $1 FOR UPDATE`, postId) as Array<any>;
+        const lockedPost = Array.isArray(lockedPosts) ? lockedPosts[0] : null;
+        if (!lockedPost) {
+          throw Object.assign(new Error("community_post_not_found"), {
+            statusCode: 404,
+            payload: { error: "community_post_not_found", message: "圈子帖子不存在。" },
+          });
+        }
+        if (String(lockedPost.author_id) !== userId) {
+          throw Object.assign(new Error("community_post_forbidden"), {
+            statusCode: 403,
+            payload: { error: "community_post_forbidden", message: "只有帖子作者可上传圈子媒体。" },
+          });
+        }
+        if (String(lockedPost.status) !== "pending") {
+          throw Object.assign(new Error("community_post_not_pending"), {
+            statusCode: 409,
+            payload: { error: "community_post_not_pending", message: "只有待审帖子允许继续上传媒体。" },
+          });
+        }
+        const [assetAggregate, imageCount, videoCount, imageBytesAggregate, dailyVideoUploads] = await Promise.all([
+          tx.communityPostAsset.aggregate({ where: { postId }, _max: { ordinal: true } }),
+          tx.communityPostAsset.count({ where: { postId, kind: "image" } }),
+          tx.communityPostAsset.count({ where: { postId, kind: "video" } }),
+          tx.communityUploadSession.aggregate({
+            where: { postId, asset: { is: { kind: "image" } } },
+            _sum: { expectedSize: true },
+          }),
+          body.kind === "video"
+            ? tx.communityUploadSession.count({
+                where: {
+                  createdByUserId: userId,
+                  createdAt: { gte: startOfCurrentUtcDay() },
+                  asset: { is: { kind: "video" } },
+                },
+              })
+            : Promise.resolve(0),
+        ]);
+        const nextOrdinal = typeof assetAggregate?._max?.ordinal === "number" ? assetAggregate._max.ordinal + 1 : 0;
+        const currentImageBytes = BigInt(String(imageBytesAggregate?._sum?.expectedSize || 0));
+        if (body.kind === "image") {
+          if (videoCount > 0) {
+            throw Object.assign(new Error("community_media_mix_forbidden"), {
+              statusCode: 409,
+              payload: { error: "community_media_mix_forbidden", message: "视频帖不能继续添加图片。" },
+            });
+          }
+          if (imageCount >= featureConfig.maxImagesPerPost) {
+            throw Object.assign(new Error("community_image_limit_exceeded"), {
+              statusCode: 409,
+              payload: { error: "community_image_limit_exceeded", message: "圈子帖子最多上传 9 张图片。" },
+            });
+          }
+          if (currentImageBytes + body.byteSize > featureConfig.maxImageTotalBytesPerPost) {
+            throw Object.assign(new Error("community_image_total_bytes_exceeded"), {
+              statusCode: 409,
+              payload: { error: "community_image_total_bytes_exceeded", message: "圈子图片总大小超出服务端上限。" },
+            });
+          }
+        }
+        if (body.kind === "video") {
+          if (imageCount > 0 || videoCount > 0) {
+            throw Object.assign(new Error("community_video_limit_exceeded"), {
+              statusCode: 409,
+              payload: { error: "community_video_limit_exceeded", message: "每个圈子帖子仅允许上传 1 个视频，且不能与图片混传。" },
+            });
+          }
+          if (dailyVideoUploads >= featureConfig.maxVideoUploadsPerDay) {
+            throw Object.assign(new Error("community_video_quota_exceeded"), {
+              statusCode: 429,
+              payload: { error: "community_video_quota_exceeded", message: "今日圈子短视频上传次数已达上限。" },
+            });
+          }
+        }
       await tx.communityPostAsset.create({
         data: {
           id: assetId,
@@ -201,7 +306,17 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
         where: { id: postId },
         data: { mediaCount: { increment: 1 } },
       });
-    });
+      });
+    } catch (error: any) {
+      if (typeof error?.statusCode === "number" && error?.payload) {
+        return reply.status(error.statusCode).send(error.payload);
+      }
+      if (isPrismaUniqueConflict(error)) {
+        emitSafetyEvent({ event: "community_asset_ordinal_conflict", errorClass: "conflict", userId, note: `post=${postId}` }, error);
+        return reply.status(409).send({ error: "community_upload_conflict", message: "圈子媒体上传冲突，请重试。" });
+      }
+      throw error;
+    }
 
     return reply.send({
       ok: true,
@@ -217,7 +332,7 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
     });
   });
 
-  fastify.post("/community/upload-sessions/:sessionId/parts/:partNumber/sign", async (req: any, reply) => {
+  if (featureConfig.postingEnabled) fastify.post("/community/upload-sessions/:sessionId/parts/:partNumber/sign", async (req: any, reply) => {
     const userId = requireUser(req, reply);
     if (!userId) return;
     const sessionId = String(req.params?.sessionId || "").trim();
@@ -253,7 +368,7 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
     });
   });
 
-  fastify.post("/community/upload-sessions/:sessionId/parts/:partNumber/complete", async (req: any, reply) => {
+  if (featureConfig.postingEnabled) fastify.post("/community/upload-sessions/:sessionId/parts/:partNumber/complete", async (req: any, reply) => {
     const userId = requireUser(req, reply);
     if (!userId) return;
     const parsed = partCompleteSchema.safeParse(req.body || {});
@@ -300,7 +415,7 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
-  fastify.post("/community/upload-sessions/:sessionId/complete", async (req: any, reply) => {
+  if (featureConfig.postingEnabled) fastify.post("/community/upload-sessions/:sessionId/complete", async (req: any, reply) => {
     const userId = requireUser(req, reply);
     if (!userId) return;
     const parsed = completeUploadSchema.safeParse(req.body || {});
@@ -348,20 +463,67 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
     const mismatches: string[] = [];
     if (meta.contentLength == null || meta.contentLength !== session.expectedSize) mismatches.push("byte_size");
     if ((meta.contentType || "").trim().toLowerCase() !== String(session.expectedMime || "").trim().toLowerCase()) mismatches.push("mime_type");
-    if ((meta.metadataSha256 || "").trim() !== String(session.expectedSha256 || "").trim()) mismatches.push("sha256");
+    let resolvedSha256 = (meta.metadataSha256 || "").trim();
+    const expectedSha256 = String(session.expectedSha256 || "").trim();
+    if (resolvedSha256 !== expectedSha256) {
+      try {
+        resolvedSha256 = await computeCommunityObjectSha256({ objectKey: session.objectKey, cfg: mediaConfig });
+      } catch (error) {
+        emitSafetyEvent({ event: "community_upload_object_hash_failed", errorClass: "unknown", userId, note: `session=${session.id}` }, error);
+      }
+    }
+    if (resolvedSha256 !== expectedSha256) mismatches.push("sha256");
     if (meta.uploadSessionId && meta.uploadSessionId !== session.id) mismatches.push("upload_session_id");
     if (mismatches.length > 0) {
+      emitSafetyEvent({
+        event: "community_upload_metadata_mismatch",
+        errorClass: "business",
+        userId,
+        note: `session=${session.id} mismatches=${mismatches.join(",")} expected_sha=${expectedSha256.slice(0, 12)} actual_sha=${resolvedSha256.slice(0, 12)}`,
+      });
       return reply.status(409).send({ error: "community_object_metadata_mismatch", message: "上传对象校验失败。" });
     }
 
+    let imageProbe: { width: number | null; height: number | null; aspectRatio: number | null } | null = null;
     if (session.asset.kind === "image") {
-      await generateCommunityImageThumbnail({
+      imageProbe = await generateCommunityImageThumbnail({
         sourceObjectKey: session.objectKey,
         thumbnailObjectKey: session.asset.thumbnailObjectKey || generateCommunityObjectKey("image_thumbnail", session.postId, session.assetId, session.originalFilename),
       }).catch((error) => {
         emitSafetyEvent({ event: "community_image_thumbnail_failed", errorClass: "unknown", userId, note: `session=${sessionId}` }, error);
         throw error;
       });
+    }
+
+    let videoProbe: { width: number | null; height: number | null; durationSeconds: number | null } | null = null;
+    if (session.asset.kind === "video") {
+      try {
+        videoProbe = await inspectCommunityObjectMedia({ objectKey: session.objectKey, cfg: mediaConfig });
+      } catch (error: any) {
+        emitSafetyEvent({ event: "community_video_probe_failed", errorClass: "unknown", userId, note: `session=${sessionId}` }, error);
+        const message = String(error?.message || "");
+        if (message.startsWith("community_ffprobe_failed:")) {
+          return reply.status(409).send({ error: "community_video_probe_failed", message: "圈子短视频无法通过媒体校验。" });
+        }
+        return reply.status(503).send({ error: "community_media_validation_unavailable", message: "媒体校验暂不可用，请稍后重试。" });
+      }
+      const width = Number(videoProbe.width || 0);
+      const height = Number(videoProbe.height || 0);
+      const durationSeconds = Number(videoProbe.durationSeconds || 0);
+      const longestEdge = Math.max(width, height);
+      if (!width || !height || !durationSeconds) {
+        return reply.status(409).send({ error: "community_video_probe_failed", message: "圈子短视频缺少有效的时长或分辨率信息。" });
+      }
+      if (durationSeconds < featureConfig.minVideoDurationSeconds || durationSeconds > featureConfig.maxVideoDurationSeconds) {
+        return reply.status(409).send({ error: "community_video_duration_invalid", message: "圈子短视频时长超出允许范围。" });
+      }
+      if (
+        width > featureConfig.maxVideoWidth ||
+        height > featureConfig.maxVideoHeight ||
+        longestEdge > featureConfig.maxVideoLongestEdge
+      ) {
+        return reply.status(409).send({ error: "community_video_resolution_invalid", message: "圈子短视频分辨率超出允许范围。" });
+      }
     }
 
     await prisma.$transaction(async (tx: any) => {
@@ -385,6 +547,12 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
           transcodeProgressPercent: session.asset.kind === "image" ? 100 : 0,
           playbackManifestKey: session.asset.kind === "video" ? (session.asset.playbackManifestKey || buildCommunityHlsManifestKey(session.postId, session.assetId)) : null,
           playbackPrefixKey: session.asset.kind === "video" ? (session.asset.playbackPrefixKey || buildCommunityHlsPrefix(session.postId, session.assetId)) : null,
+          width: session.asset.kind === "image" ? imageProbe?.width || null : videoProbe?.width || null,
+          height: session.asset.kind === "image" ? imageProbe?.height || null : videoProbe?.height || null,
+          aspectRatio: session.asset.kind === "image" ? imageProbe?.aspectRatio || null : (
+            videoProbe?.width && videoProbe?.height ? videoProbe.width / videoProbe.height : null
+          ),
+          durationSeconds: session.asset.kind === "video" ? videoProbe?.durationSeconds || null : null,
         },
       });
     });

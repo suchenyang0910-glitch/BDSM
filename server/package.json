@@ -14,6 +14,7 @@
     "payment-address:baseline": "tsx src/scripts/establishPaymentAddressIntegrityBaseline.ts",
     "delivery:validate-channels": "tsx src/scripts/validateDeliveryChannels.ts",
     "telegram:pin-mini-app": "tsx src/scripts/pinMiniAppEntrypoint.ts",
+    "acceptance:community-media": "tsx src/scripts/runIsolatedCommunityMediaAcceptance.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { isCommunityReadEnabled } from "../services/communityConfig.js";
 
 const TARGET_TYPES = ["video_content", "article", "circle_post"] as const;
 const COMMENT_PUBLIC_STATUS = ["approved"] as const;
@@ -67,6 +68,7 @@ async function resolveVisibleTarget(prisma: any, targetType: (typeof TARGET_TYPE
     return { id: content.id, title: content.title, subtitle: null, coverUrl: content.coverUrl || null, publishedAt: content.publishedAt };
   }
   if (targetType === "circle_post") {
+    if (!isCommunityReadEnabled(process.env)) return null;
     const post = await prisma.communityPost.findUnique({
       where: { id: targetId },
       select: { id: true, body: true, status: true, publishedAt: true, topics: true },

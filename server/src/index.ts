@@ -45,6 +45,7 @@ import {
 import { emitSafetyEvent, emitStructuredLog } from "./utils/structuredError.js";
 import { assertObjectStorageConfiguredOnStartup } from "./services/objectStorage.js";
 import { loadPlaybackConfig } from "./services/playbackConfig.js";
+import { loadCommunityFeatureConfig } from "./services/communityConfig.js";
 
 /**
  * 【P0-B 红线】Prisma 自带的默认 log 模式会把原始 SQL/Pxxxx clientVersion 写到 stderr/stdout。
@@ -172,6 +173,7 @@ async function main() {
     trustProxy: true,
   });
   const playbackConfig = loadPlaybackConfig(process.env);
+  const communityFeatureConfig = loadCommunityFeatureConfig(process.env);
 
   await app.register(cors, {
     // 空值代表同源部署；跨域时必须明确配置 HTTPS 来源，不能使用 * + Cookie。
@@ -368,7 +370,11 @@ async function main() {
   await app.register(campaignRoutes, { prefix: "/api" });
   await app.register(watchProgressRoutes, { prefix: "/api" });
   await app.register(playbackRoutes, { prefix: "/api" });
-  await app.register(communityMediaRoutes, { prefix: "/api" });
+  if (communityFeatureConfig.enabled) {
+    await app.register(communityMediaRoutes, { prefix: "/api" });
+  } else {
+    console.log("[community] enabled=no posting=no video_upload=no");
+  }
   await app.register(playbackMediaRoutes);
   await app.register(publicSeoRoutes, { prefix: "" });
 
@@ -409,6 +415,11 @@ async function main() {
     console.log(
       `[intune-server:public-channel] configured=${TELEGRAM_CONFIG.publicChannelUrl ? "yes" : "no"}`,
     );
+    if (communityFeatureConfig.enabled) {
+      console.log(
+        `[community] enabled=yes posting=${communityFeatureConfig.postingEnabled ? "yes" : "no"} video_upload=${communityFeatureConfig.videoUploadEnabled ? "yes" : "no"}`,
+      );
+    }
     await app.listen({ port: PORT, host: "0.0.0.0" });
     console.log(`[intune-server] listening on :${PORT}`);
     // Cron 调度：hourly 过期扫 + 3d 提醒 + 到期踢人。默认启动后 5s 跑第一次。

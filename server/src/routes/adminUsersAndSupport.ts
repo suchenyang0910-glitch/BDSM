@@ -102,6 +102,11 @@ const revokePlaybackSessionsSchema = z.object({
   reason: z.string().min(2).max(1000),
 });
 
+const setCommunityVideoCreatorSchema = z.object({
+  active: z.boolean(),
+  reason: z.string().trim().min(2).max(500),
+});
+
 function entitlementRow(e: any) {
   return {
     id: e.id,
@@ -225,6 +230,24 @@ function generateTicketNo(): string {
   const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
   const rnd = Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0");
   return `TKT${stamp}${rnd}`;
+}
+
+function communityVideoCreatorGrantRow(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.userId,
+    active: !!row.active,
+    reason: row.reason ?? null,
+    grantedAt: row.grantedAt ? new Date(row.grantedAt).toISOString() : null,
+    revokedAt: row.revokedAt ? new Date(row.revokedAt).toISOString() : null,
+    grantedByAdmin: row.grantedByAdmin
+      ? { id: row.grantedByAdmin.id, email: row.grantedByAdmin.email, displayName: row.grantedByAdmin.displayName, role: row.grantedByAdmin.role }
+      : null,
+    revokedByAdmin: row.revokedByAdmin
+      ? { id: row.revokedByAdmin.id, email: row.revokedByAdmin.email, displayName: row.revokedByAdmin.displayName, role: row.revokedByAdmin.role }
+      : null,
+  };
 }
 
 const membershipChannelBigInt = (): null => {
@@ -735,6 +758,13 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
         },
       });
       if (!u) return reply.status(404).send({ error: "not_found", message: "用户不存在" });
+      const communityVideoCreatorGrant = await (prisma as any).communityVideoCreatorGrant.findUnique({
+        where: { userId: req.params.id },
+        include: {
+          grantedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+          revokedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+        },
+      });
       return reply.send({
         id: u.id,
         displayName: u.displayName,
@@ -766,6 +796,107 @@ export default async function adminUsersAndSupportRoutes(fastify: FastifyInstanc
         })),
         entitlements: (u as any).entitlements.map((e: any) => entitlementRow(e)),
         tickets: (u as any).supportTickets,
+        communityVideoCreatorGrant: communityVideoCreatorGrantRow(communityVideoCreatorGrant),
+      });
+    },
+  );
+
+  fastify.post<{ Params: { id: string } }>(
+    "/admin/users/:id/community-video-creator",
+    { preHandler: [requireAdmin("community:manage_video_creator")] },
+    async (req, reply) => {
+      const admin = (req as any).admin as { adminId: string; role: string; email: string };
+      const parsed = setCommunityVideoCreatorSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return reply.status(400).send({ error: "bad_request", details: parsed.error.issues });
+
+      const user = await prisma.user.findUnique({
+        where: { id: req.params.id },
+        select: { id: true, displayName: true, username: true, telegramUserId: true },
+      });
+      if (!user) return reply.status(404).send({ error: "not_found", message: "用户不存在" });
+
+      const before = await (prisma as any).communityVideoCreatorGrant.findUnique({
+        where: { userId: req.params.id },
+        include: {
+          grantedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+          revokedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+        },
+      });
+      const now = new Date();
+
+      const after = await prisma.$transaction(async (tx: any) => {
+        let nextRow = before;
+        if (parsed.data.active) {
+          nextRow = before
+            ? await tx.communityVideoCreatorGrant.update({
+                where: { userId: req.params.id },
+                data: {
+                  active: true,
+                  reason: parsed.data.reason,
+                  grantedByAdminId: admin.adminId,
+                  revokedByAdminId: null,
+                  revokedAt: null,
+                  grantedAt: before.active ? before.grantedAt : now,
+                },
+                include: {
+                  grantedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+                  revokedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+                },
+              })
+            : await tx.communityVideoCreatorGrant.create({
+                data: {
+                  userId: req.params.id,
+                  active: true,
+                  reason: parsed.data.reason,
+                  grantedByAdminId: admin.adminId,
+                  grantedAt: now,
+                },
+                include: {
+                  grantedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+                  revokedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+                },
+              });
+        } else if (before) {
+          nextRow = await tx.communityVideoCreatorGrant.update({
+            where: { userId: req.params.id },
+            data: {
+              active: false,
+              reason: parsed.data.reason,
+              revokedByAdminId: admin.adminId,
+              revokedAt: now,
+            },
+            include: {
+              grantedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+              revokedByAdmin: { select: { id: true, email: true, displayName: true, role: true } },
+            },
+          });
+        }
+
+        await tx.adminAuditLog.create({
+          data: {
+            adminId: admin.adminId,
+            action: parsed.data.active ? "community.video_creator.grant" : "community.video_creator.revoke",
+            objectType: "user",
+            objectId: req.params.id,
+            beforeValue: communityVideoCreatorGrantRow(before) as any,
+            afterValue: communityVideoCreatorGrantRow(nextRow) as any,
+            reason: parsed.data.reason,
+            ipAddress: (req.ip as string) || null,
+            userAgent: (req.headers["user-agent"] as string) || null,
+          },
+        });
+        return nextRow;
+      });
+
+      return reply.send({
+        ok: true,
+        user: {
+          id: user.id,
+          displayName: user.displayName,
+          username: user.username ?? null,
+          telegramUserId: user.telegramUserId ? user.telegramUserId.toString() : null,
+        },
+        communityVideoCreatorGrant: communityVideoCreatorGrantRow(after),
       });
     },
   );

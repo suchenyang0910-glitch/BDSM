@@ -282,6 +282,7 @@ model User {
   playbackRevokeOutboxes PlaybackRevokeOutbox[]
   communityPosts   CommunityPost[]
   communityUploadSessions CommunityUploadSession[]
+  communityVideoCreatorGrant CommunityVideoCreatorGrant?
   interactionComments InteractionComment[]
   interactionLikes  InteractionLike[]
   interactionReports InteractionReport[]
@@ -811,6 +812,26 @@ model CommunityUploadSessionPart {
   @@map("community_upload_session_parts")
 }
 
+model CommunityVideoCreatorGrant {
+  id               String     @id @default(uuid())
+  userId           String     @unique @map("user_id")
+  active           Boolean    @default(true)
+  reason           String?    @db.VarChar(500)
+  grantedByAdminId String?    @map("granted_by_admin_id")
+  revokedByAdminId String?    @map("revoked_by_admin_id")
+  grantedAt        DateTime   @default(now()) @map("granted_at")
+  revokedAt        DateTime?  @map("revoked_at")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grantedByAdmin   AdminUser? @relation("CommunityVideoCreatorGrantGrantedBy", fields: [grantedByAdminId], references: [id], onDelete: SetNull)
+  revokedByAdmin   AdminUser? @relation("CommunityVideoCreatorGrantRevokedBy", fields: [revokedByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([active, grantedAt])
+  @@map("community_video_creator_grants")
+}
+
 model ContentCategory {
   contentId    String   @map("content_id")
   categoryId   String   @map("category_id")
@@ -1057,6 +1078,8 @@ model AdminUser {
   requestedPlaybackRevokes PlaybackRevokeOutbox[]
   moderatedInteractionComments InteractionComment[] @relation("InteractionCommentModerator")
   reviewedInteractionReports InteractionReport[] @relation("InteractionReportReviewer")
+  grantedCommunityVideoCreatorGrants CommunityVideoCreatorGrant[] @relation("CommunityVideoCreatorGrantGrantedBy")
+  revokedCommunityVideoCreatorGrants CommunityVideoCreatorGrant[] @relation("CommunityVideoCreatorGrantRevokedBy")
 
   @@map("admin_users")
 }
