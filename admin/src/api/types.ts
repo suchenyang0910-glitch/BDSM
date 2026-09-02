@@ -244,7 +244,7 @@ export type AdminAuditLog = {
   } | null;
 };
 
-export type ContentStatus = "draft" | "in_review" | "scheduled" | "published" | "archived";
+export type ContentStatus = "draft" | "pending_review" | "scheduled" | "published" | "archived";
 export type BannerStatus = "draft" | "active" | "inactive" | "scheduled" | "archived";
 export type BannerTargetType = "content" | "category" | "package" | "membership" | "external";
 export type HomepageVersionStatus = "draft" | "published" | "archived";
@@ -388,6 +388,11 @@ export type ContentItem = {
   durationSeconds: number | null;
   accessType: "public" | "single" | "membership" | "package";
   status: ContentStatus;
+  transcodeStatus?: string | null;
+  transcodeProgressPercent?: number;
+  transcodeErrorClass?: string | null;
+  publishState?: string | null;
+  publishStateLabel?: string | null;
   isRecommended: boolean;
   isFeatured: boolean;
   isNewArrival: boolean;

@@ -145,6 +145,9 @@ test("[S1-0] GET /admin/contents 与详情包含商品 BigInt 金额时仍返回
     const draft = listBody.data.find((row: any) => row.id === TEST_KNOWN_IDS.contentDraft);
     assert.ok(draft, "seeded draft content must be present");
     assert.equal(typeof draft.product?.priceMinor, "string", "BigInt priceMinor must be emitted as a decimal string");
+    assert.equal(draft.transcodeStatus, null);
+    assert.equal(draft.transcodeProgressPercent, 0);
+    assert.equal(draft.publishState, "not_ready");
 
     const detail = await app.inject({
       method: "GET",
@@ -260,6 +263,28 @@ test("[S1-B] 既有 single 草稿 (topic-03-draft) 发布 → 200/202，且不�
     assert.equal((await prisma.content.findUnique({ where: { id: TEST_KNOWN_IDS.contentDraft }, select: { status: true } }))?.status, "scheduled");
     assert.equal(await prisma.telegramPublishJob.count({ where: { contentId: TEST_KNOWN_IDS.contentDraft } }), 0);
 
+    const listAfterQueued = await app.inject({
+      method: "GET",
+      url: "/api/admin/contents",
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(listAfterQueued.statusCode, 200, listAfterQueued.body);
+    const scheduledDraft = (listAfterQueued.json() as any).data.find((row: any) => row.id === TEST_KNOWN_IDS.contentDraft);
+    assert.equal(scheduledDraft.status, "scheduled");
+    assert.equal(scheduledDraft.transcodeStatus, "queued");
+    assert.equal(scheduledDraft.transcodeProgressPercent, 35);
+    assert.equal(scheduledDraft.publishState, "auto_publish_waiting_for_transcode");
+    assert.equal(scheduledDraft.publishStateLabel, "已登记自动发布，等待转码");
+
+    const repeatedPublish = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${TEST_KNOWN_IDS.contentDraft}/publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { reason: "[S1-B] scheduled 内容禁止重复发布" },
+    });
+    assert.equal(repeatedPublish.statusCode, 409, repeatedPublish.body);
+    assert.equal((repeatedPublish.json() as any).error, "auto_publish_already_registered");
+
     // 发布门槛：只有完整 HLS 及 60 秒试看均已由 Worker 验证后才能公开/投放。
     await prisma.transcodeJob.update({
       where: { id: queuedTranscode.id },
@@ -279,6 +304,49 @@ test("[S1-B] 既有 single 草稿 (topic-03-draft) 发布 → 200/202，且不�
     assertNoSensitiveLeaks(JSON.stringify(autoPublished), "single auto-publish result");
     await assertAuditLogsNoLeak(prisma, TEST_KNOWN_IDS.contentDraft);
   } finally {
+    await app.close();
+  }
+});
+
+test("[S1-B2] future scheduled 内容不能再次调用 publish，列表应显示等待定时", async () => {
+  const app = await buildTestApp(prisma);
+  try {
+    const editorCookie = await loginAdmin(app, "editor");
+    const futureId = `scheduled-future-${Date.now()}`;
+    await prisma.content.create({
+      data: {
+        id: futureId,
+        title: "future scheduled draft",
+        accessType: "public",
+        status: "scheduled",
+        scheduledAt: new Date(Date.now() + 6 * 3600 * 1000),
+        coverAssetId: null,
+        previewAssetId: null,
+        platformPlaybackEnabled: false,
+      },
+    });
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/admin/contents/${encodeURIComponent(futureId)}/publish`,
+      headers: { cookie: editorCookie, "Content-Type": "application/json" },
+      payload: { reason: "[S1-B2] future scheduled 禁止重复点击发布" },
+    });
+    assert.equal(blocked.statusCode, 409, blocked.body);
+    assert.equal((blocked.json() as any).error, "already_scheduled");
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/admin/contents",
+      headers: { cookie: editorCookie },
+    });
+    assert.equal(list.statusCode, 200, list.body);
+    const futureRow = (list.json() as any).data.find((row: any) => row.id === futureId);
+    assert.ok(futureRow, "future scheduled row must be visible in admin list");
+    assert.equal(futureRow.publishState, "scheduled_for_future");
+    assert.equal(futureRow.publishStateLabel, "等待定时");
+  } finally {
+    await prisma.content.deleteMany({ where: { id: { startsWith: "scheduled-future-" } } });
     await app.close();
   }
 });

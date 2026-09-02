@@ -612,7 +612,7 @@ const PUBLISH_JOB_STATUS_TAG: Record<TelegramPublishJobStatus, { label: string; 
 
 const STATUS_TAG: Record<ContentStatus, { color: string; label: string }> = {
   draft: { color: "default", label: "草稿" },
-  in_review: { color: "processing", label: "审核中" },
+  pending_review: { color: "processing", label: "审核中" },
   scheduled: { color: "geekblue", label: "定时发布" },
   published: { color: "green", label: "已发布" },
   archived: { color: "grey", label: "归档" },
@@ -1750,7 +1750,9 @@ const ContentsPage: React.FC = () => {
         if (extraWarnings.length > 0) return;
         try {
           const result = await publishAdminContent(row.id, "管理员发布内容");
-          if (result.telegramPublish?.queued) {
+          if (result.autoPublish) {
+            message.info(result.message || "已登记自动发布，等待转码完成后上线");
+          } else if (result.telegramPublish?.queued) {
             message.success(`已发布，Bot 已创建 ${result.telegramPublish.jobs?.length || 0} 条频道发送任务`);
           } else if (result.telegramPublish) {
             message.warning(`内容已发布，但频道发送任务未创建：${result.telegramPublish.message || result.telegramPublish.error || "请进入编辑页检查发布进度"}`);
@@ -1789,6 +1791,52 @@ const ContentsPage: React.FC = () => {
     }
     const m = ACCESS_TYPE_OPTIONS.find((o) => o.value === v);
     return <Tag color="blue">{m ? m.label : v}</Tag>;
+  };
+
+  const renderPublishStateTag = (row: ContentItem) => {
+    const label = row.publishStateLabel;
+    if (!label || row.status === "published") return <Text type="secondary">-</Text>;
+    if (row.publishState === "ready_to_publish") return <Tag color="green">{label}</Tag>;
+    if (row.publishState === "transcode_failed") return <Tag color="red">{label}</Tag>;
+    if (row.publishState === "waiting_for_transcode" || row.publishState === "auto_publish_waiting_for_transcode") {
+      return <Tag color="processing">{label}</Tag>;
+    }
+    if (row.publishState === "scheduled_for_future" || row.publishState === "auto_publish_registered") {
+      return <Tag color="geekblue">{label}</Tag>;
+    }
+    return <Tag color="default">{label}</Tag>;
+  };
+
+  const renderPublishAction = (row: ContentItem) => {
+    if (!canPublish || row.status === "published") return null;
+    if (row.status === "scheduled") {
+      return (
+        <Tooltip title={row.publishStateLabel || "该内容已进入发布流程，不能重复点击发布"}>
+          <Button size="small" disabled icon={<ClockCircleOutlined />}>
+            {row.publishState === "scheduled_for_future" ? "等待定时" : "已登记自动发布"}
+          </Button>
+        </Tooltip>
+      );
+    }
+    if (row.publishState === "waiting_for_transcode" || row.publishState === "auto_publish_waiting_for_transcode") {
+      return (
+        <Tooltip title={row.publishStateLabel || "转码完成后才可发布"}>
+          <Button size="small" disabled icon={<ClockCircleOutlined />}>
+            {row.publishStateLabel || "等待转码"}
+          </Button>
+        </Tooltip>
+      );
+    }
+    return (
+      <Button
+        size="small"
+        type="primary"
+        icon={<UpCircleOutlined />}
+        onClick={() => confirmPublish(row)}
+      >
+        发布
+      </Button>
+    );
   };
 
   const renderPackageConfigBadge = () => {
@@ -1889,6 +1937,12 @@ const ContentsPage: React.FC = () => {
       ),
     },
     {
+      title: "发布准备",
+      key: "publishState",
+      width: 180,
+      render: (_: any, r) => renderPublishStateTag(r),
+    },
+    {
       title: "时长",
       dataIndex: "durationSeconds",
       key: "durationSeconds",
@@ -1963,16 +2017,7 @@ const ContentsPage: React.FC = () => {
               提交审核
             </Button>
           )}
-          {(r.status === "draft" || r.status === "in_review" || r.status === "scheduled") && canPublish && (
-            <Button
-              size="small"
-              type="primary"
-              icon={<UpCircleOutlined />}
-              onClick={() => confirmPublish(r)}
-            >
-              发布
-            </Button>
-          )}
+          {(r.status === "draft" || r.status === "pending_review" || r.status === "scheduled" || r.status === "archived") && renderPublishAction(r)}
           {r.status === "published" && canPublish && (
             <Button
               size="small"

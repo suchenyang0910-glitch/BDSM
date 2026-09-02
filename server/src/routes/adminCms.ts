@@ -810,6 +810,46 @@ async function validatePublishReady(
   return { ok: true };
 }
 
+function summarizeContentPublishState(input: {
+  status: string;
+  scheduledAt: Date | null | undefined;
+  latestJob: { status: string; progressPercent: number; errorClass: string | null } | null;
+}) {
+  const scheduledAt = input.scheduledAt ?? null;
+  const latestJob = input.latestJob;
+  if (input.status === "published") {
+    return { publishState: "published", publishStateLabel: "已发布" };
+  }
+  if (input.status === "scheduled") {
+    if (scheduledAt && scheduledAt.getTime() > Date.now()) {
+      return { publishState: "scheduled_for_future", publishStateLabel: "等待定时" };
+    }
+    if (latestJob?.status === "processing") {
+      return {
+        publishState: "auto_publish_waiting_for_transcode",
+        publishStateLabel: `已登记自动发布，等待转码 ${latestJob.progressPercent || 0}%`,
+      };
+    }
+    if (latestJob?.status === "queued") {
+      return { publishState: "auto_publish_waiting_for_transcode", publishStateLabel: "已登记自动发布，等待转码" };
+    }
+    return { publishState: "auto_publish_registered", publishStateLabel: "已登记自动发布" };
+  }
+  if (latestJob?.status === "processing") {
+    return { publishState: "waiting_for_transcode", publishStateLabel: `等待转码 ${latestJob.progressPercent || 0}%` };
+  }
+  if (latestJob?.status === "queued") {
+    return { publishState: "waiting_for_transcode", publishStateLabel: "等待转码" };
+  }
+  if (latestJob?.status === "failed") {
+    return { publishState: "transcode_failed", publishStateLabel: "转码失败" };
+  }
+  if (latestJob?.status === "ready") {
+    return { publishState: "ready_to_publish", publishStateLabel: "可发布" };
+  }
+  return { publishState: "not_ready", publishStateLabel: "待补齐发布条件" };
+}
+
 // 完整内容的唯一交付主链路是 Samewave 受控播放。Telegram 仅承担免费流量入口
 // 的封面推广与 Bot 深链，不再传输完整源文件（Telegram 单文件大小限制不能成为
 // 平台上传与播放的限制）。保留旧枚举用于读取、取消历史任务和兼容旧客户端请求。
@@ -1319,15 +1359,49 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         }),
         getPlatformMetadataRow(prisma),
       ]);
+      const contentIds = rows.map((row: any) => row.id);
+      const latestTranscodeRows = contentIds.length
+        ? await prisma.transcodeJob.findMany({
+            where: { contentId: { in: contentIds } },
+            orderBy: [{ queuedAt: "desc" }],
+            select: {
+              contentId: true,
+              status: true,
+              progressPercent: true,
+              errorClass: true,
+            },
+          })
+        : [];
+      const latestTranscodeByContentId = new Map<string, { status: string; progressPercent: number; errorClass: string | null }>();
+      for (const job of latestTranscodeRows) {
+        if (!latestTranscodeByContentId.has(job.contentId)) {
+          latestTranscodeByContentId.set(job.contentId, {
+            status: job.status,
+            progressPercent: typeof job.progressPercent === "number" ? job.progressPercent : 0,
+            errorClass: sanitizeErrorClass(job.errorClass),
+          });
+        }
+      }
       return reply.send(serialize({
         total, page: qp.page, limit: qp.limit,
         data: rows.map((c: any) => {
           const { videoAssets, ...content } = c;
+          const latestJob = latestTranscodeByContentId.get(c.id) || null;
+          const publishState = summarizeContentPublishState({
+            status: c.status,
+            scheduledAt: c.scheduledAt,
+            latestJob,
+          });
           return attachEffectiveSeo({
             ...content,
             coverPreviewPath: videoAssets[0]
               ? `/api/admin/vod-assets/${encodeURIComponent(videoAssets[0].id)}/preview`
               : null,
+            transcodeStatus: latestJob?.status || null,
+            transcodeProgressPercent: latestJob?.progressPercent || 0,
+            transcodeErrorClass: latestJob?.errorClass || null,
+            publishState: publishState.publishState,
+            publishStateLabel: publishState.publishStateLabel,
             categories: c.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
           }, platform);
         }),
@@ -2885,7 +2959,19 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
       const meta = adminMeta(req);
       const before = await prisma.content.findUnique({ where: { id } });
       if (!before) return reply.status(404).send({ error: "not_found" });
-      if (!["draft", "pending_review", "archived", "scheduled"].includes(before.status)) {
+      if (before.status === "scheduled") {
+        if (before.scheduledAt && before.scheduledAt.getTime() > Date.now()) {
+          return reply.status(409).send({
+            error: "already_scheduled",
+            message: "该内容已登记定时发布，请等待计划时间或先修改排期，不能重复点击发布。",
+          });
+        }
+        return reply.status(409).send({
+          error: "auto_publish_already_registered",
+          message: "该内容已登记自动发布，转码完成后会自动上线，不能重复点击发布。",
+        });
+      }
+      if (!["draft", "pending_review", "archived"].includes(before.status)) {
         return reply.status(409).send({ error: "bad_status", message: "当前状态不允许发布" });
       }
       const preCheck = await validatePublishReady(prisma, id);
