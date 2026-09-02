@@ -115,6 +115,22 @@ test("desktop article detail hides the rail and restores it when leaving focus p
   assert.match(cssSource, /\.app-shell:has\(\.desktop-rail\.is-hidden\) \{\s*grid-template-columns: minmax\(0, 1fr\);\s*\}/);
 });
 
+test("article body media and overflow rules keep H5 and Mini App content inside the container", async () => {
+  const cssSources = await Promise.all([
+    readFile(path.join(ROOT, "h5/styles.css"), "utf8"),
+    readFile(path.join(ROOT, "telegram-mini-app/styles.css"), "utf8"),
+  ]);
+
+  for (const cssSource of cssSources) {
+    assert.match(cssSource, /\.article-detail-shell\s*\{[\s\S]*min-width:\s*0;[\s\S]*max-width:\s*100%;[\s\S]*box-sizing:\s*border-box;/);
+    assert.match(cssSource, /\.article-html-body\s*\{[\s\S]*min-width:\s*0;[\s\S]*max-width:\s*100%;[\s\S]*box-sizing:\s*border-box;[\s\S]*overflow-wrap:\s*anywhere;[\s\S]*word-break:\s*break-word;/);
+    assert.match(cssSource, /\.article-html-body\s*>\s*\*\s*\{[\s\S]*min-width:\s*0;[\s\S]*max-width:\s*100%;[\s\S]*box-sizing:\s*border-box;/);
+    assert.match(cssSource, /\.article-html-body img \{\s*display:\s*block;\s*max-width:\s*100%;\s*width:\s*auto;\s*height:\s*auto;\s*\}/);
+    assert.match(cssSource, /\.article-html-body figure img \{[\s\S]*width:\s*100%;/);
+    assert.match(cssSource, /\.article-html-body table \{[\s\S]*display:\s*block;[\s\S]*max-width:\s*100%;[\s\S]*overflow-x:\s*auto;/);
+  }
+});
+
 test("h5 home keeps continue watching compact and safely renders channel labels", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");

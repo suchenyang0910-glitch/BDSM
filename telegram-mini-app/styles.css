@@ -1281,6 +1281,9 @@ img.is-image-unavailable {
 .article-detail-shell {
   display: grid;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .article-intro h2,
@@ -1318,8 +1321,22 @@ img.is-image-unavailable {
 
 .article-card-cover { aspect-ratio: 16 / 9; }
 .article-detail-cover { aspect-ratio: 16 / 9; max-height: 520px; }
-.article-html-body { display: grid; gap: 14px; line-height: 1.8; }
-.article-html-body > * { margin: 0; }
+.article-html-body {
+  display: grid;
+  gap: 14px;
+  line-height: 1.8;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.article-html-body > * {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
 .article-html-body h1, .article-html-body h2, .article-html-body h3, .article-html-body h4, .article-html-body h5 { margin: 10px 0 0; color: var(--text-primary); line-height: 1.35; }
 .article-html-body h1 { font-size: 24px; }
 .article-html-body h2 { font-size: 21px; }
@@ -1329,6 +1346,7 @@ img.is-image-unavailable {
 .article-html-body ul, .article-html-body ol { margin: 0; padding-left: 22px; }
 .article-html-body blockquote { margin: 0; padding: 12px 14px; border-left: 3px solid var(--brand-primary); border-radius: 0 10px 10px 0; background: rgba(169, 104, 255, .1); }
 .article-html-body figure { display: grid; gap: 8px; margin: 0; }
+.article-html-body img { display: block; max-width: 100%; width: auto; height: auto; }
 .article-html-body figure img { width: 100%; max-height: 520px; object-fit: contain; border-radius: 12px; background: var(--bg-page); }
 .article-html-body figcaption { color: var(--text-secondary); font-size: 12px; text-align: center; }
 .article-html-body a { color: var(--brand-primary); font-weight: 700; }
@@ -1339,7 +1357,7 @@ img.is-image-unavailable {
 .article-html-body [data-article-color="orange"] { color: #ffc069; }
 .article-html-body [data-article-color="green"] { color: #69dfae; }
 .article-html-body [data-article-color="blue"] { color: #86bcff; }
-.article-html-body table { width: 100%; border-collapse: collapse; font-size: 13px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }
+.article-html-body table { display: block; width: 100%; max-width: 100%; border-collapse: collapse; font-size: 13px; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
 .article-html-body th, .article-html-body td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
 .article-html-body th { background: rgba(169, 104, 255, .12); color: var(--text-primary); }
 
