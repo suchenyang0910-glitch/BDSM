@@ -3406,8 +3406,8 @@
     $("articleDetailView").classList.toggle("is-hidden", !isArticle);
     $("watchHistoryView").classList.toggle("is-hidden", !isHistory);
     $("walletView").classList.toggle("is-hidden", !isWallet);
-    $("desktopRail").classList.toggle("is-hidden", isDetail || isHistory || isWallet);
-    if (!isDetail && !isHistory && !isWallet) renderDesktopRail();
+    $("desktopRail").classList.toggle("is-hidden", isDetail || isArticle || isHistory || isWallet);
+    if (!isDetail && !isArticle && !isHistory && !isWallet) renderDesktopRail();
 
     document.querySelectorAll(".nav-item").forEach(function (button) {
       button.classList.toggle("is-active", !isDetail && !isArticle && !isHistory && !isWallet && button.getAttribute("data-tab") === routeState.tab);

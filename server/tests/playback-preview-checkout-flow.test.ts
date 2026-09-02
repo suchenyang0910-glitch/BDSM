@@ -103,6 +103,18 @@ test("desktop library keeps its toolbar in the primary content row after filteri
   assert.match(cssSource, /\.app-main \{\s*grid-row: 2;\s*min-width: 0;/);
 });
 
+test("desktop article detail hides the rail and restores it when leaving focus pages", async () => {
+  const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const cssSource = await readFile(path.join(ROOT, "h5/styles.css"), "utf8");
+
+  assert.match(appSource, /\$\("desktopRail"\)\.classList\.toggle\("is-hidden", isDetail \|\| isArticle \|\| isHistory \|\| isWallet\);/);
+  assert.match(appSource, /if \(!isDetail && !isArticle && !isHistory && !isWallet\) renderDesktopRail\(\);/);
+  assert.match(appSource, /\$\("articleDetailView"\)\.classList\.toggle\("is-hidden", !isArticle\);/);
+  assert.match(appSource, /document\.querySelectorAll\("\.nav-item"\)\.forEach\(function \(button\) \{\s*button\.classList\.toggle\("is-active", !isDetail && !isArticle && !isHistory && !isWallet/s);
+  assert.match(cssSource, /\.desktop-rail\.is-hidden \{\s*display: none;\s*\}/);
+  assert.match(cssSource, /\.app-shell:has\(\.desktop-rail\.is-hidden\) \{\s*grid-template-columns: minmax\(0, 1fr\);\s*\}/);
+});
+
 test("h5 home keeps continue watching compact and safely renders channel labels", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
