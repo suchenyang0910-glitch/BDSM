@@ -289,3 +289,44 @@ test("community post publish rejects invalid video storage prefix or queue and h
     await app.close();
   }
 });
+
+test("community admin routes stay dark when COMMUNITY_ENABLED=false", { concurrency: false }, async () => {
+  const previous = {
+    enabled: process.env.COMMUNITY_ENABLED,
+    posting: process.env.COMMUNITY_POSTING_ENABLED,
+    video: process.env.COMMUNITY_VIDEO_UPLOAD_ENABLED,
+  };
+  process.env.COMMUNITY_ENABLED = "false";
+  process.env.COMMUNITY_POSTING_ENABLED = "false";
+  process.env.COMMUNITY_VIDEO_UPLOAD_ENABLED = "false";
+  const app = await createApp(prisma);
+  try {
+    const adminCookie = await loginAdmin(app, "customer_service");
+
+    const queueResp = await app.inject({
+      method: "GET",
+      url: "/api/admin/community/posts?status=pending",
+      headers: { cookie: adminCookie },
+    });
+    assert.equal(queueResp.statusCode, 404, queueResp.body);
+
+    const commentResp = await app.inject({
+      method: "GET",
+      url: `/api/admin/interactions/comments?targetType=circle_post&targetId=${encodeURIComponent("missing-post")}`,
+      headers: { cookie: adminCookie },
+    });
+    assert.equal(commentResp.statusCode, 404, commentResp.body);
+
+    const reportResp = await app.inject({
+      method: "GET",
+      url: `/api/admin/interactions/reports?targetType=circle_post&targetId=${encodeURIComponent("missing-post")}`,
+      headers: { cookie: adminCookie },
+    });
+    assert.equal(reportResp.statusCode, 404, reportResp.body);
+  } finally {
+    process.env.COMMUNITY_ENABLED = previous.enabled || "true";
+    process.env.COMMUNITY_POSTING_ENABLED = previous.posting || "true";
+    process.env.COMMUNITY_VIDEO_UPLOAD_ENABLED = previous.video || "true";
+    await app.close();
+  }
+});
