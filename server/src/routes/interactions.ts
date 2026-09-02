@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
-const TARGET_TYPES = ["video_content", "article"] as const;
+const TARGET_TYPES = ["video_content", "article", "circle_post"] as const;
 const COMMENT_PUBLIC_STATUS = ["approved"] as const;
 const COMMENT_REPLY_TARGET_STATUS = ["approved"] as const;
 const REPORT_REASON_CODES = ["spam", "abuse", "illegal", "sexual_violence", "other"] as const;
@@ -66,12 +66,36 @@ async function resolveVisibleTarget(prisma: any, targetType: (typeof TARGET_TYPE
     if (!content || content.status !== "published") return null;
     return { id: content.id, title: content.title, subtitle: null, coverUrl: content.coverUrl || null, publishedAt: content.publishedAt };
   }
+  if (targetType === "circle_post") {
+    const post = await prisma.communityPost.findUnique({
+      where: { id: targetId },
+      select: { id: true, body: true, status: true, publishedAt: true, topics: true },
+    });
+    if (!post || post.status !== "published") return null;
+    const title = String(post.body || "").trim().slice(0, 48) || "圈子帖子";
+    const subtitle = Array.isArray(post.topics) && post.topics.length > 0 ? post.topics.slice(0, 3).join(" / ") : null;
+    return { id: post.id, title, subtitle, coverUrl: null, publishedAt: post.publishedAt };
+  }
   const article = await prisma.article.findUnique({
     where: { id: targetId },
     select: { id: true, status: true, title: true, summary: true, coverImageUrl: true, publishedAt: true },
   });
   if (!article || article.status !== "published") return null;
   return { id: article.id, title: article.title, subtitle: article.summary || null, coverUrl: article.coverImageUrl || null, publishedAt: article.publishedAt };
+}
+
+async function syncCirclePostApprovedCommentCount(tx: any, postId: string) {
+  const commentCount = await tx.interactionComment.count({
+    where: {
+      targetType: "circle_post",
+      targetId: postId,
+      status: "approved",
+    },
+  });
+  await tx.communityPost.update({
+    where: { id: postId },
+    data: { commentCount },
+  });
 }
 
 async function requireVisibleTarget(prisma: any, targetType: (typeof TARGET_TYPES)[number], targetId: string, reply: any) {
@@ -427,6 +451,12 @@ export default async function interactionRoutes(fastify: FastifyInstance) {
           data: { replyCount: { increment: 1 } },
         });
       }
+      if (targetType === "circle_post" && status === "approved") {
+        await tx.communityPost.update({
+          where: { id: targetId },
+          data: { commentCount: { increment: 1 } },
+        });
+      }
       return row;
     });
 
@@ -461,6 +491,11 @@ export default async function interactionRoutes(fastify: FastifyInstance) {
             where: { id: commentId as string },
             data: { likeCount: { decrement: 1 } },
           });
+        } else if (targetType === "circle_post") {
+          await tx.communityPost.update({
+            where: { id: targetId },
+            data: { reactionCount: { decrement: 1 } },
+          });
         }
         return { liked: false };
       }
@@ -478,6 +513,11 @@ export default async function interactionRoutes(fastify: FastifyInstance) {
         await tx.interactionComment.update({
           where: { id: commentId as string },
           data: { likeCount: { increment: 1 } },
+        });
+      } else if (targetType === "circle_post") {
+        await tx.communityPost.update({
+          where: { id: targetId },
+          data: { reactionCount: { increment: 1 } },
         });
       }
       return { liked: true };
@@ -532,6 +572,12 @@ export default async function interactionRoutes(fastify: FastifyInstance) {
           detailText: detailText || null,
         },
       });
+      if (targetType === "circle_post") {
+        await prisma.communityPost.update({
+          where: { id: targetId },
+          data: { reportCount: { increment: 1 } },
+        });
+      }
     } catch (error: any) {
       if (error?.code === "P2002") {
         return reply.status(409).send({ error: "duplicate_report_open", message: "你已经举报过这条内容，管理员正在处理中。" });
@@ -604,6 +650,9 @@ export default async function interactionRoutes(fastify: FastifyInstance) {
           where: { id: before.parentId },
           data: { replyCount: remainingReplies },
         });
+      }
+      if (before.targetType === "circle_post") {
+        await syncCirclePostApprovedCommentCount(tx, before.targetId);
       }
     });
     return { ok: true, deletedCommentId: before.id };

@@ -162,6 +162,8 @@ const ALL_TABLES_ORDERED = [
   "interaction_reports",
   "interaction_likes",
   "interaction_comments",
+  "community_post_assets",
+  "community_posts",
   "playback_revoke_outbox",
   "playback_grants",
   "playback_sessions",

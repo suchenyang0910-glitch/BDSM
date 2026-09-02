@@ -7,6 +7,8 @@ const listReportsQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
   status: z.enum(["open", "reviewing", "actioned", "dismissed"]).optional(),
   targetType: z.enum(["video_content", "article", "circle_post"]).optional(),
+  targetId: z.string().trim().min(1).max(64).optional(),
+  commentId: z.string().trim().min(1).max(64).optional(),
 });
 
 const listCommentsQuerySchema = z.object({
@@ -14,6 +16,14 @@ const listCommentsQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
   status: z.enum(["pending", "approved", "hidden", "rejected", "deleted"]).default("pending"),
   targetType: z.enum(["video_content", "article", "circle_post"]).optional(),
+  targetId: z.string().trim().min(1).max(64).optional(),
+});
+
+const listCommunityPostsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  status: z.enum(["pending", "published", "hidden", "removed"]).optional(),
+  keyword: z.string().trim().max(100).optional(),
 });
 
 const reviewReportSchema = z.object({
@@ -25,6 +35,16 @@ const reviewReportSchema = z.object({
 
 const moderateCommentSchema = z.object({
   status: z.enum(["approved", "hidden", "rejected", "deleted"]),
+  reason: z.string().trim().max(500).optional(),
+});
+
+const moderateCommunityPostSchema = z.object({
+  status: z.enum(["published", "hidden", "removed"]),
+  reason: z.string().trim().max(500).optional(),
+});
+
+const pinCommunityPostSchema = z.object({
+  pinned: z.boolean(),
   reason: z.string().trim().max(500).optional(),
 });
 
@@ -82,6 +102,20 @@ async function syncParentReplyCount(tx: any, comment: any) {
   });
 }
 
+async function syncCirclePostApprovedCommentCount(tx: any, postId: string) {
+  const commentCount = await tx.interactionComment.count({
+    where: {
+      targetType: "circle_post",
+      targetId: postId,
+      status: "approved",
+    },
+  });
+  await tx.communityPost.update({
+    where: { id: postId },
+    data: { commentCount },
+  });
+}
+
 async function loadTargetBrief(prisma: any, targetType: string, targetId: string) {
   if (targetType === "video_content") {
     const content = await prisma.content.findUnique({
@@ -97,7 +131,90 @@ async function loadTargetBrief(prisma: any, targetType: string, targetId: string
     });
     return article ? { id: article.id, title: article.title, status: article.status } : null;
   }
+  if (targetType === "circle_post") {
+    const post = await prisma.communityPost.findUnique({
+      where: { id: targetId },
+      select: {
+        id: true,
+        body: true,
+        status: true,
+      },
+    });
+    if (!post) return null;
+    const title = String(post.body || "").trim().slice(0, 40) || post.id;
+    return { id: post.id, title, status: post.status };
+  }
   return { id: targetId, title: targetId, status: "unknown" };
+}
+
+function mapCommunityPostAsset(item: any) {
+  return {
+    id: item.id,
+    ordinal: item.ordinal,
+    kind: item.kind,
+    width: item.width ?? null,
+    height: item.height ?? null,
+    aspectRatio: item.aspectRatio ?? null,
+    durationSeconds: item.durationSeconds ?? null,
+    transcodeStatus: item.transcodeStatus,
+    transcodeProgressPercent: item.transcodeProgressPercent ?? 0,
+    moderationStatus: item.moderationStatus,
+    transcodeQueueName: item.transcodeQueueName || null,
+    playbackQuotaBucket: item.playbackQuotaBucket || null,
+  };
+}
+
+async function loadAuditEntries(prisma: any, objectType: string, objectId: string, page = 1, pageSize = 20) {
+  const [total, items] = await Promise.all([
+    prisma.adminAuditLog.count({ where: { objectType, objectId } }),
+    prisma.adminAuditLog.findMany({
+      where: { objectType, objectId },
+      include: {
+        admin: { select: { id: true, displayName: true, email: true } },
+      },
+      orderBy: [{ createdAt: "desc" }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+  ]);
+  return {
+    total,
+    page,
+    pageSize,
+    items: items.map((item: any) => ({
+      id: item.id,
+      action: item.action,
+      reason: item.reason || null,
+      beforeValue: item.beforeValue || null,
+      afterValue: item.afterValue || null,
+      createdAt: item.createdAt.toISOString(),
+      admin: item.admin
+        ? {
+            id: item.admin.id,
+            displayName: item.admin.displayName || item.admin.email || "管理员",
+            email: item.admin.email || null,
+          }
+        : null,
+    })),
+  };
+}
+
+function validateCommunityAssetPrefixes(postId: string, asset: any): { ok: true } | { ok: false; error: string; message: string } {
+  const expectedBase = asset.kind === "video"
+    ? `community/posts/${postId}/videos/${asset.id}/`
+    : `community/posts/${postId}/images/${asset.id}/`;
+  if (!asset.objectKey || !String(asset.objectKey).startsWith(expectedBase)) {
+    return { ok: false, error: "community_asset_prefix_invalid", message: "圈子媒体未使用独立 community 对象存储前缀。" };
+  }
+  if (asset.kind === "video") {
+    if (asset.transcodeQueueName !== "community_transcode") {
+      return { ok: false, error: "community_video_queue_invalid", message: "圈子短视频必须登记到独立 community_transcode 队列。" };
+    }
+    if (asset.playbackQuotaBucket !== "community_video") {
+      return { ok: false, error: "community_video_quota_invalid", message: "圈子短视频必须使用独立 community_video 播放额度桶。" };
+    }
+  }
+  return { ok: true };
 }
 
 export default async function adminInteractionRoutes(fastify: FastifyInstance) {
@@ -105,15 +222,24 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
 
   fastify.get("/admin/interactions/comments", { preHandler: [requireAdmin("ticket:view")] }, async (req) => {
     const parsed = listCommentsQuerySchema.parse(req.query || {});
-    const { page, pageSize, status, targetType } = parsed;
+    const { page, pageSize, status, targetType, targetId } = parsed;
     const where: any = { status };
     if (targetType) where.targetType = targetType;
+    if (targetId) where.targetId = targetId;
     const [total, items] = await Promise.all([
       prisma.interactionComment.count({ where }),
       prisma.interactionComment.findMany({
         where,
         include: {
           user: { select: { id: true, displayName: true } },
+          parent: {
+            select: {
+              id: true,
+              body: true,
+              user: { select: { id: true, displayName: true } },
+            },
+          },
+          _count: { select: { reports: true } },
         },
         orderBy: [{ createdAt: "asc" }],
         skip: (page - 1) * pageSize,
@@ -152,10 +278,23 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         updatedAt: item.updatedAt.toISOString(),
         moderatedAt: item.moderatedAt ? item.moderatedAt.toISOString() : null,
         moderationReason: item.moderationReason || null,
+        reportCount: item._count?.reports || 0,
         author: item.user
           ? {
               id: item.user.id,
               displayName: item.user.displayName || "同频成员",
+            }
+          : null,
+        parentComment: item.parent
+          ? {
+              id: item.parent.id,
+              body: item.parent.body,
+              author: item.parent.user
+                ? {
+                    id: item.parent.user.id,
+                    displayName: item.parent.user.displayName || "同频成员",
+                  }
+                : null,
             }
           : null,
         target: targetMap.get(`${item.targetType}:${item.targetId}`),
@@ -165,10 +304,12 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
 
   fastify.get("/admin/interactions/reports", { preHandler: [requireAdmin("ticket:view")] }, async (req) => {
     const parsed = listReportsQuerySchema.parse(req.query || {});
-    const { page, pageSize, status, targetType } = parsed;
+    const { page, pageSize, status, targetType, targetId, commentId } = parsed;
     const where: any = {};
     if (status) where.status = status;
     if (targetType) where.targetType = targetType;
+    if (targetId) where.targetId = targetId;
+    if (commentId) where.commentId = commentId;
     const [total, items] = await Promise.all([
       prisma.interactionReport.count({ where }),
       prisma.interactionReport.findMany({
@@ -206,6 +347,12 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
     };
   });
 
+  fastify.get<{ Params: { id: string } }>("/admin/interactions/comments/:id/audit-logs", { preHandler: [requireAdmin("ticket:view")] }, async (req, reply) => {
+    const id = String(req.params.id || "").trim();
+    if (!id) return reply.status(400).send({ error: "invalid_comment_id" });
+    return loadAuditEntries(prisma, "interaction_comment", id);
+  });
+
   fastify.post<{ Params: { id: string } }>("/admin/interactions/reports/:id/review", { preHandler: [requireAdmin("ticket:resolve")] }, async (req, reply) => {
     const parsed = reviewReportSchema.safeParse(req.body || {});
     if (!parsed.success) return reply.status(400).send({ error: "invalid_report_review", details: parsed.error.issues });
@@ -232,7 +379,7 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
       if (before.commentId && payload.commentStatus) {
         const commentBefore = await tx.interactionComment.findUnique({
           where: { id: before.commentId },
-          select: { id: true, parentId: true, status: true },
+          select: { id: true, parentId: true, status: true, targetType: true, targetId: true },
         });
         const updatedComment = await tx.interactionComment.update({
           where: { id: before.commentId },
@@ -245,6 +392,9 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         });
         if (commentBefore && commentBefore.parentId && commentBefore.status !== updatedComment.status) {
           await syncParentReplyCount(tx, updatedComment);
+        }
+        if (commentBefore && commentBefore.targetType === "circle_post" && commentBefore.status !== updatedComment.status) {
+          await syncCirclePostApprovedCommentCount(tx, commentBefore.targetId);
         }
       }
       return updatedReport;
@@ -280,21 +430,25 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
     });
     if (!before) return reply.status(404).send({ error: "interaction_comment_not_found", message: "评论不存在。" });
     const meta = adminMeta(req);
-    const after = await prisma.interactionComment.update({
-      where: { id: before.id },
-      data: {
-        status: parsed.data.status,
-        moderationReason: parsed.data.reason || null,
-        moderatedBy: meta.adminId,
-        moderatedAt: new Date(),
-      },
-      include: { user: { select: { id: true, displayName: true } } },
-    });
-    if (before.parentId && before.status !== after.status) {
-      await prisma.$transaction(async (tx: any) => {
-        await syncParentReplyCount(tx, after);
+    const after = await prisma.$transaction(async (tx: any) => {
+      const updated = await tx.interactionComment.update({
+        where: { id: before.id },
+        data: {
+          status: parsed.data.status,
+          moderationReason: parsed.data.reason || null,
+          moderatedBy: meta.adminId,
+          moderatedAt: new Date(),
+        },
+        include: { user: { select: { id: true, displayName: true } } },
       });
-    }
+      if (before.parentId && before.status !== updated.status) {
+        await syncParentReplyCount(tx, updated);
+      }
+      if (before.targetType === "circle_post" && before.status !== updated.status) {
+        await syncCirclePostApprovedCommentCount(tx, before.targetId);
+      }
+      return updated;
+    });
     await writeAudit(
       prisma,
       req,
@@ -306,5 +460,177 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
       parsed.data.reason,
     );
     return { ok: true, comment: after };
+  });
+
+  fastify.get("/admin/community/posts", { preHandler: [requireAdmin("ticket:view")] }, async (req) => {
+    const parsed = listCommunityPostsQuerySchema.parse(req.query || {});
+    const { page, pageSize, status, keyword } = parsed;
+    const where: any = {};
+    if (status) where.status = status;
+    if (keyword) {
+      where.OR = [
+        { body: { contains: keyword, mode: "insensitive" } },
+        { topics: { has: keyword } },
+        { author: { displayName: { contains: keyword, mode: "insensitive" } } },
+      ];
+    }
+    const [total, items] = await Promise.all([
+      prisma.communityPost.count({ where }),
+      prisma.communityPost.findMany({
+        where,
+        include: {
+          author: { select: { id: true, displayName: true, photoUrl: true } },
+          assets: {
+            orderBy: [{ ordinal: "asc" }],
+            select: {
+              id: true,
+              ordinal: true,
+              kind: true,
+              width: true,
+              height: true,
+              aspectRatio: true,
+              durationSeconds: true,
+              transcodeStatus: true,
+              transcodeProgressPercent: true,
+              moderationStatus: true,
+              transcodeQueueName: true,
+              playbackQuotaBucket: true,
+            },
+          },
+        },
+        orderBy: [{ isPinned: "desc" }, { publishedAt: "desc" }, { createdAt: "desc" }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+    return {
+      total,
+      page,
+      pageSize,
+      items: items.map((item: any) => ({
+        id: item.id,
+        body: item.body,
+        topics: item.topics || [],
+        status: item.status,
+        visibility: item.visibility,
+        mediaCount: item.mediaCount,
+        reactionCount: item.reactionCount,
+        commentCount: item.commentCount,
+        reportCount: item.reportCount,
+        moderationReason: item.moderationReason || null,
+        isPinned: !!item.isPinned,
+        pinnedAt: item.pinnedAt ? item.pinnedAt.toISOString() : null,
+        publishedAt: item.publishedAt ? item.publishedAt.toISOString() : null,
+        createdAt: item.createdAt.toISOString(),
+        updatedAt: item.updatedAt.toISOString(),
+        author: item.author
+          ? {
+              id: item.author.id,
+              displayName: item.author.displayName || "同频成员",
+              photoUrl: item.author.photoUrl || null,
+            }
+          : null,
+        assets: (item.assets || []).map(mapCommunityPostAsset),
+      })),
+    };
+  });
+
+  fastify.get<{ Params: { id: string } }>("/admin/community/posts/:id/audit-logs", { preHandler: [requireAdmin("ticket:view")] }, async (req, reply) => {
+    const id = String(req.params.id || "").trim();
+    if (!id) return reply.status(400).send({ error: "invalid_post_id" });
+    return loadAuditEntries(prisma, "community_post", id);
+  });
+
+  fastify.post<{ Params: { id: string } }>("/admin/community/posts/:id/moderate", { preHandler: [requireAdmin("ticket:resolve")] }, async (req, reply) => {
+    const parsed = moderateCommunityPostSchema.safeParse(req.body || {});
+    if (!parsed.success) return reply.status(400).send({ error: "invalid_community_post_moderation", details: parsed.error.issues });
+    const before = await prisma.communityPost.findUnique({
+      where: { id: req.params.id },
+      include: {
+        author: { select: { id: true, displayName: true } },
+        assets: true,
+      },
+    });
+    if (!before) return reply.status(404).send({ error: "community_post_not_found", message: "圈子帖子不存在。" });
+    if (parsed.data.status === "published") {
+      for (const asset of before.assets || []) {
+        const prefixCheck = validateCommunityAssetPrefixes(before.id, asset);
+        if (!prefixCheck.ok) {
+          return reply.status(409).send(prefixCheck);
+        }
+        if (asset.moderationStatus !== "approved") {
+          return reply.status(409).send({ error: "community_media_not_approved", message: "圈子媒体需先审核通过后才能发布帖子。" });
+        }
+        if (asset.kind === "video" && asset.transcodeStatus !== "ready") {
+          return reply.status(409).send({ error: "community_video_not_ready", message: "圈子短视频尚未完成独立转码，不能发布。" });
+        }
+      }
+    }
+    const nextStatus = parsed.data.status;
+    const after = await prisma.communityPost.update({
+      where: { id: before.id },
+      data: {
+        status: nextStatus,
+        moderationReason: parsed.data.reason || null,
+        publishedAt: nextStatus === "published" ? (before.publishedAt || new Date()) : before.publishedAt,
+        deletedAt: nextStatus === "removed" ? new Date() : null,
+      },
+      include: {
+        author: { select: { id: true, displayName: true } },
+        assets: true,
+      },
+    });
+    await writeAudit(
+      prisma,
+      req,
+      "community.post.moderate",
+      "community_post",
+      before.id,
+      { status: before.status, isPinned: before.isPinned, moderationReason: before.moderationReason || null },
+      { status: after.status, isPinned: after.isPinned, moderationReason: after.moderationReason || null },
+      parsed.data.reason,
+    );
+    return {
+      ok: true,
+      post: {
+        id: after.id,
+        status: after.status,
+        moderationReason: after.moderationReason || null,
+        isPinned: !!after.isPinned,
+        publishedAt: after.publishedAt ? after.publishedAt.toISOString() : null,
+      },
+    };
+  });
+
+  fastify.post<{ Params: { id: string } }>("/admin/community/posts/:id/pin", { preHandler: [requireAdmin("ticket:resolve")] }, async (req, reply) => {
+    const parsed = pinCommunityPostSchema.safeParse(req.body || {});
+    if (!parsed.success) return reply.status(400).send({ error: "invalid_community_post_pin", details: parsed.error.issues });
+    const before = await prisma.communityPost.findUnique({ where: { id: req.params.id } });
+    if (!before) return reply.status(404).send({ error: "community_post_not_found", message: "圈子帖子不存在。" });
+    const after = await prisma.communityPost.update({
+      where: { id: before.id },
+      data: {
+        isPinned: parsed.data.pinned,
+        pinnedAt: parsed.data.pinned ? new Date() : null,
+      },
+    });
+    await writeAudit(
+      prisma,
+      req,
+      parsed.data.pinned ? "community.post.pin" : "community.post.unpin",
+      "community_post",
+      before.id,
+      { isPinned: before.isPinned, pinnedAt: before.pinnedAt ? before.pinnedAt.toISOString() : null },
+      { isPinned: after.isPinned, pinnedAt: after.pinnedAt ? after.pinnedAt.toISOString() : null },
+      parsed.data.reason,
+    );
+    return {
+      ok: true,
+      post: {
+        id: after.id,
+        isPinned: !!after.isPinned,
+        pinnedAt: after.pinnedAt ? after.pinnedAt.toISOString() : null,
+      },
+    };
   });
 }

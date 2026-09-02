@@ -89,6 +89,11 @@ import type {
   AdminInteractionCommentListFilter,
   ReviewInteractionReportInput,
   ModerateInteractionCommentInput,
+  AdminAuditLogListResp,
+  AdminCommunityPostListResp,
+  AdminCommunityPostListFilter,
+  ModerateCommunityPostInput,
+  PinCommunityPostInput,
 } from "./types";
 
 const http = axios.create({
@@ -764,5 +769,42 @@ export async function moderateAdminInteractionComment(
   input: ModerateInteractionCommentInput,
 ): Promise<{ ok: true; comment: any }> {
   const res = await http.post(`/admin/interactions/comments/${encodeURIComponent(id)}/moderate`, input);
+  return res.data;
+}
+
+export async function listAdminInteractionCommentAudits(id: string): Promise<AdminAuditLogListResp> {
+  const res = await http.get(`/admin/interactions/comments/${encodeURIComponent(id)}/audit-logs`);
+  return res.data;
+}
+
+export async function listAdminCommunityPosts(
+  q: AdminCommunityPostListFilter = {},
+): Promise<AdminCommunityPostListResp> {
+  const params: Record<string, any> = {};
+  for (const [key, value] of Object.entries(q)) {
+    if (value !== undefined && value !== null && String(value) !== "") params[key] = value;
+  }
+  const res = await http.get("/admin/community/posts", { params });
+  return res.data;
+}
+
+export async function moderateAdminCommunityPost(
+  id: string,
+  input: ModerateCommunityPostInput,
+): Promise<{ ok: true; post: any }> {
+  const res = await http.post(`/admin/community/posts/${encodeURIComponent(id)}/moderate`, input);
+  return res.data;
+}
+
+export async function pinAdminCommunityPost(
+  id: string,
+  input: PinCommunityPostInput,
+): Promise<{ ok: true; post: any }> {
+  const res = await http.post(`/admin/community/posts/${encodeURIComponent(id)}/pin`, input);
+  return res.data;
+}
+
+export async function listAdminCommunityPostAudits(id: string): Promise<AdminAuditLogListResp> {
+  const res = await http.get(`/admin/community/posts/${encodeURIComponent(id)}/audit-logs`);
   return res.data;
 }

@@ -1485,6 +1485,8 @@ export type AdminInteractionReportListFilter = {
   pageSize?: number;
   status?: InteractionReportStatus;
   targetType?: InteractionTargetType;
+  targetId?: string;
+  commentId?: string;
 };
 
 export type AdminInteractionCommentQueueItem = {
@@ -1501,7 +1503,13 @@ export type AdminInteractionCommentQueueItem = {
   updatedAt: string;
   moderatedAt: string | null;
   moderationReason: string | null;
+  reportCount: number;
   author: { id: string; displayName?: string | null } | null;
+  parentComment: {
+    id: string;
+    body: string;
+    author: { id: string; displayName?: string | null } | null;
+  } | null;
   target: { id: string; title: string; status: string } | null;
 };
 
@@ -1517,6 +1525,7 @@ export type AdminInteractionCommentListFilter = {
   pageSize?: number;
   status?: InteractionCommentStatus;
   targetType?: InteractionTargetType;
+  targetId?: string;
 };
 
 export type ReviewInteractionReportInput = {
@@ -1528,5 +1537,83 @@ export type ReviewInteractionReportInput = {
 
 export type ModerateInteractionCommentInput = {
   status: Extract<InteractionCommentStatus, "approved" | "hidden" | "rejected" | "deleted">;
+  reason?: string;
+};
+
+export type AdminAuditLogEntry = {
+  id: string;
+  action: string;
+  reason: string | null;
+  beforeValue: unknown;
+  afterValue: unknown;
+  createdAt: string;
+  admin: { id: string; displayName?: string | null; email?: string | null } | null;
+};
+
+export type AdminAuditLogListResp = {
+  total: number;
+  page: number;
+  pageSize: number;
+  items: AdminAuditLogEntry[];
+};
+
+export type CommunityPostStatus = "pending" | "published" | "hidden" | "removed";
+
+export type AdminCommunityPostAssetItem = {
+  id: string;
+  ordinal: number;
+  kind: "image" | "video";
+  width: number | null;
+  height: number | null;
+  aspectRatio: number | null;
+  durationSeconds: number | null;
+  transcodeStatus: "pending" | "processing" | "ready" | "failed";
+  transcodeProgressPercent: number;
+  moderationStatus: "pending" | "approved" | "rejected";
+  transcodeQueueName: string | null;
+  playbackQuotaBucket: string | null;
+};
+
+export type AdminCommunityPostItem = {
+  id: string;
+  body: string;
+  topics: string[];
+  status: CommunityPostStatus;
+  visibility: "public";
+  mediaCount: number;
+  reactionCount: number;
+  commentCount: number;
+  reportCount: number;
+  moderationReason: string | null;
+  isPinned: boolean;
+  pinnedAt: string | null;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  author: { id: string; displayName?: string | null; photoUrl?: string | null } | null;
+  assets: AdminCommunityPostAssetItem[];
+};
+
+export type AdminCommunityPostListResp = {
+  total: number;
+  page: number;
+  pageSize: number;
+  items: AdminCommunityPostItem[];
+};
+
+export type AdminCommunityPostListFilter = {
+  page?: number;
+  pageSize?: number;
+  status?: CommunityPostStatus;
+  keyword?: string;
+};
+
+export type ModerateCommunityPostInput = {
+  status: Extract<CommunityPostStatus, "published" | "hidden" | "removed">;
+  reason?: string;
+};
+
+export type PinCommunityPostInput = {
+  pinned: boolean;
   reason?: string;
 };

@@ -94,6 +94,35 @@ enum InteractionReportStatus {
   dismissed
 }
 
+enum CommunityPostStatus {
+  pending
+  published
+  hidden
+  removed
+}
+
+enum CommunityPostVisibility {
+  public
+}
+
+enum CommunityPostAssetKind {
+  image
+  video
+}
+
+enum CommunityPostAssetTranscodeStatus {
+  pending
+  processing
+  ready
+  failed
+}
+
+enum CommunityPostAssetModerationStatus {
+  pending
+  approved
+  rejected
+}
+
 enum BannerStatus {
   draft
   scheduled
@@ -251,6 +280,7 @@ model User {
   watchProgresses WatchProgress[]
   playbackSessions PlaybackSession[]
   playbackRevokeOutboxes PlaybackRevokeOutbox[]
+  communityPosts   CommunityPost[]
   interactionComments InteractionComment[]
   interactionLikes  InteractionLike[]
   interactionReports InteractionReport[]
@@ -665,6 +695,64 @@ model InteractionReport {
   @@index([reporterUserId, createdAt])
   @@index([commentId, createdAt])
   @@map("interaction_reports")
+}
+
+model CommunityPost {
+  id               String                  @id @default(uuid())
+  authorId         String                  @map("author_id")
+  body             String
+  topics           String[]                @default([])
+  status           CommunityPostStatus     @default(pending)
+  visibility       CommunityPostVisibility @default(public)
+  mediaCount       Int                     @default(0) @map("media_count")
+  reactionCount    Int                     @default(0) @map("reaction_count")
+  commentCount     Int                     @default(0) @map("comment_count")
+  reportCount      Int                     @default(0) @map("report_count")
+  isPinned         Boolean                 @default(false) @map("is_pinned")
+  pinnedAt         DateTime?               @map("pinned_at")
+  moderationReason String?                 @map("moderation_reason") @db.VarChar(500)
+  publishedAt      DateTime?               @map("published_at")
+  deletedAt        DateTime?               @map("deleted_at")
+  createdAt        DateTime                @default(now()) @map("created_at")
+  updatedAt        DateTime                @updatedAt @map("updated_at")
+
+  author           User                    @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  assets           CommunityPostAsset[]
+
+  @@index([status, publishedAt])
+  @@index([authorId, createdAt])
+  @@index([status, reportCount])
+  @@index([isPinned, publishedAt])
+  @@map("community_posts")
+}
+
+model CommunityPostAsset {
+  id                      String                              @id @default(uuid())
+  postId                  String                              @map("post_id")
+  ordinal                 Int
+  kind                    CommunityPostAssetKind
+  originalAssetId         String?                             @map("original_asset_id") @db.VarChar(64)
+  posterAssetId           String?                             @map("poster_asset_id") @db.VarChar(64)
+  objectKey               String?                             @map("object_key")
+  posterObjectKey         String?                             @map("poster_object_key")
+  aspectRatio             Float?                              @map("aspect_ratio")
+  width                   Int?
+  height                  Int?
+  durationSeconds         Int?                                @map("duration_seconds")
+  transcodeStatus         CommunityPostAssetTranscodeStatus   @default(pending) @map("transcode_status")
+  transcodeProgressPercent Int                                @default(0) @map("transcode_progress_percent")
+  moderationStatus        CommunityPostAssetModerationStatus  @default(pending) @map("moderation_status")
+  transcodeQueueName      String?                             @default("community_transcode") @map("transcode_queue_name") @db.VarChar(64)
+  playbackQuotaBucket     String?                             @default("community_video") @map("playback_quota_bucket") @db.VarChar(64)
+  createdAt               DateTime                            @default(now()) @map("created_at")
+  updatedAt               DateTime                            @updatedAt @map("updated_at")
+
+  post                    CommunityPost                       @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, ordinal])
+  @@index([postId, moderationStatus, transcodeStatus])
+  @@index([kind, moderationStatus, transcodeStatus])
+  @@map("community_post_assets")
 }
 
 model ContentCategory {
