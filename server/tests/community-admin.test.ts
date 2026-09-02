@@ -290,7 +290,7 @@ test("community post publish rejects invalid video storage prefix or queue and h
   }
 });
 
-test("community admin routes stay dark when COMMUNITY_ENABLED=false", { concurrency: false }, async () => {
+test("community admin routes stay available when COMMUNITY_ENABLED=false", { concurrency: false }, async () => {
   const previous = {
     enabled: process.env.COMMUNITY_ENABLED,
     posting: process.env.COMMUNITY_POSTING_ENABLED,
@@ -308,21 +308,46 @@ test("community admin routes stay dark when COMMUNITY_ENABLED=false", { concurre
       url: "/api/admin/community/posts?status=pending",
       headers: { cookie: adminCookie },
     });
-    assert.equal(queueResp.statusCode, 404, queueResp.body);
+    assert.equal(queueResp.statusCode, 200, queueResp.body);
+
+    const auditResp = await app.inject({
+      method: "GET",
+      url: `/api/admin/community/posts/${encodeURIComponent("missing-post")}/audit-logs`,
+      headers: { cookie: adminCookie },
+    });
+    assert.equal(auditResp.statusCode, 200, auditResp.body);
 
     const commentResp = await app.inject({
       method: "GET",
       url: `/api/admin/interactions/comments?targetType=circle_post&targetId=${encodeURIComponent("missing-post")}`,
       headers: { cookie: adminCookie },
     });
-    assert.equal(commentResp.statusCode, 404, commentResp.body);
+    assert.equal(commentResp.statusCode, 200, commentResp.body);
 
     const reportResp = await app.inject({
       method: "GET",
       url: `/api/admin/interactions/reports?targetType=circle_post&targetId=${encodeURIComponent("missing-post")}`,
       headers: { cookie: adminCookie },
     });
-    assert.equal(reportResp.statusCode, 404, reportResp.body);
+    assert.equal(reportResp.statusCode, 200, reportResp.body);
+
+    const moderateResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/community/posts/${encodeURIComponent("missing-post")}/moderate`,
+      headers: { cookie: adminCookie, "Content-Type": "application/json" },
+      payload: { status: "hidden", reason: "route should stay registered" },
+    });
+    assert.equal(moderateResp.statusCode, 404, moderateResp.body);
+    assert.equal((moderateResp.json() as any).error, "community_post_not_found");
+
+    const pinResp = await app.inject({
+      method: "POST",
+      url: `/api/admin/community/posts/${encodeURIComponent("missing-post")}/pin`,
+      headers: { cookie: adminCookie, "Content-Type": "application/json" },
+      payload: { pinned: true, reason: "route should stay registered" },
+    });
+    assert.equal(pinResp.statusCode, 404, pinResp.body);
+    assert.equal((pinResp.json() as any).error, "community_post_not_found");
   } finally {
     process.env.COMMUNITY_ENABLED = previous.enabled || "true";
     process.env.COMMUNITY_POSTING_ENABLED = previous.posting || "true";

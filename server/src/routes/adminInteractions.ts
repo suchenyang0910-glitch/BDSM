@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { requireAdmin, type AdminSession } from "./admin.js";
-import { loadCommunityFeatureConfig } from "../services/communityConfig.js";
 
 const listReportsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -220,22 +219,11 @@ function validateCommunityAssetPrefixes(postId: string, asset: any): { ok: true 
 
 export default async function adminInteractionRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
-  const communityFeatureConfig = loadCommunityFeatureConfig(process.env);
-
-  function rejectDisabledCommunity(reply: any) {
-    return reply.status(404).send({ error: "community_disabled", message: "圈子功能尚未开放。" });
-  }
 
   fastify.get("/admin/interactions/comments", { preHandler: [requireAdmin("ticket:view")] }, async (req, reply) => {
     const parsed = listCommentsQuerySchema.parse(req.query || {});
     const { page, pageSize, status, targetType, targetId } = parsed;
-    if (targetType === "circle_post" && !communityFeatureConfig.enabled) {
-      return rejectDisabledCommunity(reply);
-    }
     const where: any = { status };
-    if (!communityFeatureConfig.enabled) {
-      where.targetType = targetType && targetType !== "circle_post" ? targetType : { not: "circle_post" };
-    }
     if (targetType) where.targetType = targetType;
     if (targetId) where.targetId = targetId;
     const [total, items] = await Promise.all([
@@ -317,13 +305,7 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
   fastify.get("/admin/interactions/reports", { preHandler: [requireAdmin("ticket:view")] }, async (req, reply) => {
     const parsed = listReportsQuerySchema.parse(req.query || {});
     const { page, pageSize, status, targetType, targetId, commentId } = parsed;
-    if (targetType === "circle_post" && !communityFeatureConfig.enabled) {
-      return rejectDisabledCommunity(reply);
-    }
     const where: any = {};
-    if (!communityFeatureConfig.enabled) {
-      where.targetType = targetType && targetType !== "circle_post" ? targetType : { not: "circle_post" };
-    }
     if (status) where.status = status;
     if (targetType) where.targetType = targetType;
     if (targetId) where.targetId = targetId;
@@ -480,7 +462,7 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
     return { ok: true, comment: after };
   });
 
-  if (communityFeatureConfig.enabled) fastify.get("/admin/community/posts", { preHandler: [requireAdmin("ticket:view")] }, async (req) => {
+  fastify.get("/admin/community/posts", { preHandler: [requireAdmin("ticket:view")] }, async (req) => {
     const parsed = listCommunityPostsQuerySchema.parse(req.query || {});
     const { page, pageSize, status, keyword } = parsed;
     const where: any = {};
@@ -553,13 +535,13 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
     };
   });
 
-  if (communityFeatureConfig.enabled) fastify.get<{ Params: { id: string } }>("/admin/community/posts/:id/audit-logs", { preHandler: [requireAdmin("ticket:view")] }, async (req, reply) => {
+  fastify.get<{ Params: { id: string } }>("/admin/community/posts/:id/audit-logs", { preHandler: [requireAdmin("ticket:view")] }, async (req, reply) => {
     const id = String(req.params.id || "").trim();
     if (!id) return reply.status(400).send({ error: "invalid_post_id" });
     return loadAuditEntries(prisma, "community_post", id);
   });
 
-  if (communityFeatureConfig.enabled) fastify.post<{ Params: { id: string } }>("/admin/community/posts/:id/moderate", { preHandler: [requireAdmin("ticket:resolve")] }, async (req, reply) => {
+  fastify.post<{ Params: { id: string } }>("/admin/community/posts/:id/moderate", { preHandler: [requireAdmin("ticket:resolve")] }, async (req, reply) => {
     const parsed = moderateCommunityPostSchema.safeParse(req.body || {});
     if (!parsed.success) return reply.status(400).send({ error: "invalid_community_post_moderation", details: parsed.error.issues });
     const before = await prisma.communityPost.findUnique({
@@ -620,7 +602,7 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
     };
   });
 
-  if (communityFeatureConfig.enabled) fastify.post<{ Params: { id: string } }>("/admin/community/posts/:id/pin", { preHandler: [requireAdmin("ticket:resolve")] }, async (req, reply) => {
+  fastify.post<{ Params: { id: string } }>("/admin/community/posts/:id/pin", { preHandler: [requireAdmin("ticket:resolve")] }, async (req, reply) => {
     const parsed = pinCommunityPostSchema.safeParse(req.body || {});
     if (!parsed.success) return reply.status(400).send({ error: "invalid_community_post_pin", details: parsed.error.issues });
     const before = await prisma.communityPost.findUnique({ where: { id: req.params.id } });
