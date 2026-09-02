@@ -354,7 +354,7 @@ export async function autoSaveAdminArticleBody(id: string, bodyHtml: string): Pr
   return res.data;
 }
 
-export async function publishAdminArticle(id: string): Promise<{ ok: true; article: AdminArticleItem }> {
+export async function publishAdminArticle(id: string): Promise<{ ok: true; article: AdminArticleItem; delivery?: { targets: number; sent: number; failed: number; skipped: number; reason?: string } | null }> {
   const res = await http.post(`/admin/articles/${encodeURIComponent(id)}/publish`);
   return res.data;
 }

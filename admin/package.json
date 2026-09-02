@@ -8,22 +8,33 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
+    "test": "node --import tsx --test --test-concurrency=1 tests/tiptap-article-editor.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {
     "@ant-design/icons": "^5.5.1",
     "@noble/hashes": "^1.8.0",
+    "@tiptap/extension-color": "^3.31.0",
+    "@tiptap/extension-image": "^3.31.0",
+    "@tiptap/extension-link": "^3.31.0",
+    "@tiptap/extension-text-style": "^3.31.0",
+    "@tiptap/extension-underline": "^3.31.0",
+    "@tiptap/pm": "^3.31.0",
+    "@tiptap/react": "^3.31.0",
+    "@tiptap/starter-kit": "^3.31.0",
     "antd": "^5.22.0",
     "axios": "^1.7.7",
     "dayjs": "^1.11.13",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0"
+    "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
+    "happy-dom": "^20.12.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

@@ -455,6 +455,8 @@ model Article {
   createdAt     DateTime      @default(now()) @map("created_at")
   updatedAt     DateTime      @updatedAt @map("updated_at")
 
+  telegramDeliveries ArticleTelegramDelivery[]
+
   @@index([status, publishedAt])
   @@map("articles")
 }
@@ -964,6 +966,7 @@ model AdminManagedChannel {
   updatedAt           DateTime                @updatedAt @map("updated_at")
 
   package             ContentPackage?         @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  articleDeliveries   ArticleTelegramDelivery[]
   discoveryRequests   AdminChannelDiscoveryRequest[] @relation("ResolvedManagedChannel")
   channelMessages     TelegramChannelMessage[]
 
@@ -1469,6 +1472,37 @@ enum TelegramPublishJobStatus {
   failed
   retried_exhausted
   cancelled
+}
+
+/// Article promotion is intentionally isolated from video publish jobs: articles
+/// have no video asset, and a per-channel unique key prevents duplicate posts.
+enum ArticleTelegramDeliveryStatus {
+  queued
+  processing
+  sent
+  failed
+}
+
+model ArticleTelegramDelivery {
+  id                    String                        @id @default(uuid())
+  articleId             String                        @map("article_id")
+  managedChannelId      String                        @map("managed_channel_id")
+  status                ArticleTelegramDeliveryStatus @default(queued)
+  attempt               Int                           @default(0)
+  telegramMessageId     BigInt?                       @map("telegram_message_id") @db.BigInt
+  lastErrorClass        String?                       @map("last_error_class") @db.VarChar(128)
+  lastErrorNote         String?                       @map("last_error_note") @db.VarChar(300)
+  lastAttemptedAt       DateTime?                     @map("last_attempted_at")
+  sentAt                DateTime?                     @map("sent_at")
+  createdAt             DateTime                      @default(now()) @map("created_at")
+  updatedAt             DateTime                      @updatedAt @map("updated_at")
+
+  article               Article                       @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  managedChannel        AdminManagedChannel           @relation(fields: [managedChannelId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, managedChannelId])
+  @@index([status, createdAt])
+  @@map("article_telegram_deliveries")
 }
 
 model TelegramPublishJob {

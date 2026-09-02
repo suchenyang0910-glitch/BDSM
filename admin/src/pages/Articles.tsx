@@ -2,6 +2,13 @@ import React from "react";
 import { Alert, Button, Card, Divider, Drawer, Dropdown, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, Upload, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined, EditOutlined, UploadOutlined } from "@ant-design/icons";
+import { EditorContent, useEditor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import { TextStyle } from "@tiptap/extension-text-style";
+import Link from "@tiptap/extension-link";
+import Image from "@tiptap/extension-image";
+import Underline from "@tiptap/extension-underline";
+import { ArticleTextColor } from "../components/articleTextColor";
 import { adminMe, archiveAdminArticle, autoSaveAdminArticleBody, completeAdminBannerImageUpload, createAdminArticle, errMsg, initAdminBannerImageUpload, listAdminArticles, publishAdminArticle, updateAdminArticle } from "../api/client";
 import type { AdminArticleInput, AdminArticleItem, AdminMe } from "../api/types";
 
@@ -604,6 +611,147 @@ const RichArticleEditor: React.FC<{ value?: string; onChange?: (value: string) =
   </div>;
 };
 
+const TiptapArticleEditor: React.FC<{ value?: string; onChange?: (value: string) => void; disabled?: boolean; onPasteImage?: (file: File) => Promise<string | null> }> = ({ value = "", onChange, disabled, onPasteImage }) => {
+  const lastValue = React.useRef("");
+  const [sourceMode, setSourceMode] = React.useState(false);
+  const [markdownOpen, setMarkdownOpen] = React.useState(false);
+  const [markdown, setMarkdown] = React.useState("");
+  const [richPasteHtml, setRichPasteHtml] = React.useState("");
+  const [linkDialogOpen, setLinkDialogOpen] = React.useState(false);
+  const [linkUrl, setLinkUrl] = React.useState("");
+  const emit = React.useCallback((html: string) => {
+    const safe = sanitizeEditorHtml(html);
+    lastValue.current = safe;
+    onChange?.(safe);
+  }, [onChange]);
+  const editor = useEditor({
+    immediatelyRender: false,
+    extensions: [
+      StarterKit.configure({ link: false, underline: false, heading: { levels: [1, 2, 3, 4, 5] } }),
+      TextStyle,
+      ArticleTextColor,
+      Underline,
+      Link.configure({ openOnClick: false, autolink: false, protocols: ["https"] }),
+      Image.configure({ inline: false, allowBase64: false }),
+    ],
+    content: sanitizeEditorHtml(value),
+    editable: !disabled,
+    editorProps: {
+      attributes: {
+        class: "samewave-tiptap-editor",
+        style: "min-height:440px;padding:16px;outline:none;line-height:1.8;overflow-x:hidden;box-sizing:border-box;",
+      },
+      handlePaste: (_view, event) => {
+        const image = Array.from(event.clipboardData?.items || [])
+          .map((item) => item.kind === "file" ? item.getAsFile() : null)
+          .find((file): file is File => !!file && /^image\//i.test(file.type));
+        if (!image || !onPasteImage) return false;
+        event.preventDefault();
+        void onPasteImage(image).then((html) => {
+          if (html) editor?.chain().focus().insertContent(sanitizeEditorHtml(html)).run();
+        });
+        return true;
+      },
+    },
+    onUpdate: ({ editor: current }) => emit(current.getHTML()),
+  });
+
+  React.useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(!disabled);
+  }, [disabled, editor]);
+  React.useEffect(() => {
+    if (!editor || sourceMode) return;
+    const safe = sanitizeEditorHtml(value);
+    if (safe !== lastValue.current && safe !== sanitizeEditorHtml(editor.getHTML())) {
+      editor.commands.setContent(safe, { emitUpdate: false });
+      lastValue.current = safe;
+    }
+  }, [editor, sourceMode, value]);
+
+  const preserveSelection = (event: React.MouseEvent) => event.preventDefault();
+  const requireEditor = () => {
+    if (!editor || disabled) return null;
+    return editor;
+  };
+  const run = (action: (current: NonNullable<typeof editor>) => boolean) => {
+    const current = requireEditor();
+    if (!current) return;
+    action(current);
+  };
+  const applyTextColor = (color: string) => run((current) => {
+    if (!ARTICLE_TEXT_COLOR_KEYS.has(color)) return false;
+    return current.chain().focus().setMark("textStyle", { articleColor: color }).run();
+  });
+  const openLink = () => {
+    const current = requireEditor();
+    if (!current) return;
+    if (current.isActive("link")) {
+      current.chain().focus().unsetLink().run();
+      return;
+    }
+    setLinkUrl("");
+    setLinkDialogOpen(true);
+  };
+  const applyLink = () => {
+    const href = linkUrl.trim();
+    try { if (!href || new URL(href).protocol !== "https:") throw new Error("unsafe"); } catch { message.error("仅支持完整 HTTPS 链接"); return; }
+    const current = requireEditor();
+    if (!current) return;
+    current.chain().focus().extendMarkRange("link").setLink({ href, target: "_blank", rel: "noopener noreferrer" }).run();
+    setLinkDialogOpen(false);
+    setLinkUrl("");
+  };
+  const loadMarkdown = () => {
+    const converted = richPasteHtml || markdownToHtml(markdown);
+    const safe = sanitizeEditorHtml(converted);
+    if (editor) editor.commands.setContent(safe, { emitUpdate: false });
+    emit(safe);
+    setSourceMode(false);
+    setRichPasteHtml("");
+    setMarkdownOpen(false);
+    message.success(richPasteHtml ? "已保留标题、引用、列表与图片格式" : "Markdown 已转换为可视化文章，可继续编辑");
+  };
+  const enterVisualMode = () => {
+    const safe = sanitizeEditorHtml(value);
+    editor?.commands.setContent(safe, { emitUpdate: false });
+    lastValue.current = safe;
+    setSourceMode(false);
+  };
+  return <div>
+    <Space wrap size={[6, 8]} style={{ marginBottom: 10 }}>
+      <Button size="small" onMouseDown={preserveSelection} onClick={() => run((current) => current.chain().focus().setParagraph().run())} disabled={disabled || sourceMode}>正文</Button>
+      {[1, 2, 3, 4, 5].map((level) => <Button key={level} size="small" onMouseDown={preserveSelection} onClick={() => run((current) => current.chain().focus().toggleHeading({ level: level as 1 | 2 | 3 | 4 | 5 }).run())} disabled={disabled || sourceMode}>{["一", "二", "三", "四", "五"][level - 1]}级标题</Button>)}
+      <Button size="small" onMouseDown={preserveSelection} onClick={() => run((current) => current.chain().focus().toggleBold().run())} disabled={disabled || sourceMode}><strong>加粗</strong></Button>
+      <Button size="small" onMouseDown={preserveSelection} onClick={() => run((current) => current.chain().focus().toggleItalic().run())} disabled={disabled || sourceMode}><em>斜体</em></Button>
+      <Button size="small" onMouseDown={preserveSelection} onClick={() => run((current) => current.chain().focus().toggleBulletList().run())} disabled={disabled || sourceMode}>列表</Button>
+      <Button size="small" onMouseDown={preserveSelection} onClick={() => run((current) => current.chain().focus().toggleOrderedList().run())} disabled={disabled || sourceMode}>编号</Button>
+      <Button size="small" onMouseDown={preserveSelection} onClick={() => run((current) => current.chain().focus().toggleBlockquote().run())} disabled={disabled || sourceMode}>引用</Button>
+      <Button size="small" onMouseDown={preserveSelection} onClick={openLink} disabled={disabled || sourceMode}>链接</Button>
+      <Dropdown trigger={["click"]} disabled={disabled || sourceMode} menu={{ items: ARTICLE_TEXT_COLORS.map((color) => ({ key: color.key, label: <Space size={6}><span aria-hidden style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: color.swatch, border: "1px solid rgba(0,0,0,.18)" }} />{color.label}</Space> })), onClick: ({ key }) => applyTextColor(String(key)) }}>
+        <Button size="small" onMouseDown={preserveSelection} disabled={disabled || sourceMode}>文字颜色</Button>
+      </Dropdown>
+      <Dropdown trigger={["click"]} disabled={disabled || sourceMode} menu={{ items: ARTICLE_SYMBOLS.map((symbol) => ({ key: symbol, label: symbol })), onClick: ({ key }) => run((current) => current.chain().focus().insertContent(String(key)).run()) }}>
+        <Button size="small" onMouseDown={preserveSelection} disabled={disabled || sourceMode}>符号</Button>
+      </Dropdown>
+      <Button size="small" danger onMouseDown={preserveSelection} onClick={() => run((current) => current.isActive("image") ? current.chain().focus().deleteSelection().run() : false)} disabled={disabled || sourceMode || !editor?.isActive("image")}>删除选中图片</Button>
+      <Button size="small" onClick={() => setMarkdownOpen(true)} disabled={disabled}>导入 Markdown</Button>
+      <Button size="small" type={sourceMode ? "primary" : "default"} onClick={() => sourceMode ? enterVisualMode() : (emit(editor?.getHTML() || value), setSourceMode(true))}>{sourceMode ? "可视化编辑" : "HTML 源码"}</Button>
+    </Space>
+    {sourceMode
+      ? <TextArea value={value} onChange={(event) => { lastValue.current = event.target.value; onChange?.(event.target.value); }} autoSize={{ minRows: 24, maxRows: 46 }} maxLength={50000} disabled={disabled} spellCheck={false} />
+      : <EditorContent editor={editor} />}
+    <Modal title="添加链接" open={linkDialogOpen} onCancel={() => { setLinkDialogOpen(false); setLinkUrl(""); }} onOk={applyLink} okText="添加链接" cancelText="取消">
+      <Text type="secondary">链接将作用于当前选中的文案；再次点击“链接”可取消。</Text>
+      <Input autoFocus value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} placeholder="https://example.com" style={{ marginTop: 12 }} />
+    </Modal>
+    <Modal title="导入 Markdown" open={markdownOpen} onCancel={() => { setRichPasteHtml(""); setMarkdownOpen(false); }} onOk={loadMarkdown} okText="转换并载入" cancelText="取消" okButtonProps={{ disabled: !markdown.trim() }}>
+      <Text type="secondary">将覆盖当前正文。支持标题、引用、列表、编号、图片与链接；正文仍会经过服务端安全过滤。</Text>
+      <TextArea value={markdown} onChange={(event) => { setRichPasteHtml(""); setMarkdown(event.target.value); }} onPaste={(event) => { const html = event.clipboardData.getData("text/html"); const safe = html ? sanitizeEditorHtml(html) : ""; if (!safe) return; event.preventDefault(); setRichPasteHtml(safe); setMarkdown(event.clipboardData.getData("text/plain")); message.success("已识别文章详情格式，导入时将保留可支持的排版"); }} autoSize={{ minRows: 18, maxRows: 32 }} style={{ marginTop: 12 }} placeholder="# 文章标题\n\n正文…" spellCheck={false} />
+    </Modal>
+  </div>;
+};
+
 const ArticlesPage: React.FC = () => {
   const [form] = Form.useForm<AdminArticleInput>();
   const [rows, setRows] = React.useState<AdminArticleItem[]>([]);
@@ -690,7 +838,16 @@ const ArticlesPage: React.FC = () => {
     }
   };
   const publish = async (article: AdminArticleItem) => {
-    try { await publishAdminArticle(article.id); message.success("文章已发布，前台文章页将显示它"); await load(); }
+    try {
+      const result = await publishAdminArticle(article.id);
+      const delivery = result.delivery;
+      if (delivery?.reason === "missing_cover") message.warning("文章已发布，但未配置封面，未同步频道");
+      else if (delivery?.reason === "no_free_channel") message.warning("文章已发布，但尚未配置可用的免费流量频道");
+      else if (delivery && delivery.failed > 0) message.warning(`文章已发布；频道同步成功 ${delivery.sent} 个，失败 ${delivery.failed} 个，可再次点击发布重试。`);
+      else if (delivery) message.success(`文章已发布，已同步到 ${delivery.sent} 个免费流量频道`);
+      else message.success("文章已发布，前台文章页将显示它");
+      await load();
+    }
     catch (error) { message.error(errMsg(error, "发布文章失败")); }
   };
   const copyArticleLink = async (slug: string) => {
@@ -793,7 +950,7 @@ const ArticlesPage: React.FC = () => {
         <Form.Item name="summary" label="摘要" rules={[{ required: true, min: 10, max: 500 }]}><TextArea rows={3} maxLength={500} disabled={!canEdit} /></Form.Item>
         <Form.Item name="coverImageUrl" label="文章封面图片" extra={<Space direction="vertical" size={6}><Text type="secondary">建议 16:9、最小 1600×900。封面会显示在文章列表与详情顶部。</Text><Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "cover")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传封面图片</Button></Upload></Space>}><Input placeholder="上传后自动填写，也可填写 HTTPS 图片地址" disabled={!canEdit} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.coverImageUrl !== current.coverImageUrl}>{() => form.getFieldValue("coverImageUrl") ? <img src={form.getFieldValue("coverImageUrl")} alt="文章封面预览" style={{ width: "100%", maxWidth: 480, aspectRatio: "16 / 9", objectFit: "cover", borderRadius: 10, marginBottom: 18 }} /> : null}</Form.Item>
-        <Form.Item name="bodyHtml" label="正文编辑器" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">支持可视化排版、HTML 源码切换，以及直接粘贴图片自动上传。正文图片会插入末尾，可在编辑器中剪切到目标段落。保存时服务端再次过滤危险内容。</Text>{editing ? <Text type={autoSaveState === "failed" ? "danger" : "secondary"}>{autoSaveState === "pending" ? "正文自动保存：等待输入结束…" : autoSaveState === "saving" ? "正文自动保存：正在保存…" : autoSaveState === "saved" ? `正文已自动保存 · ${autoSavedAt?.toLocaleTimeString("zh-CN", { hour12: false }) || "刚刚"}` : autoSaveState === "failed" ? "正文自动保存失败，请检查网络后继续编辑或点击右上角保存" : "正文会在停止输入后自动保存"}</Text> : <Text type="secondary">新建文章需先点击右上角保存创建草稿，之后正文会自动保存。</Text>}<Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><RichArticleEditor disabled={!canEdit} onPasteImage={(file) => new Promise((resolve) => { void uploadArticleImage(file, "paste", resolve); })} /></Form.Item>
+        <Form.Item name="bodyHtml" label="正文编辑器" rules={[{ required: true, min: 20, max: 50000 }]} extra={<Space direction="vertical" size={6}><Text type="secondary">Tiptap 可视化编辑器：支持跨段排版、标题、颜色、列表、引用、链接、图片和 HTML 源码。保存时服务端再次过滤危险内容。</Text>{editing ? <Text type={autoSaveState === "failed" ? "danger" : "secondary"}>{autoSaveState === "pending" ? "正文自动保存：等待输入结束…" : autoSaveState === "saving" ? "正文自动保存：正在保存…" : autoSaveState === "saved" ? `正文已自动保存 · ${autoSavedAt?.toLocaleTimeString("zh-CN", { hour12: false }) || "刚刚"}` : autoSaveState === "failed" ? "正文自动保存失败，请检查网络后继续编辑或点击右上角保存" : "正文会在停止输入后自动保存"}</Text> : <Text type="secondary">新建文章需先点击右上角保存创建草稿，之后正文会自动保存。</Text>}<Upload accept="image/jpeg,image/png,image/webp,image/jpg" showUploadList={false} beforeUpload={(file) => uploadArticleImage(file as File, "inline")}><Button icon={<UploadOutlined />} loading={imageUploading} disabled={!canEdit}>上传并插入正文图片</Button></Upload></Space>}><TiptapArticleEditor disabled={!canEdit} onPasteImage={(file) => new Promise((resolve) => { void uploadArticleImage(file, "paste", resolve); })} /></Form.Item>
         <Form.Item noStyle shouldUpdate={(previous, current) => previous.bodyHtml !== current.bodyHtml}>{() => <><Divider orientation="left">HTML 安全预览</Divider><iframe title="文章 HTML 预览" sandbox="" style={{ width: "100%", minHeight: 320, border: "1px solid #eee", borderRadius: 10 }} srcDoc={`<style>body{font-family:system-ui,sans-serif;line-height:1.75;padding:20px;color:#211c2d}img{max-width:100%;height:auto;border-radius:12px}figure{margin:20px 0}figcaption{color:#716b7d;font-size:13px;text-align:center}blockquote{margin:18px 0;padding:12px 16px;border-left:3px solid #8d52ff;background:#f6f1ff}a{color:#6d3ae8}${ARTICLE_PREVIEW_COLOR_CSS}</style>${String(form.getFieldValue("bodyHtml") || "")}`} /></>}</Form.Item>
         <Space size={16} style={{ display: "flex" }}>
           <Form.Item name="sourceName" label="来源名称（选填）" style={{ flex: 1 }}><Input maxLength={120} disabled={!canEdit} placeholder="填写后才会在文章正文底部展示" /></Form.Item>

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { requireAdmin, type AdminSession } from "./admin.js";
 import { htmlToPlainText, sanitizeArticleHtml } from "../lib/articleHtml.js";
+import { publishArticleToFreeChannels } from "../services/articleTelegramPublisher.js";
 
 const StatusZ = z.enum(["draft", "published", "archived"]);
 // Ant Design submits an untouched optional Input as an empty string. Normalize
@@ -86,6 +87,9 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
     const parsed = ArticleInputZ.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_article_input", details: parsed.error.issues });
     const { reason, bodyHtml, coverImageUrl, ...input } = parsed.data;
+    if (input.status === "published" && !coverImageUrl) {
+      return reply.code(409).send({ error: "article_cover_required", message: "发布到频道需要文章封面图片，请先上传并保存封面。" });
+    }
     const safeHtml = sanitizeArticleHtml(bodyHtml);
     if (htmlToPlainText(safeHtml).length < 20) return reply.code(400).send({ error: "invalid_article_html", message: "正文 HTML 不包含足够的可读内容。" });
     const actor = meta(req);
@@ -106,7 +110,8 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
       },
     });
     await audit(prisma, req, "article.create", created.id, null, publicShape(created), reason);
-    return reply.code(201).send({ ok: true, article: publicShape(created) });
+    const delivery = created.status === "published" ? await publishArticleToFreeChannels(prisma, created.id) : null;
+    return reply.code(201).send({ ok: true, article: publicShape(created), delivery });
   });
 
   // Keep autosave intentionally narrow: it must never change publication state,
@@ -141,6 +146,9 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
     if (htmlToPlainText(safeHtml).length < 20) return reply.code(400).send({ error: "invalid_article_html", message: "正文 HTML 不包含足够的可读内容。" });
     const actor = meta(req);
     const status = input.status || before.status;
+    if (before.status !== "published" && status === "published" && !coverImageUrl) {
+      return reply.code(409).send({ error: "article_cover_required", message: "发布到频道需要文章封面图片，请先上传并保存封面。" });
+    }
     const after = await prisma.article.update({
       where: { id: before.id },
       data: {
@@ -158,16 +166,23 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
       },
     });
     await audit(prisma, req, "article.update", after.id, publicShape(before), publicShape(after), reason);
-    return { ok: true, article: publicShape(after) };
+    const delivery = before.status !== "published" && after.status === "published"
+      ? await publishArticleToFreeChannels(prisma, after.id)
+      : null;
+    return { ok: true, article: publicShape(after), delivery };
   });
 
   fastify.post<{ Params: { id: string } }>("/admin/articles/:id/publish", { preHandler: [requireAdmin("content:publish")] }, async (req, reply) => {
     const before = await prisma.article.findUnique({ where: { id: req.params.id } });
     if (!before) return reply.code(404).send({ error: "article_not_found", message: "文章不存在。" });
+    if (!before.coverImageUrl) {
+      return reply.code(409).send({ error: "article_cover_required", message: "发布到频道需要文章封面图片，请先上传并保存封面。" });
+    }
     const actor = meta(req);
     const after = await prisma.article.update({ where: { id: before.id }, data: { status: "published", publishedAt: before.publishedAt || new Date(), updatedBy: actor.adminId } });
     await audit(prisma, req, "article.publish", after.id, publicShape(before), publicShape(after));
-    return { ok: true, article: publicShape(after) };
+    const delivery = await publishArticleToFreeChannels(prisma, after.id);
+    return { ok: true, article: publicShape(after), delivery };
   });
 
   fastify.post<{ Params: { id: string } }>("/admin/articles/:id/archive", { preHandler: [requireAdmin("content:publish")] }, async (req, reply) => {
