@@ -33,6 +33,7 @@ import articleRoutes from "./routes/articles.js";
 import adminArticleRoutes from "./routes/adminArticles.js";
 import interactionRoutes from "./routes/interactions.js";
 import adminInteractionRoutes from "./routes/adminInteractions.js";
+import communityMediaRoutes from "./routes/communityMedia.js";
 import { botSelfTest, TELEGRAM_CONFIG } from "./services/telegramBot.js";
 import { startEntitlementsCron } from "./services/entitlementsCron.js";
 import { startUploadSessionCleanupCron } from "./services/uploadSessionCleanup.js";
@@ -367,6 +368,7 @@ async function main() {
   await app.register(campaignRoutes, { prefix: "/api" });
   await app.register(watchProgressRoutes, { prefix: "/api" });
   await app.register(playbackRoutes, { prefix: "/api" });
+  await app.register(communityMediaRoutes, { prefix: "/api" });
   await app.register(playbackMediaRoutes);
   await app.register(publicSeoRoutes, { prefix: "" });
 

@@ -162,6 +162,8 @@ const ALL_TABLES_ORDERED = [
   "interaction_reports",
   "interaction_likes",
   "interaction_comments",
+  "community_upload_session_parts",
+  "community_upload_sessions",
   "community_post_assets",
   "community_posts",
   "playback_revoke_outbox",
@@ -804,64 +806,62 @@ export async function seedTestData(prisma: PrismaClient): Promise<{ seededAt: Da
     }),
   ]);
 
-  const [prodSingle, prodPackage, prodMembership] = await Promise.all([
-    prisma.product.upsert({
-      where: { id: TEST_KNOWN_IDS.singleProductKey },
-      update: {
-        type: "single",
-        title: "单个：公开内容购买",
-        priceMinor: BigInt(150_000_000),
-        currency: "XTR",
-        status: "active",
-      },
-      create: {
-        id: TEST_KNOWN_IDS.singleProductKey,
-        type: "single",
-        title: "单个：公开内容购买",
-        priceMinor: BigInt(150_000_000),
-        currency: "XTR",
-        status: "active",
-      },
-    }),
-    prisma.product.upsert({
-      where: { id: TEST_KNOWN_IDS.packageProductKey },
-      update: {
-        type: "package",
-        title: "入门精选 · 6 集打包",
-        priceMinor: BigInt(1200_000_000),
-        currency: "XTR",
-        status: "active",
-      },
-      create: {
-        id: TEST_KNOWN_IDS.packageProductKey,
-        type: "package",
-        title: "入门精选 · 6 集打包",
-        priceMinor: BigInt(1200_000_000),
-        currency: "XTR",
-        status: "active",
-      },
-    }),
-    prisma.product.upsert({
-      where: { id: TEST_KNOWN_IDS.membershipProductKey },
-      update: {
-        type: "membership",
-        title: "同频会员 · 30 天",
-        priceMinor: BigInt(2980_000_000),
-        currency: "XTR",
-        durationDays: 30,
-        status: "active",
-      },
-      create: {
-        id: TEST_KNOWN_IDS.membershipProductKey,
-        type: "membership",
-        title: "同频会员 · 30 天",
-        priceMinor: BigInt(2980_000_000),
-        currency: "XTR",
-        durationDays: 30,
-        status: "active",
-      },
-    }),
-  ]);
+  const prodSingle = await prisma.product.upsert({
+    where: { id: TEST_KNOWN_IDS.singleProductKey },
+    update: {
+      type: "single",
+      title: "单个：公开内容购买",
+      priceMinor: BigInt(150_000_000),
+      currency: "XTR",
+      status: "active",
+    },
+    create: {
+      id: TEST_KNOWN_IDS.singleProductKey,
+      type: "single",
+      title: "单个：公开内容购买",
+      priceMinor: BigInt(150_000_000),
+      currency: "XTR",
+      status: "active",
+    },
+  });
+  const prodPackage = await prisma.product.upsert({
+    where: { id: TEST_KNOWN_IDS.packageProductKey },
+    update: {
+      type: "package",
+      title: "入门精选 · 6 集打包",
+      priceMinor: BigInt(1200_000_000),
+      currency: "XTR",
+      status: "active",
+    },
+    create: {
+      id: TEST_KNOWN_IDS.packageProductKey,
+      type: "package",
+      title: "入门精选 · 6 集打包",
+      priceMinor: BigInt(1200_000_000),
+      currency: "XTR",
+      status: "active",
+    },
+  });
+  const prodMembership = await prisma.product.upsert({
+    where: { id: TEST_KNOWN_IDS.membershipProductKey },
+    update: {
+      type: "membership",
+      title: "同频会员 · 30 天",
+      priceMinor: BigInt(2980_000_000),
+      currency: "XTR",
+      durationDays: 30,
+      status: "active",
+    },
+    create: {
+      id: TEST_KNOWN_IDS.membershipProductKey,
+      type: "membership",
+      title: "同频会员 · 30 天",
+      priceMinor: BigInt(2980_000_000),
+      currency: "XTR",
+      durationDays: 30,
+      status: "active",
+    },
+  });
 
   const contentPackage = await prisma.contentPackage.upsert({
     where: { id: TEST_KNOWN_IDS.contentPackageKey },

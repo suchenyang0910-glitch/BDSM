@@ -281,6 +281,7 @@ model User {
   playbackSessions PlaybackSession[]
   playbackRevokeOutboxes PlaybackRevokeOutbox[]
   communityPosts   CommunityPost[]
+  communityUploadSessions CommunityUploadSession[]
   interactionComments InteractionComment[]
   interactionLikes  InteractionLike[]
   interactionReports InteractionReport[]
@@ -718,6 +719,7 @@ model CommunityPost {
 
   author           User                    @relation(fields: [authorId], references: [id], onDelete: Cascade)
   assets           CommunityPostAsset[]
+  uploadSessions   CommunityUploadSession[]
 
   @@index([status, publishedAt])
   @@index([authorId, createdAt])
@@ -729,12 +731,16 @@ model CommunityPost {
 model CommunityPostAsset {
   id                      String                              @id @default(uuid())
   postId                  String                              @map("post_id")
+  uploadSessionId         String?                             @unique @map("upload_session_id")
   ordinal                 Int
   kind                    CommunityPostAssetKind
   originalAssetId         String?                             @map("original_asset_id") @db.VarChar(64)
   posterAssetId           String?                             @map("poster_asset_id") @db.VarChar(64)
   objectKey               String?                             @map("object_key")
+  thumbnailObjectKey      String?                             @map("thumbnail_object_key")
   posterObjectKey         String?                             @map("poster_object_key")
+  playbackManifestKey     String?                             @map("playback_manifest_key")
+  playbackPrefixKey       String?                             @map("playback_prefix_key")
   aspectRatio             Float?                              @map("aspect_ratio")
   width                   Int?
   height                  Int?
@@ -748,11 +754,61 @@ model CommunityPostAsset {
   updatedAt               DateTime                            @updatedAt @map("updated_at")
 
   post                    CommunityPost                       @relation(fields: [postId], references: [id], onDelete: Cascade)
+  uploadSession           CommunityUploadSession?             @relation(fields: [uploadSessionId], references: [id], onDelete: SetNull)
 
   @@unique([postId, ordinal])
   @@index([postId, moderationStatus, transcodeStatus])
   @@index([kind, moderationStatus, transcodeStatus])
   @@map("community_post_assets")
+}
+
+model CommunityUploadSession {
+  id                String              @id @default(uuid())
+  postId            String              @map("post_id")
+  assetId           String              @map("asset_id")
+  status            UploadSessionStatus @default(initiated) @map("status")
+  objectKey         String              @unique @map("object_key") @db.VarChar(1024)
+  originalFilename  String?             @map("original_filename") @db.VarChar(512)
+  expectedSize      BigInt              @map("expected_size")
+  expectedMime      String              @map("expected_mime") @db.VarChar(128)
+  expectedSha256    String              @map("expected_sha256") @db.VarChar(128)
+  storageUploadId   String?             @map("storage_upload_id") @db.VarChar(256)
+  partSize          Int?                @map("part_size")
+  totalParts        Int?                @map("total_parts")
+  uploadedBytes     BigInt              @default(0) @map("uploaded_bytes")
+  expiresAt         DateTime            @map("expires_at")
+  lastActivityAt    DateTime            @default(now()) @map("last_activity_at")
+  completedAt       DateTime?           @map("completed_at")
+  createdByUserId   String              @map("created_by_user_id")
+  createdAt         DateTime            @default(now()) @map("created_at")
+
+  post              CommunityPost       @relation(fields: [postId], references: [id], onDelete: Cascade)
+  asset             CommunityPostAsset?
+  creator           User                @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  parts             CommunityUploadSessionPart[]
+
+  @@index([postId, status, createdAt])
+  @@index([assetId, createdAt])
+  @@index([createdByUserId, createdAt])
+  @@index([expiresAt])
+  @@map("community_upload_sessions")
+}
+
+model CommunityUploadSessionPart {
+  id                String                  @id @default(uuid())
+  uploadSessionId   String                  @map("upload_session_id")
+  partNumber        Int                     @map("part_number")
+  etag              String                  @db.VarChar(256)
+  bytes             BigInt                  @map("bytes")
+  checksum          String?                 @db.VarChar(128)
+  status            UploadSessionPartStatus @default(uploaded) @map("status")
+  uploadedAt        DateTime                @default(now()) @map("uploaded_at")
+
+  uploadSession     CommunityUploadSession  @relation(fields: [uploadSessionId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadSessionId, partNumber])
+  @@index([uploadSessionId, status, partNumber])
+  @@map("community_upload_session_parts")
 }
 
 model ContentCategory {

@@ -116,6 +116,8 @@ export type PrivateMultipartUploadedPart = {
   size: bigint;
 };
 
+export type CommunityStorageAssetKind = "image_source" | "video_source" | "image_thumbnail" | "video_poster" | "video_hls";
+
 /** Only assets that are intended to appear in the public catalog may be public. */
 export function isPublicMediaAssetKind(kind: MediaAssetKind): boolean {
   return kind === "cover_image" || kind === "preview_video";
@@ -215,12 +217,45 @@ export function isAllowedPrivateObjectKey(objectKey: string): boolean {
   return /^(covers|previews|originals)\/[0-9a-z-]+\/[0-9a-z-]+\/[a-z0-9._-]+$/i.test(objectKey);
 }
 
+export function generateCommunityObjectKey(
+  kind: CommunityStorageAssetKind,
+  postId: string,
+  assetId: string,
+  originalFilename?: string | null,
+): string {
+  let ext = extname(originalFilename || "").slice(1).toLowerCase();
+  if (ext.length > 16) ext = ext.slice(0, 16);
+  const safeName = basename(originalFilename || "file")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 64)
+    .toLowerCase();
+  if (kind === "image_source") return `community/posts/${postId}/images/${assetId}/source${ext ? `.${ext}` : ""}`;
+  if (kind === "image_thumbnail") return `community/posts/${postId}/images/${assetId}/thumb.jpg`;
+  if (kind === "video_source") return `community/posts/${postId}/videos/${assetId}/source${ext ? `.${ext}` : ""}`;
+  if (kind === "video_poster") return `community/posts/${postId}/videos/${assetId}/poster.jpg`;
+  return `community/hls/${postId}/${assetId}/${safeName || "playlist"}`;
+}
+
+export function buildCommunityHlsPrefix(postId: string, assetId: string): string {
+  return `community/hls/${postId}/${assetId}`;
+}
+
+export function buildCommunityHlsManifestKey(postId: string, assetId: string): string {
+  return `${buildCommunityHlsPrefix(postId, assetId)}/master.m3u8`;
+}
+
+export function isAllowedCommunityObjectKey(objectKey: string): boolean {
+  return /^community\/posts\/[0-9a-z-]+\/(images|videos)\/[0-9a-z-]+\/[A-Za-z0-9._-]+$/i.test(objectKey) ||
+    /^community\/hls\/[0-9a-z-]+\/[0-9a-z-]+\/[A-Za-z0-9._/-]+$/i.test(objectKey);
+}
+
 // Transcode output is server-generated and is never accepted from an upload
 // request. Keep it out of the upload-key allowlist, while permitting the
 // authenticated playback gateway to create a short-lived read URL for it.
 function isAllowedControlledReadObjectKey(objectKey: string): boolean {
   return isAllowedPrivateObjectKey(objectKey) ||
-    /^hls\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/[A-Za-z0-9._/-]+$/i.test(objectKey);
+    /^hls\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/[A-Za-z0-9._/-]+$/i.test(objectKey) ||
+    isAllowedCommunityObjectKey(objectKey);
 }
 
 export function objectStorageBackend(): MediaAssetStorageBackend {
@@ -363,6 +398,41 @@ export async function createPrivatePresignedUpload(
   };
 }
 
+export async function createCommunityPresignedUpload(
+  input: PrivateObjectStorageInitInput,
+): Promise<PrivateObjectStorageInitResult> {
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  if (!isAllowedCommunityObjectKey(input.objectKey)) {
+    throw new Error("OBJECT_STORAGE_KEY_INVALID");
+  }
+  const contentLength = Number.isFinite(input.contentLength) ? Math.max(0, Math.floor(input.contentLength)) : 0;
+  const expiresSeconds = 15 * 60;
+  const headers: Record<string, string> = {
+    "Content-Type": input.mimeType || "application/octet-stream",
+    "Content-Length": String(contentLength),
+    "X-Amz-Checksum-Sha256": String(input.expectedSha256).trim(),
+  };
+  const cmd = new PutObjectCommand({
+    Bucket: env.bucket,
+    Key: input.objectKey,
+    ContentType: headers["Content-Type"],
+    ContentLength: contentLength > 0 ? contentLength : undefined,
+    ChecksumSHA256: String(input.expectedSha256).trim(),
+    Metadata: {
+      uploadsessionid: input.sessionId,
+      sha256: String(input.expectedSha256).trim(),
+      scope: "community",
+    },
+  });
+  const uploadUrl = await getSignedUrl(s3, cmd as any, { expiresIn: expiresSeconds });
+  return {
+    uploadUrl,
+    uploadExpiresAt: new Date(Date.now() + expiresSeconds * 1000),
+    expectedHttpHeaders: headers,
+  };
+}
+
 /**
  * 仅由已授权的服务端路由调用，用于短期预览私有对象。
  * 不把 Bucket、Key 或稳定对象 URL 暴露给浏览器端。
@@ -408,12 +478,64 @@ export async function createPrivateMultipartUpload(
   return { storageUploadId };
 }
 
+export async function createCommunityMultipartUpload(
+  input: PrivateMultipartUploadInitInput,
+): Promise<PrivateMultipartUploadInitResult> {
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  if (!isAllowedCommunityObjectKey(input.objectKey)) {
+    throw new Error("OBJECT_STORAGE_KEY_INVALID");
+  }
+  const cmd = new CreateMultipartUploadCommand({
+    Bucket: env.bucket,
+    Key: input.objectKey,
+    ChecksumAlgorithm: "SHA256",
+    ContentType: input.mimeType || "application/octet-stream",
+    Metadata: {
+      uploadsessionid: input.sessionId,
+      sha256: String(input.expectedSha256).trim(),
+      scope: "community",
+    },
+  });
+  const result = await s3.send(cmd);
+  const storageUploadId = typeof result.UploadId === "string" ? result.UploadId : "";
+  if (!storageUploadId) throw new Error("OBJECT_STORAGE_MULTIPART_INIT_FAILED");
+  return { storageUploadId };
+}
+
 export async function createPrivateMultipartPartUploadUrl(
   input: PrivateMultipartPartSignInput,
 ): Promise<PrivateMultipartPartSignResult> {
   const env = requireObjectStorageEnv();
   const s3 = getS3Client();
   if (!isAllowedPrivateObjectKey(input.objectKey)) {
+    throw new Error("OBJECT_STORAGE_KEY_INVALID");
+  }
+  const expiresSeconds = 15 * 60;
+  const headers: Record<string, string> = {};
+  const checksum = input.checksumSha256 ? String(input.checksumSha256).trim() : "";
+  if (checksum) headers["X-Amz-Checksum-Sha256"] = checksum;
+  const cmd = new UploadPartCommand({
+    Bucket: env.bucket,
+    Key: input.objectKey,
+    UploadId: input.storageUploadId,
+    PartNumber: input.partNumber,
+    ChecksumSHA256: checksum || undefined,
+  });
+  const uploadUrl = await getSignedUrl(s3, cmd as any, { expiresIn: expiresSeconds });
+  return {
+    uploadUrl,
+    uploadExpiresAt: new Date(Date.now() + expiresSeconds * 1000),
+    expectedHttpHeaders: headers,
+  };
+}
+
+export async function createCommunityMultipartPartUploadUrl(
+  input: PrivateMultipartPartSignInput,
+): Promise<PrivateMultipartPartSignResult> {
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  if (!isAllowedCommunityObjectKey(input.objectKey)) {
     throw new Error("OBJECT_STORAGE_KEY_INVALID");
   }
   const expiresSeconds = 15 * 60;
@@ -470,6 +592,37 @@ export async function listPrivateMultipartParts(
   return parts.sort((a, b) => a.partNumber - b.partNumber);
 }
 
+export async function listCommunityMultipartParts(
+  objectKey: string,
+  storageUploadId: string,
+): Promise<PrivateMultipartUploadedPart[]> {
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  if (!isAllowedCommunityObjectKey(objectKey)) {
+    throw new Error("OBJECT_STORAGE_KEY_INVALID");
+  }
+  const parts: PrivateMultipartUploadedPart[] = [];
+  let partNumberMarker: string | undefined;
+  while (true) {
+    const result = await s3.send(new ListPartsCommand({
+      Bucket: env.bucket,
+      Key: objectKey,
+      UploadId: storageUploadId,
+      PartNumberMarker: partNumberMarker,
+    }));
+    for (const part of result.Parts || []) {
+      const rawPartNumber = typeof part.PartNumber === "number" ? part.PartNumber : null;
+      const rawEtag = typeof part.ETag === "string" ? part.ETag.replace(/^"|"$/g, "") : "";
+      if (!rawPartNumber || !rawEtag) continue;
+      parts.push({ partNumber: rawPartNumber, etag: rawEtag, size: typeof part.Size === "number" ? BigInt(part.Size) : 0n });
+    }
+    if (!result.IsTruncated) break;
+    partNumberMarker = result.NextPartNumberMarker != null ? String(result.NextPartNumberMarker) : undefined;
+    if (!partNumberMarker) break;
+  }
+  return parts.sort((a, b) => a.partNumber - b.partNumber);
+}
+
 export async function completePrivateMultipartUpload(input: {
   objectKey: string;
   storageUploadId: string;
@@ -493,10 +646,46 @@ export async function completePrivateMultipartUpload(input: {
   }));
 }
 
+export async function completeCommunityMultipartUpload(input: {
+  objectKey: string;
+  storageUploadId: string;
+  parts: Array<{ partNumber: number; etag: string }>;
+}): Promise<void> {
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  if (!isAllowedCommunityObjectKey(input.objectKey)) {
+    throw new Error("OBJECT_STORAGE_KEY_INVALID");
+  }
+  await s3.send(new CompleteMultipartUploadCommand({
+    Bucket: env.bucket,
+    Key: input.objectKey,
+    UploadId: input.storageUploadId,
+    MultipartUpload: {
+      Parts: input.parts
+        .slice()
+        .sort((a, b) => a.partNumber - b.partNumber)
+        .map((part) => ({ PartNumber: part.partNumber, ETag: part.etag })),
+    },
+  }));
+}
+
 export async function abortPrivateMultipartUpload(objectKey: string, storageUploadId: string): Promise<void> {
   const env = requireObjectStorageEnv();
   const s3 = getS3Client();
   if (!isAllowedPrivateObjectKey(objectKey)) {
+    throw new Error("OBJECT_STORAGE_KEY_INVALID");
+  }
+  await s3.send(new AbortMultipartUploadCommand({
+    Bucket: env.bucket,
+    Key: objectKey,
+    UploadId: storageUploadId,
+  }));
+}
+
+export async function abortCommunityMultipartUpload(objectKey: string, storageUploadId: string): Promise<void> {
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  if (!isAllowedCommunityObjectKey(objectKey)) {
     throw new Error("OBJECT_STORAGE_KEY_INVALID");
   }
   await s3.send(new AbortMultipartUploadCommand({
