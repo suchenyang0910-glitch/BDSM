@@ -131,6 +131,16 @@ test("article body media and overflow rules keep H5 and Mini App content inside 
   }
 });
 
+test("article layout fixes ship behind a fresh stylesheet version for H5 and Mini App", async () => {
+  const [h5Html, miniAppHtml] = await Promise.all([
+    readFile(path.join(ROOT, "h5/index.html"), "utf8"),
+    readFile(path.join(ROOT, "telegram-mini-app/index.html"), "utf8"),
+  ]);
+
+  assert.match(h5Html, /styles\.css\?v=20260903-article-overflow-fix-1/);
+  assert.match(miniAppHtml, /styles\.css\?v=20260903-article-overflow-fix-1/);
+});
+
 test("h5 home keeps continue watching compact and safely renders channel labels", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
