@@ -9,6 +9,7 @@ type Article = {
   coverImageUrl: string | null;
   bodyHtml: string;
   publishedAt: string;
+  updatedAt: string;
   sourceUrl: string;
   sourceName: string;
   readingMinutes: number;
@@ -48,6 +49,7 @@ export const STATIC_ARTICLES: Article[] = raw.map(function ([path, title, summar
     title,
     summary,
     publishedAt,
+    updatedAt: publishedAt,
     sourceUrl: SOURCE + path,
     sourceName: "Lovense Sex Blog",
     readingMinutes: 4,
@@ -68,6 +70,7 @@ function dbArticleToPublic(row: any): Article {
     title: row.title,
     summary,
     publishedAt,
+    updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : publishedAt,
     sourceUrl: row.sourceUrl || "",
     sourceName: row.sourceName || "",
     readingMinutes: Math.max(1, Math.ceil(String(row.bodyHtml || row.bodyMarkdown || "").length / 420)),
@@ -88,7 +91,7 @@ async function publishedDbArticles(fastify: FastifyInstance): Promise<Article[] 
   try {
     const rows = await (fastify as any).prisma.article.findMany({
       where: { status: "published" },
-      orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
+      orderBy: [{ updatedAt: "desc" }, { publishedAt: "desc" }],
     });
     return rows.map(dbArticleToPublic);
   } catch (error) {

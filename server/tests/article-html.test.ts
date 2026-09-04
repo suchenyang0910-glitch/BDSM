@@ -40,24 +40,30 @@ test("article HTML restores only previously escaped safe color markup", () => {
 });
 
 test("public article API exposes a cover and already-sanitized HTML only", async () => {
+  let requestedOrder: unknown;
   const app = Fastify();
   app.decorate("prisma", {
     article: {
-      findMany: async () => [{
+      findMany: async (input: unknown) => {
+        requestedOrder = (input as any).orderBy;
+        return [{
         slug: "safe-html-test", title: "安全 HTML", summary: "这是一段足够长的安全文章摘要，用于验证输出。",
         bodyMarkdown: "旧正文", bodyHtml: '<p>可见正文</p><script>alert(1)</script>', coverImageUrl: "https://samewave.cc/article-assets/cover.png",
-        topics: ["沟通"], status: "published", publishedAt: new Date("2026-08-31T00:00:00Z"), updatedAt: new Date("2026-08-31T00:00:00Z"),
-      }],
+        topics: ["沟通"], status: "published", publishedAt: new Date("2026-04-04T00:00:00Z"), updatedAt: new Date("2026-09-04T08:49:45Z"),
+      }];
+      },
     },
   });
   await app.register(articleRoutes, { prefix: "/api" });
   try {
     const result = await app.inject({ method: "GET", url: "/api/articles/safe-html-test" });
     assert.equal(result.statusCode, 200, result.body);
-    const body = result.json() as { coverImageUrl: string; bodyHtml: string };
+    const body = result.json() as { coverImageUrl: string; bodyHtml: string; updatedAt: string };
     assert.equal(body.coverImageUrl, "https://samewave.cc/article-assets/cover.png");
     assert.match(body.bodyHtml, /<p>可见正文<\/p>/);
     assert.match(body.bodyHtml, /&lt;script&gt;/);
+    assert.equal(body.updatedAt, "2026-09-04T08:49:45.000Z");
+    assert.deepEqual(requestedOrder, [{ updatedAt: "desc" }, { publishedAt: "desc" }]);
   } finally {
     await app.close();
   }

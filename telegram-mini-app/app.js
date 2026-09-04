@@ -842,7 +842,7 @@
       const topics = (item.topics || []).slice(0, 3).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
       return '<button class="article-card" type="button" data-article-slug="' + escapeHtml(item.slug) + '">' +
         (item.coverImageUrl ? '<img class="article-card-cover" src="' + escapeHtml(item.coverImageUrl) + '" alt="' + escapeHtml(item.title) + '" loading="lazy">' : "") +
-        '<div class="article-card-top">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
+        '<div class="article-card-top">' + topics + '<span>' + escapeHtml(formatArticleDate(item.updatedAt || item.publishedAt)) + "</span></div>" +
         "<h3>" + escapeHtml(item.title) + "</h3><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +
         '<span class="text-button">阅读中文导读 ›</span></button>';
     }).join("");
@@ -868,7 +868,7 @@
       updatePageSeo(item.seo);
       trackAnalytics("article_opened", { articleSlug: item.slug || slug, sourceModule: "articles" });
       const topics = (item.topics || []).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
-      host.innerHTML = '<div class="article-detail-meta">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
+      host.innerHTML = '<div class="article-detail-meta">' + topics + '<span>' + escapeHtml(formatArticleDate(item.updatedAt || item.publishedAt)) + "</span></div>" +
         (item.coverImageUrl ? '<img class="article-detail-cover" src="' + escapeHtml(item.coverImageUrl) + '" alt="' + escapeHtml(item.title) + '">' : "") +
         "<h2>" + escapeHtml(item.title) + "</h2><p class=\"muted-copy\">" + escapeHtml(item.summary) + "</p>" +
         '<div class="article-html-body">' + String(item.bodyHtml || "") + "</div>" +
