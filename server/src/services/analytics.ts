@@ -8,6 +8,7 @@ export const ANALYTICS_EVENT_NAMES = [
   "traffic_entry_open",
   "content_impression",
   "content_opened",
+  "article_opened",
   "preview_started",
   "preview_ended",
   "preview_completed",
@@ -212,6 +213,16 @@ export function sanitizeAnalyticsEvent(input: {
         propertiesJson: appendTrafficEntryAttribution(payload, {
           contentIdHmac: analyticsIdHmac("content", payload.contentId),
           sourceModule: sourceModule && SOURCE_MODULE_RE.test(sourceModule) ? sourceModule : "unknown",
+        }),
+      };
+    }
+    case "article_opened": {
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: appendTrafficEntryAttribution(payload, {
+          articleSlug: normalizeSmallString(payload.articleSlug, 160),
+          sourceModule: normalizeSmallString(payload.sourceModule, 32) ?? "articles",
         }),
       };
     }

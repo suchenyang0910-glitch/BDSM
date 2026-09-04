@@ -194,6 +194,7 @@
     return [
       "session_started",
       "content_opened",
+      "article_opened",
       "preview_started",
       "preview_completed",
       "playback_started",
@@ -865,6 +866,7 @@
         $("headerSubtitle").textContent = item.summary || "文章导读";
       }
       updatePageSeo(item.seo);
+      trackAnalytics("article_opened", { articleSlug: item.slug || slug, sourceModule: "articles" });
       const topics = (item.topics || []).map(function (topic) { return '<span class="article-topic">' + escapeHtml(topic) + "</span>"; }).join("");
       host.innerHTML = '<div class="article-detail-meta">' + topics + '<span>' + escapeHtml(formatArticleDate(item.publishedAt)) + "</span></div>" +
         (item.coverImageUrl ? '<img class="article-detail-cover" src="' + escapeHtml(item.coverImageUrl) + '" alt="' + escapeHtml(item.title) + '">' : "") +

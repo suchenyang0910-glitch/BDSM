@@ -56,6 +56,9 @@ const AnalyticsPage: React.FC = () => {
           <Col xs={12} lg={6}><Card><Statistic title="视频详情打开" value={data.totals.contentOpened} prefix={<VideoCameraOutlined />} /></Card></Col>
           <Col xs={12} lg={6}><Card><Statistic title="确认支付" value={data.totals.paymentsConfirmed} prefix={<WalletOutlined />} /></Card></Col>
           <Col xs={12} lg={6}><Card><Statistic title="采集事件" value={data.totals.eventCount} prefix={<BarChartOutlined />} /></Card></Col>
+          <Col xs={12} lg={6}><Card><Statistic title="视频浏览" value={data.totals.videoOpened} prefix={<VideoCameraOutlined />} /></Card></Col>
+          <Col xs={12} lg={6}><Card><Statistic title="完整播放率" value={data.totals.videoPlayRate} suffix="%" /></Card></Col>
+          <Col xs={12} lg={6}><Card><Statistic title="文章查看" value={data.totals.articleViews} /></Card></Col>
         </Row>
         <Card title="用户转化漏斗" extra={<Text type="secondary">基于去重会话；从试看到完整播放按统一收银台口径汇总</Text>}>
           <Row gutter={[16, 16]}>{data.funnel.map((item) => <Col xs={24} md={12} lg={8} key={item.eventName}><Card size="small"><Space direction="vertical" style={{ width: "100%" }} size={4}><Text strong>{EVENT_LABEL[item.eventName] || item.eventName}</Text><Statistic value={item.value} /><Progress percent={item.conversionFromStart} size="small" format={(v) => `${v}%`} /></Space></Card></Col>)}</Row>
@@ -80,6 +83,10 @@ const AnalyticsPage: React.FC = () => {
               </Space>
             </Card>
           </Col>
+        </Row>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} lg={12}><Card title="用户来源"><Table rowKey="source" size="small" pagination={false} dataSource={data.sources} locale={{ emptyText: <Empty description="尚无来源会话" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} columns={[{ title: "来源", dataIndex: "source" }, { title: "去重用户", dataIndex: "users" }, { title: "去重会话", dataIndex: "sessions" }]} /></Card></Col>
+          <Col xs={24} lg={12}><Card title="文章查看 Top 20"><Table rowKey="articleSlug" size="small" pagination={{ pageSize: 8 }} dataSource={data.articleViews} locale={{ emptyText: <Empty description="尚无文章查看" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} columns={[{ title: "文章", dataIndex: "articleSlug" }, { title: "查看", dataIndex: "views" }, { title: "去重读者", dataIndex: "readers" }]} /></Card></Col>
         </Row>
         <Row gutter={[16, 16]}>
           <Col xs={24} lg={12}><Card title="每日趋势"><Table rowKey="date" size="small" pagination={false} dataSource={data.trend} locale={{ emptyText: <Empty description="尚无采集数据" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} columns={[{ title: "日期", dataIndex: "date" }, { title: "会话", dataIndex: "sessions" }, { title: "打开详情", dataIndex: "contentOpened" }, { title: "确认支付", dataIndex: "paymentsConfirmed" }]} /></Card></Col>

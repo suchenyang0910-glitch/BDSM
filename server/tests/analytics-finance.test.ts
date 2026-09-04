@@ -264,6 +264,13 @@ test("analytics sanitizer preserves library and single paywall semantics", () =>
     payload: { platform: "h5", contentId: TEST_KNOWN_IDS.contentSingle, accessType: "single" },
   });
   assert.equal(paywallShown.propertiesJson.accessType, "single");
+
+  const articleOpened = sanitizeAnalyticsEvent({
+    eventName: "article_opened",
+    payload: { platform: "h5", articleSlug: "boundary-and-consent", sourceModule: "articles" },
+  });
+  assert.equal(articleOpened.propertiesJson.articleSlug, "boundary-and-consent");
+  assert.equal(articleOpened.propertiesJson.sourceModule, "articles");
 });
 
 test("admin analytics overview exposes aggregate funnel only and enforces analytics:view", async () => {
@@ -282,6 +289,11 @@ test("admin analytics overview exposes aggregate funnel only and enforces analyt
     assert.equal(typeof body.playback.prefetch.hitRate, "number");
     assert.equal(Array.isArray(body.playback.qualityChanges), true);
     assert.equal(Array.isArray(body.preferences), true);
+    assert.equal(typeof body.totals.videoOpened, "number");
+    assert.equal(typeof body.totals.videoPlayRate, "number");
+    assert.equal(typeof body.totals.articleViews, "number");
+    assert.equal(Array.isArray(body.sources), true);
+    assert.equal(Array.isArray(body.articleViews), true);
     assert.equal(JSON.stringify(body).includes("analytics user"), false, "overview must not expose user identity");
     assert.equal(JSON.stringify(body).includes("INT20260823000001"), false, "overview must not expose order identifiers");
   } finally {

@@ -59,6 +59,8 @@ type PlatformCountRow = { platform: string; eventCount: number };
 type TrendRow = { date: string; sessions: number; contentOpened: number; paymentsConfirmed: number };
 type BucketRow = { bucket: string; value: number };
 type QualityTransitionRow = { transition: string; value: number };
+type SourceMetricsRow = { source: string; users: number; sessions: number };
+type ArticleMetricsRow = { articleSlug: string; views: number; readers: number };
 type AnalyticsQueryClient = {
   $queryRaw: <T = unknown>(query: Prisma.Sql) => Promise<T>;
 };
@@ -77,6 +79,10 @@ async function loadAnalyticsOverviewAggregates(prisma: AnalyticsQueryClient, fro
     bufferBucketRows,
     prefetchRows,
     qualityRows,
+    videoRows,
+    articleRows,
+    sourceRows,
+    articleMetricRows,
   ] = await Promise.all([
     queryRaw<Array<{ eventCount: number }>>(Prisma.sql`
       SELECT COUNT(*)::int AS "eventCount"
@@ -174,6 +180,44 @@ async function loadAnalyticsOverviewAggregates(prisma: AnalyticsQueryClient, fro
       ORDER BY "value" DESC, "transition" ASC
       LIMIT 8
     `),
+    queryRaw<Array<{ opened: number; playbackStarted: number }>>(Prisma.sql`
+      SELECT
+        COUNT(DISTINCT "session_id_hmac") FILTER (WHERE "event_name" = 'content_opened')::int AS "opened",
+        COUNT(DISTINCT "session_id_hmac") FILTER (WHERE "event_name" = 'playback_started')::int AS "playbackStarted"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to}
+        AND "event_name" IN ('content_opened', 'playback_started')
+    `),
+    queryRaw<Array<{ views: number }>>(Prisma.sql`
+      SELECT COUNT(DISTINCT "session_id_hmac")::int AS "views"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to}
+        AND "event_name" = 'article_opened'
+    `),
+    queryRaw<SourceMetricsRow[]>(Prisma.sql`
+      SELECT
+        COALESCE(NULLIF("properties_json"->>'trafficEntryCode', ''), NULLIF("properties_json"->>'entrySource', ''), "platform"::text, 'unknown') AS "source",
+        COUNT(DISTINCT COALESCE("user_id_hmac", "anonymous_id_hmac"))::int AS "users",
+        COUNT(DISTINCT "session_id_hmac")::int AS "sessions"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to}
+        AND "event_name" = 'session_started'
+      GROUP BY 1
+      ORDER BY "users" DESC, "sessions" DESC, "source" ASC
+      LIMIT 20
+    `),
+    queryRaw<ArticleMetricsRow[]>(Prisma.sql`
+      SELECT
+        COALESCE(NULLIF("properties_json"->>'articleSlug', ''), 'unknown') AS "articleSlug",
+        COUNT(*)::int AS "views",
+        COUNT(DISTINCT "session_id_hmac")::int AS "readers"
+      FROM "analytics_events"
+      WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to}
+        AND "event_name" = 'article_opened'
+      GROUP BY 1
+      ORDER BY "views" DESC, "articleSlug" ASC
+      LIMIT 20
+    `),
   ]);
 
   return {
@@ -189,6 +233,10 @@ async function loadAnalyticsOverviewAggregates(prisma: AnalyticsQueryClient, fro
       bufferDurationBuckets: bufferBucketRows,
       prefetch: prefetchRows[0] ?? { hit: 0, miss: 0, error: 0 },
       qualityChanges: qualityRows,
+      videos: videoRows[0] ?? { opened: 0, playbackStarted: 0 },
+      articleViews: articleRows[0]?.views ?? 0,
+      sources: sourceRows,
+      articleMetrics: articleMetricRows,
     },
   };
 }
@@ -233,6 +281,12 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
         sessions: start,
         contentOpened: overview.funnelValues.get("content_opened") || 0,
         paymentsConfirmed: overview.funnelValues.get("payment_confirmed") || 0,
+        videoOpened: overview.playback.videos.opened,
+        videoPlaybackStarted: overview.playback.videos.playbackStarted,
+        videoPlayRate: overview.playback.videos.opened
+          ? Number(((overview.playback.videos.playbackStarted / overview.playback.videos.opened) * 100).toFixed(1))
+          : 0,
+        articleViews: overview.playback.articleViews,
       },
       funnel,
       platforms: overview.platforms,
@@ -256,6 +310,8 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
         qualityChanges: overview.playback.qualityChanges,
       },
       preferences: preferences.map((row: any) => ({ preferenceType: row.preferenceType, valueKey: row.valueKey, selectedUsers: row._count._all })),
+      sources: overview.playback.sources,
+      articleViews: overview.playback.articleMetrics,
       privacy: "仅展示聚合统计；不展示用户身份、内容标题、会话标识或个人浏览轨迹。",
     });
   });

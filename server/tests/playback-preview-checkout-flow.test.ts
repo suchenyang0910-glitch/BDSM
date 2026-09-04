@@ -117,6 +117,15 @@ test("desktop article detail hides the rail and restores it when leaving focus p
   assert.match(cssSource, /\.app-shell:has\(\.desktop-rail\.is-hidden\) \{\s*grid-template-columns: minmax\(0, 1fr\);\s*\}/);
 });
 
+test("article detail records a dedicated article view event in H5 and Mini App", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  for (const file of ["h5/app.js", "telegram-mini-app/app.js"]) {
+    const source = await readFile(path.join(root, file), "utf8");
+    assert.match(source, /trackAnalytics\("article_opened", \{ articleSlug: item\.slug \|\| slug/);
+    assert.match(source, /"article_opened",/);
+  }
+});
+
 test("article body media and overflow rules keep H5 and Mini App content inside the container", async () => {
   const cssSources = await Promise.all([
     readFile(path.join(ROOT, "h5/styles.css"), "utf8"),
@@ -140,9 +149,9 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
   ]);
 
   assert.match(h5Html, /styles\.css\?v=20260904-community-controlled-open-2/);
-  assert.match(h5Html, /app\.js\?v=20260904-community-controlled-open-2/);
+  assert.match(h5Html, /app\.js\?v=20260904-analytics-admin-v1/);
   assert.match(miniAppHtml, /styles\.css\?v=20260904-community-controlled-open-2/);
-  assert.match(miniAppHtml, /app\.js\?v=20260904-community-controlled-open-2/);
+  assert.match(miniAppHtml, /app\.js\?v=20260904-analytics-admin-v1/);
 });
 
 test("community tab, detail hash, and composer shell exist in H5 and Mini App", async () => {

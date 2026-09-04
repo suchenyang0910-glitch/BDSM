@@ -9,7 +9,7 @@ export type AdminMe = {
 
 export type AdminAnalyticsOverview = {
   period: { preset: "7d" | "30d"; from: string; to: string };
-  totals: { eventCount: number; sessions: number; contentOpened: number; paymentsConfirmed: number };
+  totals: { eventCount: number; sessions: number; contentOpened: number; paymentsConfirmed: number; videoOpened: number; videoPlaybackStarted: number; videoPlayRate: number; articleViews: number };
   funnel: Array<{ eventName: string; value: number; conversionFromStart: number }>;
   platforms: Array<{ platform: string; eventCount: number }>;
   trend: Array<{ date: string; sessions: number; contentOpened: number; paymentsConfirmed: number }>;
@@ -20,6 +20,8 @@ export type AdminAnalyticsOverview = {
     qualityChanges: Array<{ transition: string; value: number }>;
   };
   preferences: Array<{ preferenceType: string; valueKey: string; selectedUsers: number }>;
+  sources: Array<{ source: string; users: number; sessions: number }>;
+  articleViews: Array<{ articleSlug: string; views: number; readers: number }>;
   privacy: string;
 };
 
