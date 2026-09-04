@@ -1366,7 +1366,7 @@
   }
 
   async function loadMyCommunityPosts(nextCursor) {
-    if (!state.session || !state.session.user) {
+    if (!state.session || !state.session.userId) {
       showInlineMessage("登录后即可查看我的帖子。");
       return;
     }
@@ -1496,7 +1496,7 @@
   }
 
   function openCommunityComposer(post) {
-    if (!state.session || !state.session.user) {
+    if (!state.session || !state.session.userId) {
       showInlineMessage("登录后即可发布。");
       return;
     }
@@ -3924,7 +3924,7 @@
       openCommunityComposer();
     });
     $("communityMyPostsButton").addEventListener("click", function () {
-      if (!state.session || !state.session.user) {
+      if (!state.session || !state.session.userId) {
         showInlineMessage("登录后即可查看我的帖子。");
         return;
       }

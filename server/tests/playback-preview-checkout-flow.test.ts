@@ -149,7 +149,7 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
   ]);
 
   assert.match(h5Html, /styles\.css\?v=20260904-community-controlled-open-2/);
-  assert.match(h5Html, /app\.js\?v=20260904-analytics-admin-v1/);
+  assert.match(h5Html, /app\.js\?v=20260904-community-session-fix-1/);
   assert.match(miniAppHtml, /styles\.css\?v=20260904-community-controlled-open-2/);
   assert.match(miniAppHtml, /app\.js\?v=20260904-analytics-admin-v1/);
 });
@@ -193,6 +193,13 @@ test("community author tools expose pending edit and owner delete in H5 and Mini
     assert.match(source, /method:\s*"DELETE"/);
     assert.match(source, /window\.confirm\("确认删除这条帖子吗？删除后将从用户侧隐藏。"\)/);
   }
+});
+
+test("H5 community publishing uses the normalized session userId", async () => {
+  const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  assert.doesNotMatch(source, /state\.session\.user\b/);
+  assert.match(source, /function openCommunityComposer\(post\) \{\s*if \(!state\.session \|\| !state\.session\.userId\)/);
+  assert.match(source, /async function loadMyCommunityPosts\(nextCursor\) \{\s*if \(!state\.session \|\| !state\.session\.userId\)/);
 });
 
 test("h5 home keeps continue watching compact and safely renders channel labels", async () => {
