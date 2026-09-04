@@ -15,6 +15,7 @@ function parseIntWithBounds(raw: string | undefined, fallback: number, min: numb
 export type CommunityFeatureConfig = {
   enabled: boolean;
   postingEnabled: boolean;
+  imageUploadEnabled: boolean;
   videoUploadEnabled: boolean;
   maxImagesPerPost: number;
   maxImageBytesPerAsset: bigint;
@@ -28,12 +29,26 @@ export type CommunityFeatureConfig = {
   maxVideoLongestEdge: number;
 };
 
+function hasObjectStorageConfiguration(env: NodeJS.ProcessEnv) {
+  const required = [
+    ["OBJECT_STORAGE_ENDPOINT", "S3_ENDPOINT"],
+    ["OBJECT_STORAGE_REGION", "S3_REGION"],
+    ["OBJECT_STORAGE_BUCKET", "S3_BUCKET"],
+    ["OBJECT_STORAGE_ACCESS_KEY", "S3_ACCESS_KEY_ID"],
+    ["OBJECT_STORAGE_SECRET_KEY", "S3_SECRET_ACCESS_KEY"],
+  ];
+  return required.every(([primary, legacy]) => Boolean(String(env[primary] || env[legacy] || "").trim()));
+}
+
 export function loadCommunityFeatureConfig(env: NodeJS.ProcessEnv = process.env): CommunityFeatureConfig {
   const maxImagesPerPost = parseIntWithBounds(env.COMMUNITY_MAX_IMAGES_PER_POST, 9, 1, 9);
   const maxImageBytesPerAsset = BigInt(parseIntWithBounds(env.COMMUNITY_MAX_IMAGE_BYTES, 10 * 1024 * 1024, 1, 100 * 1024 * 1024));
+  const enabled = parseBooleanFlag(env.COMMUNITY_ENABLED, false);
+  const postingEnabled = parseBooleanFlag(env.COMMUNITY_POSTING_ENABLED, false);
   return {
-    enabled: parseBooleanFlag(env.COMMUNITY_ENABLED, false),
-    postingEnabled: parseBooleanFlag(env.COMMUNITY_POSTING_ENABLED, false),
+    enabled,
+    postingEnabled,
+    imageUploadEnabled: enabled && postingEnabled && hasObjectStorageConfiguration(env),
     videoUploadEnabled: parseBooleanFlag(env.COMMUNITY_VIDEO_UPLOAD_ENABLED, false),
     maxImagesPerPost,
     maxImageBytesPerAsset,

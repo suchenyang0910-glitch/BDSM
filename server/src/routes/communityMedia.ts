@@ -91,7 +91,7 @@ async function requireOwnedPendingPost(prisma: any, postId: string, userId: stri
   return { post };
 }
 
-async function loadVisibleCommunityAsset(prisma: any, postId: string, assetId: string) {
+async function loadReadableCommunityAsset(prisma: any, postId: string, assetId: string, viewerUserId?: string | null) {
   const asset = await prisma.communityPostAsset.findFirst({
     where: { id: assetId, postId },
     include: {
@@ -99,13 +99,22 @@ async function loadVisibleCommunityAsset(prisma: any, postId: string, assetId: s
         select: {
           id: true,
           status: true,
+          authorId: true,
         },
       },
     },
   });
-  if (!asset || !asset.post || asset.post.status !== "published") return null;
-  if (asset.moderationStatus !== "approved") return null;
-  return asset;
+  if (!asset || !asset.post) return null;
+  if (asset.post.status === "published" && asset.moderationStatus === "approved") return asset;
+  if (
+    viewerUserId &&
+    asset.kind === "image" &&
+    asset.post.authorId === viewerUserId &&
+    (asset.post.status === "pending" || asset.post.status === "rejected")
+  ) {
+    return asset;
+  }
+  return null;
 }
 
 export default async function communityMediaRoutes(fastify: FastifyInstance) {
@@ -129,6 +138,9 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
       return reply.status(error.status).send(error.body);
     }
     const body = parsed.data;
+    if (body.kind === "image" && !featureConfig.imageUploadEnabled) {
+      return reply.status(503).send({ error: "community_image_upload_unavailable", message: "圈子图片上传正在进行对象存储验收，暂未开放。" });
+    }
     if (body.kind === "image" && !communityImageMimeAllowed(body.mimeType)) {
       return reply.status(400).send({ error: "community_image_mime_invalid", message: "圈子图片仅支持 JPG/PNG/WEBP。" });
     }
@@ -566,7 +578,7 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
   fastify.get("/community/posts/:postId/assets/:assetId/image", async (req: any, reply) => {
     const postId = String(req.params?.postId || "").trim();
     const assetId = String(req.params?.assetId || "").trim();
-    const asset = await loadVisibleCommunityAsset(prisma, postId, assetId);
+    const asset = await loadReadableCommunityAsset(prisma, postId, assetId, typeof req.userId === "string" ? req.userId : null);
     if (!asset || asset.kind !== "image" || !asset.thumbnailObjectKey) return reply.status(404).send({ error: "community_media_not_found" });
     try {
       const signed = await createPrivatePresignedReadUrl(asset.thumbnailObjectKey, 30);
@@ -582,7 +594,7 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
   fastify.get("/community/posts/:postId/assets/:assetId/poster", async (req: any, reply) => {
     const postId = String(req.params?.postId || "").trim();
     const assetId = String(req.params?.assetId || "").trim();
-    const asset = await loadVisibleCommunityAsset(prisma, postId, assetId);
+    const asset = await loadReadableCommunityAsset(prisma, postId, assetId, typeof req.userId === "string" ? req.userId : null);
     if (!asset || asset.kind !== "video" || !asset.posterObjectKey || asset.transcodeStatus !== "ready") return reply.status(404).send({ error: "community_media_not_found" });
     try {
       const signed = await createPrivatePresignedReadUrl(asset.posterObjectKey, 30);
@@ -599,7 +611,7 @@ export default async function communityMediaRoutes(fastify: FastifyInstance) {
     const postId = String(req.params?.postId || "").trim();
     const assetId = String(req.params?.assetId || "").trim();
     const relative = String(req.params?.["*"] || "").trim();
-    const asset = await loadVisibleCommunityAsset(prisma, postId, assetId);
+    const asset = await loadReadableCommunityAsset(prisma, postId, assetId, typeof req.userId === "string" ? req.userId : null);
     if (!asset || asset.kind !== "video" || asset.transcodeStatus !== "ready" || !asset.playbackPrefixKey || !asset.playbackManifestKey) {
       return reply.status(404).send({ error: "community_media_not_found" });
     }

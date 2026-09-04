@@ -20,7 +20,7 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="" />
     <title>同频 · 精选点播</title>
-    <link rel="stylesheet" href="./styles.css?v=20260903-article-overflow-fix-1" />
+    <link rel="stylesheet" href="./styles.css?v=20260904-community-controlled-open-1" />
     <script src="/api/vendor/hls/hls.min.js"></script>
     <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
     <script id="videoObjectJsonLd" type="application/ld+json"></script>
@@ -109,6 +109,28 @@
           </div>
           <div id="libraryState" class="inline-state"></div>
           <div id="libraryGrid" class="content-grid"></div>
+        </section>
+
+        <section id="communityView" class="tab-view is-hidden">
+          <div class="toolbar-card community-toolbar-card">
+            <div class="section-head section-head-inline">
+              <div><p class="eyebrow">COMMUNITY</p><h3>社区</h3></div>
+              <div class="community-toolbar-actions">
+                <button id="communityMyPostsButton" class="ghost-button" type="button">我的帖子</button>
+                <button id="communityPublishButton" class="primary-button" type="button">发布</button>
+              </div>
+            </div>
+            <p class="muted-copy">浏览已发布帖子；发布后的图文会先进入审核。</p>
+          </div>
+          <div id="communityState" class="inline-state">正在加载社区…</div>
+          <div id="communityFeed" class="stack-list"></div>
+          <button id="communityLoadMoreButton" class="ghost-button is-hidden" type="button">加载更多</button>
+          <section id="communityMyPostsSection" class="section-block is-hidden">
+            <div class="section-head"><div><p class="eyebrow">MY POSTS</p><h3>我的帖子</h3></div></div>
+            <div id="communityMyPostsState" class="inline-state">正在加载我的帖子…</div>
+            <div id="communityMyPostsList" class="stack-list"></div>
+            <button id="communityMyPostsLoadMoreButton" class="ghost-button is-hidden" type="button">加载更多</button>
+          </section>
         </section>
 
         <section id="articlesView" class="tab-view is-hidden">
@@ -219,6 +241,10 @@
           <article id="articleDetailContent" class="article-detail-shell"></article>
         </section>
 
+        <section id="communityDetailView" class="tab-view is-hidden">
+          <article id="communityDetailContent" class="article-detail-shell community-detail-shell"></article>
+        </section>
+
         <section id="watchHistoryView" class="tab-view is-hidden">
           <section class="section-block">
             <div class="section-head">
@@ -246,6 +272,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
           <span>片库</span>
         </button>
+        <button class="nav-item" data-tab="community" type="button">
+          <span class="nav-indicator"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18c1.2-3.3 3.7-5 7.5-5s6.3 1.7 7.5 5"></path><circle cx="12" cy="8" r="3.5"></circle></svg>
+          <span>社区</span>
+        </button>
         <button class="nav-item" data-tab="articles" type="button">
           <span class="nav-indicator"></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19V9.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2V19"></path><path d="M9 7V5a3 3 0 0 1 6 0v2"></path><path d="M8 12h8"></path></svg>
@@ -258,6 +289,26 @@
         </button>
       </nav>
     </div>
+
+    <section id="communityComposerModal" class="interaction-report-sheet is-hidden" aria-live="polite">
+      <div class="interaction-report-card community-composer-card">
+        <div class="interaction-report-head"><strong>发布到社区</strong><button id="communityComposerClose" class="ghost-button" type="button">取消</button></div>
+        <label class="interaction-field-label" for="communityComposerTopics">话题（1-5 个，用逗号分隔）</label>
+        <input id="communityComposerTopics" class="interaction-select" type="text" placeholder="例如：边界, 沟通" />
+        <label class="interaction-field-label" for="communityComposerBody">正文</label>
+        <textarea id="communityComposerBody" class="interaction-textarea" rows="6" maxlength="2000" placeholder="分享你的想法，最多 2000 字。"></textarea>
+        <div class="interaction-composer-foot">
+          <span id="communityComposerHint" class="muted-copy">首期仅开放图文，最多 9 张图片。</span>
+          <span id="communityComposerCount" class="interaction-counter">0/2000</span>
+        </div>
+        <label class="interaction-field-label" for="communityComposerImages">图片（可选，最多 9 张）</label>
+        <input id="communityComposerImages" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+        <div id="communityComposerFiles" class="muted-copy"></div>
+        <div class="interaction-composer-actions">
+          <button id="communityComposerSubmit" class="primary-button" type="button">提交审核</button>
+        </div>
+      </div>
+    </section>
 
     <template id="contentCardTemplate">
       <article class="content-card">
@@ -280,6 +331,6 @@
       </article>
     </template>
 
-  <script src="./app.js?v=20260831-article-list-clean-1"></script>
+  <script src="./app.js?v=20260904-community-controlled-open-1"></script>
   </body>
 </html>

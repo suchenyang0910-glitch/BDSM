@@ -107,10 +107,12 @@ test("desktop article detail hides the rail and restores it when leaving focus p
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const cssSource = await readFile(path.join(ROOT, "h5/styles.css"), "utf8");
 
-  assert.match(appSource, /\$\("desktopRail"\)\.classList\.toggle\("is-hidden", isDetail \|\| isArticle \|\| isHistory \|\| isWallet\);/);
-  assert.match(appSource, /if \(!isDetail && !isArticle && !isHistory && !isWallet\) renderDesktopRail\(\);/);
+  assert.match(appSource, /const isFocusView = isDetail \|\| isArticle \|\| isCommunityDetail \|\| isHistory \|\| isWallet;/);
+  assert.match(appSource, /\$\("desktopRail"\)\.classList\.toggle\("is-hidden", isFocusView\);/);
+  assert.match(appSource, /if \(!isFocusView\) renderDesktopRail\(\);/);
   assert.match(appSource, /\$\("articleDetailView"\)\.classList\.toggle\("is-hidden", !isArticle\);/);
-  assert.match(appSource, /document\.querySelectorAll\("\.nav-item"\)\.forEach\(function \(button\) \{\s*button\.classList\.toggle\("is-active", !isDetail && !isArticle && !isHistory && !isWallet/s);
+  assert.match(appSource, /\$\("communityDetailView"\)\.classList\.toggle\("is-hidden", !isCommunityDetail\);/);
+  assert.match(appSource, /document\.querySelectorAll\("\.nav-item"\)\.forEach\(function \(button\) \{\s*button\.classList\.toggle\("is-active", !isFocusView/s);
   assert.match(cssSource, /\.desktop-rail\.is-hidden \{\s*display: none;\s*\}/);
   assert.match(cssSource, /\.app-shell:has\(\.desktop-rail\.is-hidden\) \{\s*grid-template-columns: minmax\(0, 1fr\);\s*\}/);
 });
@@ -131,14 +133,56 @@ test("article body media and overflow rules keep H5 and Mini App content inside 
   }
 });
 
-test("article layout fixes ship behind a fresh stylesheet version for H5 and Mini App", async () => {
+test("community shell ships behind fresh H5 and Mini App asset versions", async () => {
   const [h5Html, miniAppHtml] = await Promise.all([
     readFile(path.join(ROOT, "h5/index.html"), "utf8"),
     readFile(path.join(ROOT, "telegram-mini-app/index.html"), "utf8"),
   ]);
 
-  assert.match(h5Html, /styles\.css\?v=20260903-article-overflow-fix-1/);
-  assert.match(miniAppHtml, /styles\.css\?v=20260903-article-overflow-fix-1/);
+  assert.match(h5Html, /styles\.css\?v=20260904-community-controlled-open-1/);
+  assert.match(h5Html, /app\.js\?v=20260904-community-controlled-open-1/);
+  assert.match(miniAppHtml, /styles\.css\?v=20260904-community-controlled-open-1/);
+  assert.match(miniAppHtml, /app\.js\?v=20260904-community-controlled-open-1/);
+});
+
+test("community tab, detail hash, and composer shell exist in H5 and Mini App", async () => {
+  const [h5App, h5Html, miniApp, miniHtml] = await Promise.all([
+    readFile(path.join(ROOT, "h5/app.js"), "utf8"),
+    readFile(path.join(ROOT, "h5/index.html"), "utf8"),
+    readFile(path.join(ROOT, "telegram-mini-app/app.js"), "utf8"),
+    readFile(path.join(ROOT, "telegram-mini-app/index.html"), "utf8"),
+  ]);
+
+  for (const source of [h5App, miniApp]) {
+    assert.match(source, /params\.get\("view"\) === "community"/);
+    assert.match(source, /function setHashForCommunityDetail\(id, fromTab\)/);
+    assert.match(source, /function renderCommunityDetail\(id\)/);
+    assert.match(source, /targetType:\s*"circle_post"/);
+  }
+
+  for (const html of [h5Html, miniHtml]) {
+    assert.match(html, /id="communityView"/);
+    assert.match(html, /id="communityDetailView"/);
+    assert.match(html, /id="communityComposerModal"/);
+    assert.match(html, /data-tab="community"/);
+    assert.match(html, /id="communityMyPostsButton"/);
+    assert.match(html, /id="communityPublishButton"/);
+  }
+});
+
+test("community author tools expose pending edit and owner delete in H5 and Mini App", async () => {
+  const [h5App, miniApp] = await Promise.all([
+    readFile(path.join(ROOT, "h5/app.js"), "utf8"),
+    readFile(path.join(ROOT, "telegram-mini-app/app.js"), "utf8"),
+  ]);
+
+  for (const source of [h5App, miniApp]) {
+    assert.match(source, /data-community-edit/);
+    assert.match(source, /data-community-delete/);
+    assert.match(source, /method:\s*"PATCH"/);
+    assert.match(source, /method:\s*"DELETE"/);
+    assert.match(source, /window\.confirm\("确认删除这条帖子吗？删除后将从用户侧隐藏。"\)/);
+  }
 });
 
 test("h5 home keeps continue watching compact and safely renders channel labels", async () => {

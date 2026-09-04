@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { requireAdmin, type AdminSession } from "./admin.js";
+import { validateKeywordList } from "../services/seoMetadata.js";
 
 const listReportsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -22,7 +23,7 @@ const listCommentsQuerySchema = z.object({
 const listCommunityPostsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
-  status: z.enum(["pending", "published", "hidden", "removed"]).optional(),
+  status: z.enum(["pending", "rejected", "published", "hidden", "removed"]).optional(),
   keyword: z.string().trim().max(100).optional(),
 });
 
@@ -39,7 +40,7 @@ const moderateCommentSchema = z.object({
 });
 
 const moderateCommunityPostSchema = z.object({
-  status: z.enum(["published", "hidden", "removed"]),
+  status: z.enum(["published", "rejected", "hidden", "removed"]),
   reason: z.string().trim().max(500).optional(),
 });
 
@@ -47,6 +48,19 @@ const pinCommunityPostSchema = z.object({
   pinned: z.boolean(),
   reason: z.string().trim().max(500).optional(),
 });
+
+const updateCommunityPostSeoSchema = z.object({
+  seoTitle: z.string().trim().max(120).optional(),
+  seoDescription: z.string().trim().max(300).optional(),
+  seoKeywords: z.array(z.string()).max(20).optional(),
+  geoKeywords: z.array(z.string()).max(20).optional(),
+  searchIndexable: z.boolean(),
+});
+
+function optionalText(value: string | undefined) {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+}
 
 function adminMeta(req: FastifyRequest) {
   const admin = (req as any).admin as AdminSession;
@@ -518,6 +532,11 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         commentCount: item.commentCount,
         reportCount: item.reportCount,
         moderationReason: item.moderationReason || null,
+        seoTitle: item.seoTitle || null,
+        seoDescription: item.seoDescription || null,
+        seoKeywords: item.seoKeywords || [],
+        geoKeywords: item.geoKeywords || [],
+        searchIndexable: !!item.searchIndexable,
         isPinned: !!item.isPinned,
         pinnedAt: item.pinnedAt ? item.pinnedAt.toISOString() : null,
         publishedAt: item.publishedAt ? item.publishedAt.toISOString() : null,
@@ -558,6 +577,12 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         if (!prefixCheck.ok) {
           return reply.status(409).send(prefixCheck);
         }
+        if (asset.kind === "image") {
+          if (!asset.thumbnailObjectKey) {
+            return reply.status(409).send({ error: "community_image_thumbnail_missing", message: "圈子图片尚未生成可审核缩略图，不能发布帖子。" });
+          }
+          continue;
+        }
         if (asset.moderationStatus !== "approved") {
           return reply.status(409).send({ error: "community_media_not_approved", message: "圈子媒体需先审核通过后才能发布帖子。" });
         }
@@ -567,18 +592,32 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
       }
     }
     const nextStatus = parsed.data.status;
-    const after = await prisma.communityPost.update({
-      where: { id: before.id },
-      data: {
-        status: nextStatus,
-        moderationReason: parsed.data.reason || null,
-        publishedAt: nextStatus === "published" ? (before.publishedAt || new Date()) : before.publishedAt,
-        deletedAt: nextStatus === "removed" ? new Date() : null,
-      },
-      include: {
-        author: { select: { id: true, displayName: true } },
-        assets: true,
-      },
+    const after = await prisma.$transaction(async (tx: any) => {
+      if (nextStatus === "published") {
+        await tx.communityPostAsset.updateMany({
+          where: { postId: before.id, kind: "image", moderationStatus: { in: ["pending", "rejected"] } },
+          data: { moderationStatus: "approved" },
+        });
+      } else if (nextStatus === "rejected") {
+        await tx.communityPostAsset.updateMany({
+          where: { postId: before.id, kind: "image" },
+          data: { moderationStatus: "rejected" },
+        });
+      }
+      return tx.communityPost.update({
+        where: { id: before.id },
+        data: {
+          status: nextStatus,
+          moderationReason: parsed.data.reason || null,
+          publishedAt: nextStatus === "published" ? (before.publishedAt || new Date()) : before.publishedAt,
+          deletedAt: nextStatus === "removed" ? new Date() : null,
+          searchIndexable: nextStatus === "published" ? before.searchIndexable : false,
+        },
+        include: {
+          author: { select: { id: true, displayName: true } },
+          assets: true,
+        },
+      });
     });
     await writeAudit(
       prisma,
@@ -630,6 +669,67 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         id: after.id,
         isPinned: !!after.isPinned,
         pinnedAt: after.pinnedAt ? after.pinnedAt.toISOString() : null,
+      },
+    };
+  });
+
+  fastify.patch<{ Params: { id: string } }>("/admin/community/posts/:id/seo", { preHandler: [requireAdmin("ticket:resolve")] }, async (req, reply) => {
+    const parsed = updateCommunityPostSeoSchema.safeParse(req.body || {});
+    if (!parsed.success) return reply.status(400).send({ error: "invalid_community_post_seo", details: parsed.error.issues });
+    const seoKeywords = validateKeywordList(parsed.data.seoKeywords || []);
+    const geoKeywords = validateKeywordList(parsed.data.geoKeywords || []);
+    if (seoKeywords.errors.length || geoKeywords.errors.length) {
+      return reply.status(400).send({
+        error: "invalid_community_post_seo_keywords",
+        message: "SEO/GEO 关键词格式不正确。",
+        details: { seoKeywords: seoKeywords.errors, geoKeywords: geoKeywords.errors },
+      });
+    }
+    const before = await prisma.communityPost.findUnique({ where: { id: req.params.id } });
+    if (!before || before.deletedAt) return reply.status(404).send({ error: "community_post_not_found", message: "圈子帖子不存在。" });
+    if (parsed.data.searchIndexable && before.status !== "published") {
+      return reply.status(409).send({ error: "community_post_not_published", message: "仅已发布帖子可允许搜索收录。" });
+    }
+    const after = await prisma.communityPost.update({
+      where: { id: before.id },
+      data: {
+        seoTitle: optionalText(parsed.data.seoTitle),
+        seoDescription: optionalText(parsed.data.seoDescription),
+        seoKeywords: seoKeywords.items,
+        geoKeywords: geoKeywords.items,
+        searchIndexable: parsed.data.searchIndexable,
+      },
+    });
+    await writeAudit(
+      prisma,
+      req,
+      "community.post.seo.update",
+      "community_post",
+      before.id,
+      {
+        seoTitle: before.seoTitle || null,
+        seoDescription: before.seoDescription || null,
+        seoKeywords: before.seoKeywords || [],
+        geoKeywords: before.geoKeywords || [],
+        searchIndexable: !!before.searchIndexable,
+      },
+      {
+        seoTitle: after.seoTitle || null,
+        seoDescription: after.seoDescription || null,
+        seoKeywords: after.seoKeywords || [],
+        geoKeywords: after.geoKeywords || [],
+        searchIndexable: !!after.searchIndexable,
+      },
+    );
+    return {
+      ok: true,
+      post: {
+        id: after.id,
+        seoTitle: after.seoTitle || null,
+        seoDescription: after.seoDescription || null,
+        seoKeywords: after.seoKeywords || [],
+        geoKeywords: after.geoKeywords || [],
+        searchIndexable: !!after.searchIndexable,
       },
     };
   });

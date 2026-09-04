@@ -1557,7 +1557,7 @@ export type AdminAuditLogListResp = {
   items: AdminAuditLogEntry[];
 };
 
-export type CommunityPostStatus = "pending" | "published" | "hidden" | "removed";
+export type CommunityPostStatus = "pending" | "rejected" | "published" | "hidden" | "removed";
 
 export type AdminCommunityPostAssetItem = {
   id: string;
@@ -1585,6 +1585,11 @@ export type AdminCommunityPostItem = {
   commentCount: number;
   reportCount: number;
   moderationReason: string | null;
+  seoTitle: string | null;
+  seoDescription: string | null;
+  seoKeywords: string[];
+  geoKeywords: string[];
+  searchIndexable: boolean;
   isPinned: boolean;
   pinnedAt: string | null;
   publishedAt: string | null;
@@ -1609,11 +1614,19 @@ export type AdminCommunityPostListFilter = {
 };
 
 export type ModerateCommunityPostInput = {
-  status: Extract<CommunityPostStatus, "published" | "hidden" | "removed">;
+  status: Extract<CommunityPostStatus, "published" | "rejected" | "hidden" | "removed">;
   reason?: string;
 };
 
 export type PinCommunityPostInput = {
   pinned: boolean;
   reason?: string;
+};
+
+export type UpdateCommunityPostSeoInput = {
+  seoTitle?: string;
+  seoDescription?: string;
+  seoKeywords?: string[];
+  geoKeywords?: string[];
+  searchIndexable: boolean;
 };

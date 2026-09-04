@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Form,
   Input,
   Modal,
@@ -26,6 +27,7 @@ import {
   moderateAdminInteractionComment,
   pinAdminCommunityPost,
   reviewAdminInteractionReport,
+  updateAdminCommunityPostSeo,
 } from "../api/client";
 import type {
   AdminAuditLogEntry,
@@ -40,6 +42,7 @@ import type {
   ModerateCommunityPostInput,
   ModerateInteractionCommentInput,
   ReviewInteractionReportInput,
+  UpdateCommunityPostSeoInput,
 } from "../api/types";
 import { useAuth } from "../components/AuthProvider";
 
@@ -68,6 +71,7 @@ const COMMENT_STATUS_META: Record<InteractionCommentStatus, { color: string; lab
 
 const COMMUNITY_POST_STATUS_META: Record<CommunityPostStatus, { color: string; label: string }> = {
   pending: { color: "gold", label: "待审" },
+  rejected: { color: "red", label: "已驳回" },
   published: { color: "green", label: "已发布" },
   hidden: { color: "orange", label: "已隐藏" },
   removed: { color: "default", label: "已删除" },
@@ -131,6 +135,10 @@ const InteractionReportsPage: React.FC = () => {
   const [postForm] = Form.useForm<ModerateCommunityPostInput>();
   const [postModerating, setPostModerating] = React.useState(false);
   const [activePost, setActivePost] = React.useState<AdminCommunityPostItem | null>(null);
+
+  const [seoModalOpen, setSeoModalOpen] = React.useState(false);
+  const [seoForm] = Form.useForm<UpdateCommunityPostSeoInput>();
+  const [seoSaving, setSeoSaving] = React.useState(false);
 
   const [auditModalOpen, setAuditModalOpen] = React.useState(false);
   const [auditTitle, setAuditTitle] = React.useState("审计记录");
@@ -248,6 +256,18 @@ const InteractionReportsPage: React.FC = () => {
     postForm.setFieldsValue({ status, reason: undefined });
   };
 
+  const openSeoModal = (post: AdminCommunityPostItem) => {
+    setActivePost(post);
+    seoForm.setFieldsValue({
+      seoTitle: post.seoTitle || "",
+      seoDescription: post.seoDescription || "",
+      seoKeywords: post.seoKeywords || [],
+      geoKeywords: post.geoKeywords || [],
+      searchIndexable: !!post.searchIndexable,
+    });
+    setSeoModalOpen(true);
+  };
+
   const openAuditModal = async (title: string, loader: () => Promise<{ items: AdminAuditLogEntry[] }>) => {
     setAuditTitle(title);
     setAuditRows([]);
@@ -343,6 +363,23 @@ const InteractionReportsPage: React.FC = () => {
       await refreshActiveTab();
     } catch (err: any) {
       message.error((pinned ? "置顶" : "取消置顶") + "失败：" + (err?.response?.data?.message || err?.message || "请稍后重试"));
+    }
+  };
+
+  const handleSeoSubmit = async () => {
+    if (!activePost) return;
+    const values = await seoForm.validateFields();
+    setSeoSaving(true);
+    try {
+      await updateAdminCommunityPostSeo(activePost.id, values);
+      message.success("圈子帖子 SEO/GEO 已保存");
+      setSeoModalOpen(false);
+      setActivePost(null);
+      await refreshActiveTab();
+    } catch (err: any) {
+      message.error("SEO/GEO 保存失败：" + (err?.response?.data?.message || err?.message || "请稍后重试"));
+    } finally {
+      setSeoSaving(false);
     }
   };
 
@@ -594,6 +631,9 @@ const InteractionReportsPage: React.FC = () => {
           ) : null}
           <Button size="small" onClick={() => void handlePinToggle(row, !row.isPinned)} disabled={!canReview}>
             {row.isPinned ? "取消置顶" : "置顶"}
+          </Button>
+          <Button size="small" onClick={() => openSeoModal(row)} disabled={!canReview}>
+            SEO/GEO
           </Button>
           <Button
             size="small"
@@ -927,12 +967,50 @@ const InteractionReportsPage: React.FC = () => {
           <Form.Item name="status" label="帖子状态" rules={[{ required: true, message: "请选择帖子状态" }]}>
             <Select>
               <Select.Option value="published">已发布</Select.Option>
+              <Select.Option value="rejected">已驳回</Select.Option>
               <Select.Option value="hidden">已隐藏</Select.Option>
               <Select.Option value="removed">已删除</Select.Option>
             </Select>
           </Form.Item>
           <Form.Item name="reason" label="处理原因">
             <TextArea rows={4} maxLength={500} placeholder="写明发布、隐藏、恢复或删除原因。" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="圈子帖子 SEO / GEO"
+        open={seoModalOpen}
+        onCancel={() => {
+          setSeoModalOpen(false);
+          setActivePost(null);
+        }}
+        onOk={() => void handleSeoSubmit()}
+        okText="保存"
+        confirmLoading={seoSaving}
+        destroyOnClose
+      >
+        <Form form={seoForm} layout="vertical" initialValues={{ searchIndexable: false }}>
+          <Alert
+            type="info"
+            showIcon
+            message="普通帖子默认不收录；只有已发布且人工确认适合公开搜索的帖子，才能开启搜索收录。"
+            style={{ marginBottom: 16 }}
+          />
+          <Form.Item name="seoTitle" label="SEO 标题" rules={[{ max: 120, message: "最多 120 个字符" }]}>
+            <Input maxLength={120} placeholder="留空时使用帖子正文摘要" />
+          </Form.Item>
+          <Form.Item name="seoDescription" label="SEO 描述" rules={[{ max: 300, message: "最多 300 个字符" }]}>
+            <TextArea rows={3} maxLength={300} placeholder="留空时使用帖子正文摘要" />
+          </Form.Item>
+          <Form.Item name="seoKeywords" label="SEO 关键词">
+            <Select mode="tags" tokenSeparators={[",", "，", "\n"]} placeholder="输入后按回车或逗号分隔，最多 20 项" />
+          </Form.Item>
+          <Form.Item name="geoKeywords" label="GEO 关键词">
+            <Select mode="tags" tokenSeparators={[",", "，", "\n"]} placeholder="用于生成式搜索理解，最多 20 项" />
+          </Form.Item>
+          <Form.Item name="searchIndexable" valuePropName="checked">
+            <Checkbox disabled={activePost?.status !== "published"}>允许搜索引擎收录该已发布帖子</Checkbox>
           </Form.Item>
         </Form>
       </Modal>

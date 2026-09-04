@@ -66,6 +66,18 @@
       items: [],
       details: {},
     },
+    community: {
+      loading: false,
+      loaded: false,
+      imageUploadEnabled: false,
+      items: [],
+      nextCursor: null,
+      detailCache: {},
+      myPostsLoading: false,
+      myPostsLoaded: false,
+      myPosts: [],
+      myPostsNextCursor: null,
+    },
     player: {
       contentId: "",
       video: null,
@@ -709,6 +721,9 @@
     if (params.get("view") === "article" && params.get("id")) {
       return { view: "article", id: params.get("id") || "", tab: "articles", fromTab: params.get("from") || "articles" };
     }
+    if (params.get("view") === "community" && params.get("id")) {
+      return { view: "community", id: params.get("id") || "", tab: "community", fromTab: params.get("from") || "community" };
+    }
     const tab = params.get("tab") || "home";
     return { view: "tab", id: "", tab: tab === "membership" ? "me" : tab, fromTab: tab };
   }
@@ -779,6 +794,19 @@
     params.set("id", slug);
     params.set("from", fromTab || "articles");
     window.location.hash = params.toString();
+  }
+
+  function setHashForCommunityDetail(id, fromTab) {
+    clearLandingQueryParams();
+    const params = new URLSearchParams();
+    params.set("view", "community");
+    params.set("id", id);
+    params.set("from", fromTab || "community");
+    window.location.hash = params.toString();
+  }
+
+  function openCommunityPost(id) {
+    setHashForCommunityDetail(id, "community");
   }
 
   function formatArticleDate(value) {
@@ -858,6 +886,347 @@
       }
     } catch (err) {
       host.innerHTML = '<div class="inline-state">文章加载失败：' + escapeHtml(apiText(err)) + "</div>";
+    }
+  }
+
+  function communityStatusMeta(status) {
+    return {
+      pending: { label: "审核中", className: "is-pending" },
+      rejected: { label: "已驳回", className: "is-rejected" },
+      published: { label: "已发布", className: "is-published" },
+      hidden: { label: "已隐藏", className: "is-hidden" },
+      removed: { label: "已删除", className: "is-removed" },
+    }[status] || { label: status || "未知", className: "" };
+  }
+
+  function parseCommunityTopics(raw) {
+    return String(raw || "")
+      .split(/[,\n，;；]+/)
+      .map(function (item) { return item.trim().replace(/^#+/g, ""); })
+      .filter(Boolean)
+      .slice(0, 5);
+  }
+
+  function formatCommunityDate(value) {
+    return formatArticleDate(value);
+  }
+
+  function renderCommunityAuthorAvatar(author) {
+    const name = author && author.displayName ? String(author.displayName) : "同";
+    if (author && author.photoUrl) {
+      return '<span class="community-author-avatar">' + imageTag(author.photoUrl, "", name, true) + "</span>";
+    }
+    return '<span class="community-author-avatar">' + escapeHtml(name.slice(0, 1).toUpperCase()) + "</span>";
+  }
+
+  async function digestSha256Base64(file) {
+    const buffer = await file.arrayBuffer();
+    const hash = await window.crypto.subtle.digest("SHA-256", buffer);
+    var binary = "";
+    Array.from(new Uint8Array(hash)).forEach(function (byte) {
+      binary += String.fromCharCode(byte);
+    });
+    return window.btoa(binary);
+  }
+
+  async function uploadCommunityImages(postId, files) {
+    const selected = Array.prototype.slice.call(files || []).slice(0, 9);
+    for (const file of selected) {
+      const init = await apiCall("/api/community/posts/" + encodeURIComponent(postId) + "/assets/upload-session", {
+        method: "POST",
+        body: JSON.stringify({
+          kind: "image",
+          filename: file.name || "image.jpg",
+          mimeType: file.type || "image/jpeg",
+          byteSize: file.size,
+          sha256: await digestSha256Base64(file),
+        }),
+      });
+      const uploadResp = await fetch(init.uploadUrl, {
+        method: "PUT",
+        headers: Object.assign({}, init.expectedHttpHeaders || {}),
+        body: file,
+      });
+      if (!uploadResp.ok) throw new Error("community_upload_failed");
+      await apiCall("/api/community/upload-sessions/" + encodeURIComponent(init.uploadSessionId) + "/complete", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+    }
+  }
+
+  async function loadCommunityFeed(nextCursor) {
+    if (state.community.loading) return;
+    state.community.loading = true;
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "10");
+      if (nextCursor) params.set("cursor", nextCursor);
+      const data = await apiCall("/api/community/posts?" + params.toString());
+      if (data && data.capabilities) state.community.imageUploadEnabled = !!data.capabilities.imageUploadEnabled;
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      state.community.items = nextCursor ? state.community.items.concat(items) : items;
+      state.community.nextCursor = data && data.nextCursor ? data.nextCursor : null;
+      state.community.loaded = true;
+      if ($("communityState")) $("communityState").textContent = items.length || nextCursor ? "" : "暂无已发布帖子。";
+    } catch (err) {
+      if ($("communityState")) $("communityState").textContent = "社区加载失败：" + apiText(err);
+    } finally {
+      state.community.loading = false;
+      renderCommunityFeed();
+    }
+  }
+
+  async function loadMyCommunityPosts(nextCursor) {
+    if (!state.session || !state.session.userId) {
+      showInlineMessage("登录后即可查看我的帖子。");
+      return;
+    }
+    if (state.community.myPostsLoading) return;
+    state.community.myPostsLoading = true;
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "10");
+      if (nextCursor) params.set("cursor", nextCursor);
+      const data = await apiCall("/api/community/me/posts?" + params.toString());
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      state.community.myPosts = nextCursor ? state.community.myPosts.concat(items) : items;
+      state.community.myPostsNextCursor = data && data.nextCursor ? data.nextCursor : null;
+      state.community.myPostsLoaded = true;
+      $("communityMyPostsSection").classList.remove("is-hidden");
+      $("communityMyPostsState").textContent = items.length || nextCursor ? "" : "你还没有发布过帖子。";
+    } catch (err) {
+      $("communityMyPostsSection").classList.remove("is-hidden");
+      $("communityMyPostsState").textContent = "我的帖子加载失败：" + apiText(err);
+    } finally {
+      state.community.myPostsLoading = false;
+      renderMyCommunityPosts();
+    }
+  }
+
+  function renderCommunityMedia(items, detailMode) {
+    const assets = Array.isArray(items) ? items.filter(Boolean) : [];
+    const imageAssets = assets.filter(function (item) { return item.kind === "image" && item.imageUrl; });
+    if (!imageAssets.length) return "";
+    const cls = "community-media-grid community-media-grid-count-" + imageAssets.length;
+    return '<div class="' + cls + '">' + imageAssets.map(function (asset) {
+      const imgClass = detailMode ? "community-detail-image" : "community-media-image";
+      return '<button class="community-media-tile" type="button" data-community-image="' + escapeHtml(asset.imageUrl) + '">' +
+        '<img class="' + imgClass + '" src="' + escapeHtml(asset.imageUrl) + '" alt="圈子图片" loading="lazy">' +
+        "</button>";
+    }).join("") + "</div>";
+  }
+
+  function renderCommunityCard(item, options) {
+    const statusMeta = communityStatusMeta(item.status);
+    const topics = (item.topics || []).slice(0, 5).map(function (topic) { return '<span class="community-topic-chip">#' + escapeHtml(topic) + "</span>"; }).join("");
+    const actionText = options && options.mine ? "查看审核详情" : "查看帖子";
+    const canEdit = !!(options && options.mine && (item.status === "pending" || item.status === "rejected"));
+    const canDelete = !!(options && options.mine && item.status !== "removed");
+    return '<article class="community-card">' +
+      '<div class="community-card-head">' +
+        '<div class="community-card-author">' +
+          renderCommunityAuthorAvatar(item.author || null) +
+          '<div><strong>' + escapeHtml(item.author && item.author.displayName ? item.author.displayName : "同频成员") + '</strong><div class="muted-copy">' + escapeHtml(formatCommunityDate(item.publishedAt || item.createdAt)) + '</div></div>' +
+        "</div>" +
+        '<span class="community-status-badge ' + statusMeta.className + '">' + escapeHtml(statusMeta.label) + "</span>" +
+      "</div>" +
+      (topics ? '<div class="community-card-topics">' + topics + "</div>" : "") +
+      '<p class="community-card-body">' + escapeHtml(item.summary || item.body || "") + "</p>" +
+      renderCommunityMedia(item.assets || [], false) +
+      (options && options.mine && item.moderationReason ? '<p class="muted-copy">审核说明：' + escapeHtml(item.moderationReason) + "</p>" : "") +
+      '<div class="community-card-actions"><div class="interaction-summary-copy"><strong>' + escapeHtml(item.reactionCount || 0) + '</strong><span>赞</span><strong>' + escapeHtml(item.commentCount || 0) + '</strong><span>评论</span></div><div class="community-card-action-buttons">' +
+      (canEdit ? '<button class="ghost-button" type="button" data-community-edit="' + escapeHtml(item.id) + '">编辑</button>' : "") +
+      (canDelete ? '<button class="ghost-button" type="button" data-community-delete="' + escapeHtml(item.id) + '">删除</button>' : "") +
+      '<button class="text-button" type="button" data-community-open="' + escapeHtml(item.id) + '">' + actionText + ' ›</button></div></div>' +
+    "</article>";
+  }
+
+  function renderCommunityFeed() {
+    const host = $("communityFeed");
+    const stateNode = $("communityState");
+    if (!host || !stateNode || !state.community.loaded) return;
+    stateNode.classList.toggle("is-hidden", state.community.items.length > 0);
+    stateNode.textContent = state.community.items.length ? "" : "暂无已发布帖子。";
+    host.innerHTML = state.community.items.map(function (item) { return renderCommunityCard(item, { mine: false }); }).join("");
+    $("communityLoadMoreButton").classList.toggle("is-hidden", !state.community.nextCursor);
+    host.querySelectorAll("[data-community-open]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        openCommunityPost(button.getAttribute("data-community-open"));
+      });
+    });
+  }
+
+  function renderMyCommunityPosts() {
+    const host = $("communityMyPostsList");
+    const stateNode = $("communityMyPostsState");
+    if (!host || !stateNode || !state.community.myPostsLoaded) return;
+    stateNode.classList.toggle("is-hidden", state.community.myPosts.length > 0);
+    stateNode.textContent = state.community.myPosts.length ? "" : "你还没有发布过帖子。";
+    host.innerHTML = state.community.myPosts.map(function (item) { return renderCommunityCard(item, { mine: true }); }).join("");
+    $("communityMyPostsLoadMoreButton").classList.toggle("is-hidden", !state.community.myPostsNextCursor);
+    host.querySelectorAll("[data-community-open]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        setHashForCommunityDetail(button.getAttribute("data-community-open"), "community");
+      });
+    });
+    host.querySelectorAll("[data-community-edit]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        const postId = button.getAttribute("data-community-edit") || "";
+        const post = state.community.myPosts.find(function (item) { return item.id === postId; });
+        if (post) openCommunityComposer(post);
+      });
+    });
+    host.querySelectorAll("[data-community-delete]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        deleteCommunityPost(button.getAttribute("data-community-delete") || "");
+      });
+    });
+  }
+
+  function resetCommunityComposer() {
+    $("communityComposerModal").dataset.editingPostId = "";
+    $("communityComposerBody").value = "";
+    $("communityComposerTopics").value = "";
+    $("communityComposerImages").value = "";
+    $("communityComposerImages").disabled = !state.community.imageUploadEnabled;
+    $("communityComposerFiles").textContent = "";
+    $("communityComposerHint").textContent = state.community.imageUploadEnabled
+      ? "首期开放图文，最多 9 张图片；提交后需审核。"
+      : "当前先开放文字帖子；图片上传正在进行对象存储验收。";
+    $("communityComposerCount").textContent = "0/2000";
+    $("communityComposerSubmit").textContent = "提交审核";
+  }
+
+  function openCommunityComposer(post) {
+    if (!state.session || !state.session.userId) {
+      showInlineMessage("登录后即可发布。");
+      return;
+    }
+    resetCommunityComposer();
+    if (post) {
+      $("communityComposerModal").dataset.editingPostId = post.id || "";
+      $("communityComposerBody").value = post.body || "";
+      $("communityComposerTopics").value = Array.isArray(post.topics) ? post.topics.join(", ") : "";
+      $("communityComposerImages").disabled = true;
+      $("communityComposerHint").textContent = "待审核或被驳回帖子可修改正文与话题，图片沿用当前草稿。";
+      $("communityComposerCount").textContent = String(($("communityComposerBody").value || "").length) + "/2000";
+      $("communityComposerSubmit").textContent = "保存修改";
+    }
+    $("communityComposerModal").classList.remove("is-hidden");
+    $("communityComposerBody").focus();
+  }
+
+  function closeCommunityComposer() {
+    $("communityComposerModal").classList.add("is-hidden");
+    resetCommunityComposer();
+  }
+
+  async function deleteCommunityPost(postId) {
+    if (!postId) return;
+    if (!window.confirm("确认删除这条帖子吗？删除后将从用户侧隐藏。")) return;
+    try {
+      await apiCall("/api/community/posts/" + encodeURIComponent(postId), {
+        method: "DELETE",
+        body: JSON.stringify({}),
+      });
+      delete state.community.detailCache[postId];
+      state.community.myPostsLoaded = false;
+      state.community.loaded = false;
+      if (state.route.view === "community" && state.route.id === postId) {
+        setHashForTab("community");
+      }
+      await loadCommunityFeed();
+      await loadMyCommunityPosts();
+      showInlineMessage("帖子已删除。");
+    } catch (err) {
+      showInlineMessage("删除失败：" + apiText(err));
+    }
+  }
+
+  async function submitCommunityPost() {
+    const body = $("communityComposerBody").value || "";
+    const topics = parseCommunityTopics($("communityComposerTopics").value || "");
+    const files = $("communityComposerImages").files;
+    const editingPostId = $("communityComposerModal").dataset.editingPostId || "";
+    if (!body.trim()) {
+      showInlineMessage("请输入正文后再提交。");
+      return;
+    }
+    if (topics.length < 1) {
+      showInlineMessage("请至少填写 1 个话题。");
+      return;
+    }
+    try {
+      if (editingPostId) {
+        await apiCall("/api/community/posts/" + encodeURIComponent(editingPostId), {
+          method: "PATCH",
+          body: JSON.stringify({ body: body, topics: topics }),
+        });
+      } else {
+        const created = await apiCall("/api/community/posts", {
+          method: "POST",
+          body: JSON.stringify({ body: body, topics: topics }),
+        });
+        const post = created && created.post ? created.post : null;
+        if (post && files && files.length) {
+          await uploadCommunityImages(post.id, files);
+        }
+      }
+      closeCommunityComposer();
+      showInlineMessage(editingPostId ? "待审核帖子已更新。" : "已提交审核，通过后将展示在社区中。");
+      state.community.myPostsLoaded = false;
+      state.community.loaded = false;
+      await loadCommunityFeed();
+      await loadMyCommunityPosts();
+    } catch (err) {
+      showInlineMessage("社区发布失败：" + apiText(err));
+    }
+  }
+
+  async function renderCommunityDetail(id) {
+    const host = $("communityDetailContent");
+    if (!host) return;
+    host.innerHTML = '<div class="inline-state">正在加载帖子…</div>';
+    try {
+      let item = state.community.detailCache[id];
+      if (!item) {
+        item = await apiCall("/api/community/posts/" + encodeURIComponent(id));
+        state.community.detailCache[id] = item;
+      }
+      if (state.route && state.route.view === "community" && state.route.id === id) {
+        $("headerTitle").textContent = item.title || "帖子详情";
+        $("headerSubtitle").textContent = item.summary || "社区帖子";
+      }
+      updatePageSeo(item.effectiveSeo || null);
+      const topics = (item.topics || []).map(function (topic) { return '<span class="community-topic-chip">#' + escapeHtml(topic) + "</span>"; }).join("");
+      host.innerHTML =
+        '<div class="community-detail-meta">' + (topics ? '<div class="community-detail-topics">' + topics + "</div>" : "") + '<span>' + escapeHtml(formatCommunityDate(item.publishedAt || item.createdAt)) + "</span></div>" +
+        '<h2>' + escapeHtml(item.title || "圈子帖子") + "</h2>" +
+        '<p class="community-detail-body">' + escapeHtml(item.body || item.summary || "") + "</p>" +
+        renderCommunityMedia(item.assets || [], true) +
+        (item.status === "published"
+          ? renderInteractionPanelShell("community", {
+              targetType: "circle_post",
+              targetId: item.id,
+              title: item.title || "圈子帖子",
+            })
+          : '<div class="inline-state">该帖子当前仅作者可见，等待审核结果。</div>');
+      if (item.status === "published") {
+        initializeInteractionPanel("community", {
+          targetType: "circle_post",
+          targetId: item.id,
+          title: item.title || "圈子帖子",
+        });
+      }
+      host.querySelectorAll("[data-community-image]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          const url = button.getAttribute("data-community-image");
+          if (url) window.open(url, "_blank", "noopener");
+        });
+      });
+    } catch (err) {
+      host.innerHTML = '<div class="inline-state">帖子加载失败：' + escapeHtml(apiText(err)) + "</div>";
     }
   }
 
@@ -2529,42 +2898,48 @@
     if (leavingDetail) detachActivePlayer("leave");
     state.route = routeState;
     if (routeState.categoryId) state.library.categoryId = routeState.categoryId;
-    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "article" ? "library" : (routeState.view === "history" ? "watch_history" : routeState.tab) });
+    if (routeState.view !== "detail") trackAnalytics("page_viewed", { pageName: routeState.view === "article" ? "library" : (routeState.view === "history" ? "watch_history" : routeState.view === "community" ? "community_detail" : routeState.tab) });
     const isDetail = routeState.view === "detail";
     const isArticle = routeState.view === "article";
+    const isCommunityDetail = routeState.view === "community";
     const isHistory = routeState.view === "history";
+    const isFocusView = isDetail || isArticle || isCommunityDetail || isHistory;
     const titleMap = {
       home: ["同频", ""],
       library: ["片库", "搜索、分类与筛选"],
+      community: ["社区", "浏览已发布帖子，图文发布先审核后公开"],
       articles: ["文章", "关于边界、沟通与亲密关系的中文导读"],
       me: ["我的", "资产、订单、频道入口与绑定"],
     };
-    const isHome = !isDetail && !isArticle && !isHistory && routeState.tab === "home";
+    const isHome = !isFocusView && routeState.tab === "home";
 
-    $("backButton").hidden = !(isDetail || isArticle || isHistory);
-    $("bottomNav").classList.toggle("is-hidden", isDetail || isArticle || isHistory);
+    $("backButton").hidden = !isFocusView;
+    $("bottomNav").classList.toggle("is-hidden", isFocusView);
     $("appHeader").classList.toggle("is-home", isHome);
     $("appHeader").classList.toggle("is-article-detail", isArticle);
-    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "" : (isHistory ? "观看历史" : titleMap[routeState.tab][0]));
+    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "" : (isCommunityDetail ? "帖子详情" : (isHistory ? "观看历史" : titleMap[routeState.tab][0])));
     $("headerSubtitle").textContent = isDetail
       ? "查看权益与购买方式"
       : isArticle
         ? ""
+      : isCommunityDetail
+        ? "社区帖子详情与互动"
       : isHistory
         ? "按最近播放时间排序，可删除单条或清空记录"
       : (isHome ? "真实表达，在理解与边界中被看见" : titleMap[routeState.tab][1]);
     $("headerSubtitle").hidden = isArticle;
     $("headerEyebrow").hidden = isHome || isArticle;
 
-    ["home", "library", "articles", "me"].forEach(function (tab) {
-      $(tab + "View").classList.toggle("is-hidden", isDetail || isArticle || isHistory || routeState.tab !== tab);
+    ["home", "library", "community", "articles", "me"].forEach(function (tab) {
+      $(tab + "View").classList.toggle("is-hidden", isFocusView || routeState.tab !== tab);
     });
     $("detailView").classList.toggle("is-hidden", !isDetail);
     $("articleDetailView").classList.toggle("is-hidden", !isArticle);
+    $("communityDetailView").classList.toggle("is-hidden", !isCommunityDetail);
     $("watchHistoryView").classList.toggle("is-hidden", !isHistory);
 
     document.querySelectorAll(".nav-item").forEach(function (button) {
-      button.classList.toggle("is-active", !isDetail && !isArticle && !isHistory && button.getAttribute("data-tab") === routeState.tab);
+      button.classList.toggle("is-active", !isFocusView && button.getAttribute("data-tab") === routeState.tab);
     });
 
     if (isDetail) {
@@ -2575,6 +2950,10 @@
       renderArticleDetail(routeState.id);
       return;
     }
+    if (isCommunityDetail) {
+      renderCommunityDetail(routeState.id);
+      return;
+    }
     if (isHistory) {
       if (!state.watch.loaded) loadWatchProgress(1, false);
       renderWatchHistory();
@@ -2582,6 +2961,11 @@
     }
 
     if (!state.library.loaded && routeState.tab === "library") loadLibrary();
+    if (routeState.tab === "community") {
+      if (!state.community.loaded) loadCommunityFeed();
+      else renderCommunityFeed();
+      if (state.community.myPostsLoaded) renderMyCommunityPosts();
+    }
     if (routeState.tab === "me" && routeState.packageId) {
       const target = (state.library.items || []).find(function (item) { return item.packageId === routeState.packageId; });
       if (target) {
@@ -2656,6 +3040,49 @@
     });
     $("jumpLibraryButton").addEventListener("click", function () {
       setHashForTab("library");
+    });
+    $("communityPublishButton").addEventListener("click", function () {
+      openCommunityComposer();
+    });
+    $("communityMyPostsButton").addEventListener("click", function () {
+      if (!state.session || !state.session.userId) {
+        showInlineMessage("登录后即可查看我的帖子。");
+        return;
+      }
+      $("communityMyPostsSection").classList.remove("is-hidden");
+      if (!state.community.myPostsLoaded) {
+        loadMyCommunityPosts();
+        return;
+      }
+      renderMyCommunityPosts();
+      $("communityMyPostsSection").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    $("communityLoadMoreButton").addEventListener("click", function () {
+      if (state.community.loading || !state.community.nextCursor) return;
+      loadCommunityFeed(state.community.nextCursor);
+    });
+    $("communityMyPostsLoadMoreButton").addEventListener("click", function () {
+      if (state.community.myPostsLoading || !state.community.myPostsNextCursor) return;
+      loadMyCommunityPosts(state.community.myPostsNextCursor);
+    });
+    $("communityComposerClose").addEventListener("click", closeCommunityComposer);
+    $("communityComposerSubmit").addEventListener("click", function () {
+      submitCommunityPost();
+    });
+    $("communityComposerModal").addEventListener("click", function (event) {
+      if (event.target === $("communityComposerModal")) closeCommunityComposer();
+    });
+    $("communityComposerBody").addEventListener("input", function (event) {
+      $("communityComposerCount").textContent = String((event.target.value || "").length) + "/2000";
+    });
+    $("communityComposerImages").addEventListener("change", function (event) {
+      const files = Array.prototype.slice.call(event.target.files || []);
+      if (files.length > 9) {
+        showInlineMessage("首期最多上传 9 张图片。");
+      }
+      $("communityComposerFiles").textContent = files.length
+        ? "已选择 " + Math.min(files.length, 9) + " 张：" + files.slice(0, 9).map(function (file) { return file.name; }).join("、")
+        : "";
     });
     $("meWatchHistoryButton").addEventListener("click", function () {
       setHashForHistory("me");

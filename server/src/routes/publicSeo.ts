@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { buildEffectiveSeo, type EffectiveSeo } from "../services/seoMetadata.js";
+import { loadCommunityPostForSeo } from "./communityPosts.js";
 
 type PublicContent = {
   id: string;
@@ -73,6 +74,8 @@ export function buildRobotsTxt(origin: string): string {
   return [
     "User-agent: *",
     "Allow: /discover",
+    "Allow: /community",
+    "Allow: /community/",
     "Allow: /content/",
     "Disallow: /api/",
     "Disallow: /admin/",
@@ -87,17 +90,28 @@ export function buildRobotsTxt(origin: string): string {
   ].join("\n");
 }
 
-export function buildSitemapXml(origin: string, entries: Array<{ id: string; updatedAt: Date }>): string {
+export function buildSitemapXml(
+  origin: string,
+  entries: Array<{ id: string; updatedAt: Date }>,
+  communityEntries: Array<{ id: string; updatedAt: Date }> = [],
+): string {
   const urls = entries.map((entry) => {
     const loc = `${origin}/content/${encodeURIComponent(entry.id)}`;
     const lastmod = entry.updatedAt.toISOString().slice(0, 10);
     return `  <url><loc>${escapeXml(loc)}</loc><lastmod>${lastmod}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>`;
   });
+  const communityUrls = communityEntries.map((entry) => {
+    const loc = `${origin}/community/${encodeURIComponent(entry.id)}`;
+    const lastmod = entry.updatedAt.toISOString().slice(0, 10);
+    return `  <url><loc>${escapeXml(loc)}</loc><lastmod>${lastmod}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>`;
+  });
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
     `  <url><loc>${escapeXml(`${origin}/discover`)}</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`,
+    `  <url><loc>${escapeXml(`${origin}/community`)}</loc><changefreq>daily</changefreq><priority>0.9</priority></url>`,
     ...urls,
+    ...communityUrls,
     "</urlset>",
     "",
   ].join("\n");
@@ -154,6 +168,97 @@ function publicContentPage(origin: string, content: PublicContent, effectiveSeo:
 </html>`;
 }
 
+function communityOpenUrl(postId: string): string {
+  return `/#view=community&id=${encodeURIComponent(postId)}&from=community`;
+}
+
+function makeCommunityImageSeoPath(postId: string, assetId: string): string {
+  return `/api/community/posts/${encodeURIComponent(postId)}/assets/${encodeURIComponent(assetId)}/image`;
+}
+
+function normalizeCommunityTitle(body: unknown): string {
+  return normalizeText(String(body || "").replace(/\s+/g, " "), 60) || "同频社区帖子";
+}
+
+function normalizeCommunityDescription(body: unknown): string {
+  return normalizeText(String(body || "").replace(/\s+/g, " "), 160) || "同频社区图文帖子";
+}
+
+function communityListPage(origin: string, effectiveSeo: EffectiveSeo) {
+  const title = normalizeText(effectiveSeo.title || "同频社区", 120) || "同频社区";
+  const description = normalizeText(effectiveSeo.description || "Samewave 社区图文流。", 300) || "Samewave 社区图文流。";
+  const keywords = normalizeKeywords([...effectiveSeo.keywords, ...effectiveSeo.geoKeywords]);
+  const canonical = `${origin}/community`;
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "CollectionPage",
+    name: title,
+    description,
+    url: canonical,
+    inLanguage: "zh-CN",
+    keywords: keywords.join(", ") || undefined,
+  };
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <meta name="description" content="${escapeHtml(description)}">
+  ${keywords.length ? `<meta name="keywords" content="${escapeHtml(keywords.join(", "))}">` : ""}
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="${escapeHtml(canonical)}">
+  <script type="application/ld+json">${jsonForScript(jsonLd)}</script>
+</head>
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><p><a href="/">进入 Samewave</a></p></main></body>
+</html>`;
+}
+
+function communityDetailPage(origin: string, post: any, input: {
+  title: string;
+  description: string;
+  keywords: string[];
+  geoKeywords: string[];
+  robots: string;
+  image: string | null;
+}) {
+  const canonical = `${origin}/community/${encodeURIComponent(post.id)}`;
+  const authorName = normalizeText(post.author?.displayName || "同频成员", 60) || "同频成员";
+  const keywords = normalizeKeywords([...input.keywords, ...input.geoKeywords]);
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "SocialMediaPosting",
+    headline: input.title,
+    articleBody: input.description,
+    datePublished: post.publishedAt ? new Date(post.publishedAt).toISOString() : undefined,
+    dateModified: post.updatedAt ? new Date(post.updatedAt).toISOString() : undefined,
+    author: { "@type": "Person", name: authorName },
+    image: input.image || undefined,
+    keywords: keywords.join(", ") || undefined,
+    url: canonical,
+    mainEntityOfPage: canonical,
+  };
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(input.title)}</title>
+  <meta name="description" content="${escapeHtml(input.description)}">
+  ${keywords.length ? `<meta name="keywords" content="${escapeHtml(keywords.join(", "))}">` : ""}
+  <meta name="robots" content="${escapeHtml(input.robots)}">
+  <link rel="canonical" href="${escapeHtml(canonical)}">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="${escapeHtml(input.title)}">
+  <meta property="og:description" content="${escapeHtml(input.description)}">
+  <meta property="og:url" content="${escapeHtml(canonical)}">
+  ${input.image ? `<meta property="og:image" content="${escapeHtml(input.image)}">` : ""}
+  <script type="application/ld+json">${jsonForScript(jsonLd)}</script>
+</head>
+<body><main><p>SAMEWAVE COMMUNITY</p><h1>${escapeHtml(input.title)}</h1><p>${escapeHtml(input.description)}</p><p><a href="${escapeHtml(communityOpenUrl(post.id))}">打开圈子详情</a></p></main></body>
+</html>`;
+}
+
 export default async function publicSeoRoutes(fastify: FastifyInstance) {
   const prisma = (fastify as any).prisma;
   const origin = resolvePublicWebOrigin(process.env.PUBLIC_WEB_ORIGIN);
@@ -163,13 +268,21 @@ export default async function publicSeoRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get("/sitemap.xml", async (_req, reply) => {
-    const entries = await prisma.content.findMany({
-      where: { status: "published", accessType: "public" },
-      select: { id: true, updatedAt: true },
-      orderBy: { updatedAt: "desc" },
-      take: 45000,
-    });
-    return reply.type("application/xml; charset=utf-8").header("cache-control", "public, max-age=3600").send(buildSitemapXml(origin, entries));
+    const [entries, communityEntries] = await Promise.all([
+      prisma.content.findMany({
+        where: { status: "published", accessType: "public" },
+        select: { id: true, updatedAt: true },
+        orderBy: { updatedAt: "desc" },
+        take: 45000,
+      }),
+      prisma.communityPost.findMany({
+        where: { status: "published", searchIndexable: true, deletedAt: null },
+        select: { id: true, updatedAt: true },
+        orderBy: { updatedAt: "desc" },
+        take: 45000,
+      }).catch(() => []),
+    ]);
+    return reply.type("application/xml; charset=utf-8").header("cache-control", "public, max-age=3600").send(buildSitemapXml(origin, entries, communityEntries));
   });
 
   fastify.get("/discover", async (_req, reply) => {
@@ -180,6 +293,19 @@ export default async function publicSeoRoutes(fastify: FastifyInstance) {
     const jsonLd = { "@context": "https://schema.org", "@type": "WebSite", name: title, description, url: `${origin}/discover`, keywords: keywords.join(", ") || undefined };
     const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><meta name="description" content="${escapeHtml(description)}"><meta name="robots" content="index,follow"><link rel="canonical" href="${escapeHtml(`${origin}/discover`)}"><script type="application/ld+json">${jsonForScript(jsonLd)}</script></head><body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(description)}</p><p><a href="/">进入 Samewave</a></p></main></body></html>`;
     return reply.type("text/html; charset=utf-8").header("cache-control", "public, max-age=300").send(html);
+  });
+
+  fastify.get("/community", async (_req, reply) => {
+    const metadata = await prisma.platformMetadata.findUnique({ where: { id: "default" } }).catch(() => null);
+    const effectiveSeo = buildEffectiveSeo({
+      platformSeoTitle: metadata?.seoTitle || "同频社区",
+      platformSeoDescription: metadata?.seoDescription || "Samewave 社区图文流。",
+      platformSeoKeywords: metadata?.seoKeywords,
+      platformGeoKeywords: metadata?.geoKeywords,
+      fallbackTitle: "同频社区",
+      fallbackDescription: "Samewave 社区图文流。",
+    });
+    return reply.type("text/html; charset=utf-8").header("cache-control", "public, max-age=300").send(communityListPage(origin, effectiveSeo));
   });
 
   fastify.get<{ Params: { id: string } }>("/content/:id", async (req, reply) => {
@@ -204,5 +330,41 @@ export default async function publicSeoRoutes(fastify: FastifyInstance) {
       platformGeoKeywords: metadata?.geoKeywords,
     });
     return reply.type("text/html; charset=utf-8").header("cache-control", "public, max-age=300").send(publicContentPage(origin, content, effectiveSeo));
+  });
+
+  fastify.get<{ Params: { id: string } }>("/community/:id", async (req, reply) => {
+    const [post, metadata] = await Promise.all([
+      loadCommunityPostForSeo(prisma, req.params.id),
+      prisma.platformMetadata.findUnique({ where: { id: "default" } }).catch(() => null),
+    ]);
+    if (!post || post.status !== "published" || post.deletedAt) {
+      return reply.status(404).type("text/html; charset=utf-8").send("<!doctype html><title>Not found</title>");
+    }
+    const title = normalizeText(post.seoTitle || normalizeCommunityTitle(post.body), 120) || "同频社区帖子";
+    const description = normalizeText(post.seoDescription || normalizeCommunityDescription(post.body), 300) || "同频社区图文帖子";
+    const effectiveSeo = buildEffectiveSeo({
+      contentSeoTitle: post.seoTitle,
+      contentSeoDescription: post.seoDescription,
+      contentSeoKeywords: Array.isArray(post.seoKeywords) && post.seoKeywords.length ? post.seoKeywords : post.topics || [],
+      contentGeoKeywords: post.geoKeywords,
+      fallbackTitle: title,
+      fallbackDescription: description,
+      platformSeoTitle: metadata?.seoTitle,
+      platformSeoDescription: metadata?.seoDescription,
+      platformSeoKeywords: metadata?.seoKeywords,
+      platformGeoKeywords: metadata?.geoKeywords,
+    });
+    const imageAsset = Array.isArray(post.assets)
+      ? post.assets.find((asset: any) => asset.kind === "image" && asset.thumbnailObjectKey && asset.moderationStatus === "approved")
+      : null;
+    const image = imageAsset ? `${origin}${makeCommunityImageSeoPath(post.id, imageAsset.id)}` : null;
+    return reply.type("text/html; charset=utf-8").header("cache-control", "public, max-age=300").send(communityDetailPage(origin, post, {
+      title: effectiveSeo.title || title,
+      description: effectiveSeo.description || description,
+      keywords: effectiveSeo.keywords.length > 0 ? effectiveSeo.keywords : normalizeKeywords(post.topics || []),
+      geoKeywords: effectiveSeo.geoKeywords,
+      robots: post.searchIndexable ? "index,follow" : "noindex,follow",
+      image,
+    }));
   });
 }

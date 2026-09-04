@@ -96,6 +96,7 @@ enum InteractionReportStatus {
 
 enum CommunityPostStatus {
   pending
+  rejected
   published
   hidden
   removed
@@ -704,6 +705,11 @@ model CommunityPost {
   authorId         String                  @map("author_id")
   body             String
   topics           String[]                @default([])
+  seoTitle         String?                 @map("seo_title") @db.VarChar(120)
+  seoDescription   String?                 @map("seo_description") @db.VarChar(300)
+  seoKeywords      String[]                @default([]) @map("seo_keywords")
+  geoKeywords      String[]                @default([]) @map("geo_keywords")
+  searchIndexable  Boolean                 @default(false) @map("search_indexable")
   status           CommunityPostStatus     @default(pending)
   visibility       CommunityPostVisibility @default(public)
   mediaCount       Int                     @default(0) @map("media_count")

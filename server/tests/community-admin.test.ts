@@ -111,6 +111,7 @@ test("community post admin queue exposes safe media summaries, supports publish 
         ordinal: 0,
         kind: "image",
         objectKey: `community/posts/${post.id}/images/${imageAssetId}/original.webp`,
+        thumbnailObjectKey: `community/posts/${post.id}/images/${imageAssetId}/thumb.jpg`,
         moderationStatus: "approved",
         transcodeStatus: "ready",
         width: 1080,
@@ -160,6 +161,29 @@ test("community post admin queue exposes safe media summaries, supports publish 
       payload: { pinned: true, reason: "测试置顶" },
     });
     assert.equal(pinResp.statusCode, 200, pinResp.body);
+
+    const seoResp = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/community/posts/${encodeURIComponent(post.id)}/seo`,
+      headers: { cookie: adminCookie, "Content-Type": "application/json" },
+      payload: {
+        seoTitle: "同频社区：边界沟通经验",
+        seoDescription: "一条经人工审核的圈子图文，用于公开搜索展示。",
+        seoKeywords: ["同频", "沟通", "边界"],
+        geoKeywords: ["成人沟通", "边界协商"],
+        searchIndexable: true,
+      },
+    });
+    assert.equal(seoResp.statusCode, 200, seoResp.body);
+    assert.equal((seoResp.json() as any).post.searchIndexable, true);
+
+    const seoAuditResp = await app.inject({
+      method: "GET",
+      url: `/api/admin/community/posts/${encodeURIComponent(post.id)}/audit-logs`,
+      headers: { cookie: adminCookie },
+    });
+    assert.equal(seoAuditResp.statusCode, 200, seoAuditResp.body);
+    assert.ok(((seoAuditResp.json() as any).items || []).some((item: any) => item.action === "community.post.seo.update"));
 
     const reportListResp = await app.inject({
       method: "GET",
@@ -285,6 +309,72 @@ test("community post publish rejects invalid video storage prefix or queue and h
     });
     assert.equal(afterRestore.statusCode, 200, afterRestore.body);
     assert.equal((afterRestore.json() as any).items.length, 1);
+  } finally {
+    await app.close();
+  }
+});
+
+test("community post SEO cannot enable indexing before the post is published", { concurrency: false }, async () => {
+  const app = await createApp(prisma);
+  try {
+    const author = await createUser(prisma, "圈子作者 SEO");
+    const adminCookie = await loginAdmin(app, "customer_service");
+    const post = await prisma.communityPost.create({
+      data: {
+        id: `community-seo-${randomUUID().slice(0, 8)}`,
+        authorId: author.id,
+        body: "仍在审核中的帖子不能进入搜索索引。",
+        topics: ["审核"],
+        status: "pending",
+      },
+    });
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/community/posts/${encodeURIComponent(post.id)}/seo`,
+      headers: { cookie: adminCookie, "Content-Type": "application/json" },
+      payload: { searchIndexable: true, seoKeywords: ["审核"] },
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal((response.json() as any).error, "community_post_not_published");
+  } finally {
+    await app.close();
+  }
+});
+
+test("community post publish requires an image thumbnail before approving image media", { concurrency: false }, async () => {
+  const app = await createApp(prisma);
+  try {
+    const author = await createUser(prisma, "圈子图片作者");
+    const adminCookie = await loginAdmin(app, "customer_service");
+    const post = await prisma.communityPost.create({
+      data: {
+        id: `community-image-${randomUUID().slice(0, 8)}`,
+        authorId: author.id,
+        body: "一条尚未生成缩略图的圈子图片帖子。",
+        topics: ["图文"],
+        status: "pending",
+        mediaCount: 1,
+      },
+    });
+    const assetId = `community-image-asset-${randomUUID().slice(0, 8)}`;
+    await prisma.communityPostAsset.create({
+      data: {
+        id: assetId,
+        postId: post.id,
+        ordinal: 0,
+        kind: "image",
+        objectKey: `community/posts/${post.id}/images/${assetId}/source.jpg`,
+        moderationStatus: "pending",
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/admin/community/posts/${encodeURIComponent(post.id)}/moderate`,
+      headers: { cookie: adminCookie, "Content-Type": "application/json" },
+      payload: { status: "published" },
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal((response.json() as any).error, "community_image_thumbnail_missing");
   } finally {
     await app.close();
   }

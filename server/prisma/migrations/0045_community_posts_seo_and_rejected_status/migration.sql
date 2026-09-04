@@ -1,0 +1,8 @@
+ALTER TYPE "CommunityPostStatus" ADD VALUE IF NOT EXISTS 'rejected';
+
+ALTER TABLE "community_posts"
+  ADD COLUMN IF NOT EXISTS "seo_title" VARCHAR(120),
+  ADD COLUMN IF NOT EXISTS "seo_description" VARCHAR(300),
+  ADD COLUMN IF NOT EXISTS "seo_keywords" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  ADD COLUMN IF NOT EXISTS "geo_keywords" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  ADD COLUMN IF NOT EXISTS "search_indexable" BOOLEAN NOT NULL DEFAULT false;

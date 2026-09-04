@@ -94,6 +94,7 @@ import type {
   AdminCommunityPostListFilter,
   ModerateCommunityPostInput,
   PinCommunityPostInput,
+  UpdateCommunityPostSeoInput,
 } from "./types";
 
 const http = axios.create({
@@ -801,6 +802,14 @@ export async function pinAdminCommunityPost(
   input: PinCommunityPostInput,
 ): Promise<{ ok: true; post: any }> {
   const res = await http.post(`/admin/community/posts/${encodeURIComponent(id)}/pin`, input);
+  return res.data;
+}
+
+export async function updateAdminCommunityPostSeo(
+  id: string,
+  input: UpdateCommunityPostSeoInput,
+): Promise<{ ok: true; post: any }> {
+  const res = await http.patch(`/admin/community/posts/${encodeURIComponent(id)}/seo`, input);
   return res.data;
 }
 
