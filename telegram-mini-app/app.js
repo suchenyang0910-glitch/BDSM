@@ -1027,7 +1027,10 @@
       '<div class="community-card-head">' +
         '<div class="community-card-author">' +
           renderCommunityAuthorAvatar(item.author || null) +
-          '<div><strong>' + escapeHtml(item.author && item.author.displayName ? item.author.displayName : "同频成员") + '</strong><div class="muted-copy">' + escapeHtml(formatCommunityDate(item.publishedAt || item.createdAt)) + '</div></div>' +
+          '<div><strong>' + escapeHtml(item.author && item.author.displayName ? item.author.displayName : "同频成员") + '</strong>' +
+          (item.isOfficial ? '<span class="community-author-label">官方</span>' : '') +
+          (item.aiAssisted ? '<span class="community-author-label">AI 协助</span>' : '') +
+          '<div class="muted-copy">' + escapeHtml(formatCommunityDate(item.publishedAt || item.createdAt)) + '</div></div>' +
         "</div>" +
         '<span class="community-status-badge ' + statusMeta.className + '">' + escapeHtml(statusMeta.label) + "</span>" +
       "</div>" +

@@ -537,6 +537,8 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         seoKeywords: item.seoKeywords || [],
         geoKeywords: item.geoKeywords || [],
         searchIndexable: !!item.searchIndexable,
+        isOfficial: !!item.isOfficial,
+        aiAssisted: !!item.aiAssisted,
         isPinned: !!item.isPinned,
         pinnedAt: item.pinnedAt ? item.pinnedAt.toISOString() : null,
         publishedAt: item.publishedAt ? item.publishedAt.toISOString() : null,

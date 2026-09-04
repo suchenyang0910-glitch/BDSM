@@ -155,7 +155,10 @@ test("community posts list stays public-only while authors can inspect their own
     });
     const publishedList = await app.inject({ method: "GET", url: "/api/community/posts" });
     assert.equal(publishedList.statusCode, 200, publishedList.body);
-    assert.equal((publishedList.json() as any).items.some((item: any) => item.id === postId), true);
+    const listedPost = (publishedList.json() as any).items.find((item: any) => item.id === postId);
+    assert.ok(listedPost);
+    assert.equal(listedPost.isOfficial, false);
+    assert.equal(listedPost.aiAssisted, false);
   } finally {
     await app.close();
   }

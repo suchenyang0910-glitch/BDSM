@@ -1,0 +1,3 @@
+ALTER TABLE "community_posts"
+  ADD COLUMN IF NOT EXISTS "is_official" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS "ai_assisted" BOOLEAN NOT NULL DEFAULT false;

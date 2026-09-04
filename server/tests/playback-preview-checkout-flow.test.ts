@@ -139,10 +139,10 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
     readFile(path.join(ROOT, "telegram-mini-app/index.html"), "utf8"),
   ]);
 
-  assert.match(h5Html, /styles\.css\?v=20260904-community-controlled-open-1/);
-  assert.match(h5Html, /app\.js\?v=20260904-community-controlled-open-1/);
-  assert.match(miniAppHtml, /styles\.css\?v=20260904-community-controlled-open-1/);
-  assert.match(miniAppHtml, /app\.js\?v=20260904-community-controlled-open-1/);
+  assert.match(h5Html, /styles\.css\?v=20260904-community-controlled-open-2/);
+  assert.match(h5Html, /app\.js\?v=20260904-community-controlled-open-2/);
+  assert.match(miniAppHtml, /styles\.css\?v=20260904-community-controlled-open-2/);
+  assert.match(miniAppHtml, /app\.js\?v=20260904-community-controlled-open-2/);
 });
 
 test("community tab, detail hash, and composer shell exist in H5 and Mini App", async () => {
@@ -158,6 +158,7 @@ test("community tab, detail hash, and composer shell exist in H5 and Mini App", 
     assert.match(source, /function setHashForCommunityDetail\(id, fromTab\)/);
     assert.match(source, /function renderCommunityDetail\(id\)/);
     assert.match(source, /targetType:\s*"circle_post"/);
+    assert.match(source, /community-author-label/);
   }
 
   for (const html of [h5Html, miniHtml]) {

@@ -710,6 +710,8 @@ model CommunityPost {
   seoKeywords      String[]                @default([]) @map("seo_keywords")
   geoKeywords      String[]                @default([]) @map("geo_keywords")
   searchIndexable  Boolean                 @default(false) @map("search_indexable")
+  isOfficial       Boolean                 @default(false) @map("is_official")
+  aiAssisted       Boolean                 @default(false) @map("ai_assisted")
   status           CommunityPostStatus     @default(pending)
   visibility       CommunityPostVisibility @default(public)
   mediaCount       Int                     @default(0) @map("media_count")

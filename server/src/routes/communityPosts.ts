@@ -191,6 +191,8 @@ async function serializeCommunityPost(row: any, options?: { viewerUserId?: strin
     reportCount: row.reportCount || 0,
     moderationReason: hiddenForPublic && !isOwner ? null : (options?.includeRejectedReason ? row.moderationReason || null : null),
     isPinned: !!row.isPinned,
+    isOfficial: !!row.isOfficial,
+    aiAssisted: !!row.aiAssisted,
     searchIndexable: !!row.searchIndexable,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,

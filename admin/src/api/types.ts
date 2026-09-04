@@ -1590,6 +1590,8 @@ export type AdminCommunityPostItem = {
   seoKeywords: string[];
   geoKeywords: string[];
   searchIndexable: boolean;
+  isOfficial: boolean;
+  aiAssisted: boolean;
   isPinned: boolean;
   pinnedAt: string | null;
   publishedAt: string | null;
