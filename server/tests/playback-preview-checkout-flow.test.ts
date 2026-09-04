@@ -157,9 +157,9 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
   ]);
 
   assert.match(h5Html, /styles\.css\?v=20260904-community-controlled-open-2/);
-  assert.match(h5Html, /app\.js\?v=20260904-article-updated-sort-1/);
+  assert.match(h5Html, /app\.js\?v=20260904-community-tabs-1/);
   assert.match(miniAppHtml, /styles\.css\?v=20260904-community-controlled-open-2/);
-  assert.match(miniAppHtml, /app\.js\?v=20260904-article-updated-sort-1/);
+  assert.match(miniAppHtml, /app\.js\?v=20260904-community-tabs-1/);
 });
 
 test("community tab, detail hash, and composer shell exist in H5 and Mini App", async () => {
@@ -185,6 +185,26 @@ test("community tab, detail hash, and composer shell exist in H5 and Mini App", 
     assert.match(html, /data-tab="community"/);
     assert.match(html, /id="communityMyPostsButton"/);
     assert.match(html, /id="communityPublishButton"/);
+  }
+});
+
+test("community owns the article tab while mobile navigation remains a single four-item row", async () => {
+  const [h5App, h5Html, miniApp, miniHtml] = await Promise.all([
+    readFile(path.join(ROOT, "h5/app.js"), "utf8"),
+    readFile(path.join(ROOT, "h5/index.html"), "utf8"),
+    readFile(path.join(ROOT, "telegram-mini-app/app.js"), "utf8"),
+    readFile(path.join(ROOT, "telegram-mini-app/index.html"), "utf8"),
+  ]);
+  for (const source of [h5App, miniApp]) {
+    assert.match(source, /communitySection: articleTab \|\| params\.get\("section"\) === "articles" \? "articles" : "posts"/);
+    assert.match(source, /const isCommunityArticles = routeState\.tab === "community" && routeState\.communitySection === "articles"/);
+  }
+  for (const html of [h5Html, miniHtml]) {
+    assert.match(html, /id="communitySectionTabs"/);
+    assert.match(html, /data-community-section="posts"/);
+    assert.match(html, /data-community-section="articles"/);
+    assert.doesNotMatch(html, /<button class="nav-item" data-tab="articles"/);
+    assert.equal((html.match(/<button class="nav-item/g) || []).length, 4);
   }
 });
 

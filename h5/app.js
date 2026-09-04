@@ -876,7 +876,7 @@
     }
     const queryArticle = queryParams.get("article");
     if (queryArticle) {
-      return { view: "article", id: queryArticle, tab: "articles", fromTab: "articles" };
+      return { view: "article", id: queryArticle, tab: "community", fromTab: "community", communitySection: "articles" };
     }
     const raw = String(window.location.hash || "").replace(/^#/, "");
     const params = new URLSearchParams(raw);
@@ -900,19 +900,23 @@
       };
     }
     if (params.get("view") === "article" && params.get("id")) {
-      return { view: "article", id: params.get("id") || "", tab: "articles", fromTab: params.get("from") || "articles" };
+      return { view: "article", id: params.get("id") || "", tab: "community", fromTab: params.get("from") || "community", communitySection: "articles" };
     }
     if (params.get("view") === "community" && params.get("id")) {
       return { view: "community", id: params.get("id") || "", tab: "community", fromTab: params.get("from") || "community" };
     }
-    const tab = params.get("tab") || "home";
-    return { view: "tab", id: "", tab: tab === "membership" ? "me" : tab, fromTab: tab, categoryId: params.get("categoryId") || "" };
+    const rawTab = params.get("tab") || "home";
+    const articleTab = rawTab === "articles";
+    const tab = articleTab ? "community" : (rawTab === "membership" ? "me" : rawTab);
+    return { view: "tab", id: "", tab: tab, fromTab: articleTab ? "community" : rawTab, categoryId: params.get("categoryId") || "", communitySection: articleTab || params.get("section") === "articles" ? "articles" : "posts" };
   }
 
   function setHashForTab(tab, categoryId) {
     clearLandingQueryParams();
     const params = new URLSearchParams();
-    params.set("tab", tab);
+    const articleTab = tab === "articles";
+    params.set("tab", articleTab ? "community" : tab);
+    if (articleTab) params.set("section", "articles");
     if (tab === "library" && categoryId && categoryId !== "all") params.set("categoryId", categoryId);
     window.location.hash = params.toString();
   }
@@ -931,12 +935,12 @@
     const params = new URLSearchParams();
     params.set("view", "article");
     params.set("id", slug);
-    params.set("from", fromTab || "articles");
+    params.set("from", fromTab || "community");
     window.location.hash = params.toString();
   }
 
   function openArticle(slug) {
-    setHashForArticle(slug, "articles");
+    setHashForArticle(slug, "community");
   }
 
   function setHashForCommunityDetail(id, fromTab) {
@@ -3754,7 +3758,6 @@
       home: ["同频", "免费试看，解锁后继续观看"],
       library: ["片库", "按标题、简介与标签查找内容"],
       community: ["社区", "浏览已发布帖子，图文发布先审核后公开"],
-      articles: ["文章", "关于边界、沟通与亲密关系的中文导读"],
       me: ["我的", "查看权益、订单和继续观看记录"],
     };
     const isHome = !isFocusView && routeState.tab === "home";
@@ -3763,7 +3766,8 @@
     $("bottomNav").classList.toggle("is-hidden", isFocusView);
     $("appHeader").classList.toggle("is-home", isHome);
     $("appHeader").classList.toggle("is-article-detail", isArticle);
-    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "" : (isCommunityDetail ? "帖子详情" : (isHistory ? "观看历史" : (isWallet ? "支付与账单" : titleMap[routeState.tab][0]))));
+    const isCommunityArticles = routeState.tab === "community" && routeState.communitySection === "articles";
+    $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "" : (isCommunityDetail ? "帖子详情" : (isHistory ? "观看历史" : (isWallet ? "支付与账单" : (isCommunityArticles ? "文章" : titleMap[routeState.tab][0])))));
     $("headerSubtitle").textContent = isDetail
       ? "试看后可直接解锁完整内容"
       : isArticle
@@ -3774,12 +3778,17 @@
         ? "按最近播放时间排序，可删除单条或清空记录"
       : isWallet
         ? "查看会员状态、订单与支付记录"
-        : titleMap[routeState.tab][1];
+        : (isCommunityArticles ? "关于边界、沟通与亲密关系的中文导读" : titleMap[routeState.tab][1]);
     $("headerSubtitle").hidden = isArticle;
     $("headerEyebrow").hidden = isHome || isArticle;
 
-    ["home", "library", "community", "articles", "me"].forEach(function (tab) {
+    ["home", "library", "community", "me"].forEach(function (tab) {
       $(tab + "View").classList.toggle("is-hidden", isFocusView || routeState.tab !== tab);
+    });
+    $("articlesView").classList.toggle("is-hidden", isFocusView || routeState.tab !== "community" || !isCommunityArticles);
+    $("communityPostsPanel").classList.toggle("is-hidden", isCommunityArticles);
+    document.querySelectorAll("[data-community-section]").forEach(function (button) {
+      button.classList.toggle("is-active", button.getAttribute("data-community-section") === (isCommunityArticles ? "articles" : "posts"));
     });
     $("detailView").classList.toggle("is-hidden", !isDetail);
     $("articleDetailView").classList.toggle("is-hidden", !isArticle);
@@ -3825,11 +3834,11 @@
         return;
       }
     }
-    if (routeState.tab === "articles") {
+    if (isCommunityArticles) {
       loadArticles();
       renderArticles();
     }
-    if (routeState.tab === "community") {
+    if (routeState.tab === "community" && !isCommunityArticles) {
       if (!state.community.loaded) loadCommunityFeed();
       else renderCommunityFeed();
       if (state.community.myPostsLoaded) renderMyCommunityPosts();
@@ -3922,6 +3931,11 @@
     $("jumpPopularLibraryButton").addEventListener("click", function () { state.library.categoryId = "all"; setHashForTab("library"); });
     $("communityPublishButton").addEventListener("click", function () {
       openCommunityComposer();
+    });
+    document.querySelectorAll("[data-community-section]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        setHashForTab(button.getAttribute("data-community-section") === "articles" ? "articles" : "community");
+      });
     });
     $("communityMyPostsButton").addEventListener("click", function () {
       if (!state.session || !state.session.userId) {

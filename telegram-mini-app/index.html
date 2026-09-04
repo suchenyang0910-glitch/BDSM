@@ -121,16 +121,22 @@
               </div>
             </div>
             <p class="muted-copy">浏览已发布帖子；发布后的图文会先进入审核。</p>
+            <div id="communitySectionTabs" class="segment community-section-tabs" role="tablist" aria-label="社区内容">
+              <button class="segment-button is-active" type="button" data-community-section="posts">社区</button>
+              <button class="segment-button" type="button" data-community-section="articles">文章</button>
+            </div>
           </div>
-          <div id="communityState" class="inline-state">正在加载社区…</div>
-          <div id="communityFeed" class="stack-list"></div>
-          <button id="communityLoadMoreButton" class="ghost-button is-hidden" type="button">加载更多</button>
-          <section id="communityMyPostsSection" class="section-block is-hidden">
-            <div class="section-head"><div><p class="eyebrow">MY POSTS</p><h3>我的帖子</h3></div></div>
-            <div id="communityMyPostsState" class="inline-state">正在加载我的帖子…</div>
-            <div id="communityMyPostsList" class="stack-list"></div>
-            <button id="communityMyPostsLoadMoreButton" class="ghost-button is-hidden" type="button">加载更多</button>
-          </section>
+          <div id="communityPostsPanel">
+            <div id="communityState" class="inline-state">正在加载社区…</div>
+            <div id="communityFeed" class="stack-list"></div>
+            <button id="communityLoadMoreButton" class="ghost-button is-hidden" type="button">加载更多</button>
+            <section id="communityMyPostsSection" class="section-block is-hidden">
+              <div class="section-head"><div><p class="eyebrow">MY POSTS</p><h3>我的帖子</h3></div></div>
+              <div id="communityMyPostsState" class="inline-state">正在加载我的帖子…</div>
+              <div id="communityMyPostsList" class="stack-list"></div>
+              <button id="communityMyPostsLoadMoreButton" class="ghost-button is-hidden" type="button">加载更多</button>
+            </section>
+          </div>
         </section>
 
         <section id="articlesView" class="tab-view is-hidden">
@@ -277,11 +283,6 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18c1.2-3.3 3.7-5 7.5-5s6.3 1.7 7.5 5"></path><circle cx="12" cy="8" r="3.5"></circle></svg>
           <span>社区</span>
         </button>
-        <button class="nav-item" data-tab="articles" type="button">
-          <span class="nav-indicator"></span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19V9.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2V19"></path><path d="M9 7V5a3 3 0 0 1 6 0v2"></path><path d="M8 12h8"></path></svg>
-          <span>文章</span>
-        </button>
         <button class="nav-item" data-tab="me" type="button">
           <span class="nav-indicator"></span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M5 20a7 7 0 0 1 14 0"></path></svg>
@@ -331,6 +332,6 @@
       </article>
     </template>
 
-  <script src="./app.js?v=20260904-article-updated-sort-1"></script>
+  <script src="./app.js?v=20260904-community-tabs-1"></script>
   </body>
 </html>
