@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { getS3Client, requireObjectStorageEnv } from "../services/objectStorage.js";
+import { getS3Client, requireObjectStorageEnv } from "../src/services/objectStorage.js";
 
 const CONFIRM_FLAG = "--confirm-community-object-storage";
 
