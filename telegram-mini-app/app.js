@@ -2946,6 +2946,7 @@
       $(tab + "View").classList.toggle("is-hidden", isFocusView || routeState.tab !== tab);
     });
     $("articlesView").classList.toggle("is-hidden", isFocusView || routeState.tab !== "community" || !isCommunityArticles);
+    $("communityPostsToolbar").classList.toggle("is-hidden", isCommunityArticles);
     $("communityPostsPanel").classList.toggle("is-hidden", isCommunityArticles);
     document.querySelectorAll("[data-community-section]").forEach(function (button) {
       button.classList.toggle("is-active", button.getAttribute("data-community-section") === (isCommunityArticles ? "articles" : "posts"));

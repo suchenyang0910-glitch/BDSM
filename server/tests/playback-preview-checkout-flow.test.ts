@@ -157,9 +157,9 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
   ]);
 
   assert.match(h5Html, /styles\.css\?v=20260905-community-header-tabs-1/);
-  assert.match(h5Html, /app\.js\?v=20260905-community-header-tabs-1/);
+  assert.match(h5Html, /app\.js\?v=20260905-community-header-tabs-2/);
   assert.match(miniAppHtml, /styles\.css\?v=20260905-community-header-tabs-1/);
-  assert.match(miniAppHtml, /app\.js\?v=20260905-community-header-tabs-1/);
+  assert.match(miniAppHtml, /app\.js\?v=20260905-community-header-tabs-2/);
 });
 
 test("community tab, detail hash, and composer shell exist in H5 and Mini App", async () => {
@@ -201,9 +201,11 @@ test("community and articles are peer header tabs while mobile navigation remain
     assert.match(source, /const isCommunityTopLevel = !isFocusView && routeState\.tab === "community"/);
     assert.match(source, /\$\("headerTitle"\)\.hidden = isCommunityTopLevel;/);
     assert.match(source, /\$\("communityHeaderTabs"\)\.classList\.toggle\("is-hidden", !isCommunityTopLevel\);/);
+    assert.match(source, /\$\("communityPostsToolbar"\)\.classList\.toggle\("is-hidden", isCommunityArticles\);/);
   }
   for (const html of [h5Html, miniHtml]) {
     assert.match(html, /id="communityHeaderTabs"/);
+    assert.match(html, /id="communityPostsToolbar"/);
     assert.match(html, /data-community-section="posts"/);
     assert.match(html, /data-community-section="articles"/);
     assert.doesNotMatch(html, /id="communitySectionTabs"/);
