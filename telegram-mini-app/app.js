@@ -2926,6 +2926,7 @@
     $("appHeader").classList.toggle("is-home", isHome);
     $("appHeader").classList.toggle("is-article-detail", isArticle);
     const isCommunityArticles = routeState.tab === "community" && routeState.communitySection === "articles";
+    const isCommunityTopLevel = !isFocusView && routeState.tab === "community";
     $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "" : (isCommunityDetail ? "帖子详情" : (isHistory ? "观看历史" : (isCommunityArticles ? "文章" : titleMap[routeState.tab][0]))));
     $("headerSubtitle").textContent = isDetail
       ? "查看权益与购买方式"
@@ -2936,8 +2937,10 @@
       : isHistory
         ? "按最近播放时间排序，可删除单条或清空记录"
       : (isHome ? "真实表达，在理解与边界中被看见" : (isCommunityArticles ? "关于边界、沟通与亲密关系的中文导读" : titleMap[routeState.tab][1]));
-    $("headerSubtitle").hidden = isArticle;
+    $("headerTitle").hidden = isCommunityTopLevel;
+    $("headerSubtitle").hidden = isArticle || isCommunityTopLevel;
     $("headerEyebrow").hidden = isHome || isArticle;
+    $("communityHeaderTabs").classList.toggle("is-hidden", !isCommunityTopLevel);
 
     ["home", "library", "community", "me"].forEach(function (tab) {
       $(tab + "View").classList.toggle("is-hidden", isFocusView || routeState.tab !== tab);

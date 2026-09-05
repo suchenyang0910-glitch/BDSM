@@ -815,6 +815,18 @@ img.is-image-unavailable {
   color: #fff;
 }
 
+/* Community and articles are peer destinations. Keep their switch at the
+   application-header level instead of burying articles in the post toolbar. */
+.community-header-tabs {
+  margin-top: 8px;
+}
+
+.community-header-tabs .segment-button {
+  min-width: 76px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
 .stack-list {
   display: grid;
   gap: 12px;

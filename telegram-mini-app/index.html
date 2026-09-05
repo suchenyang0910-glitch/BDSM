@@ -20,7 +20,7 @@
     <meta property="og:type" content="website" />
     <meta property="og:image" content="" />
     <title>同频 · 精选点播</title>
-    <link rel="stylesheet" href="./styles.css?v=20260904-community-controlled-open-2" />
+    <link rel="stylesheet" href="./styles.css?v=20260905-community-header-tabs-1" />
     <script src="/api/vendor/hls/hls.min.js"></script>
     <script src="https://telegram.org/js/telegram-web-app.js?63"></script>
     <script id="videoObjectJsonLd" type="application/ld+json"></script>
@@ -36,6 +36,10 @@
             <p id="headerEyebrow" class="eyebrow">INTUNE VOD</p>
             <h1 id="headerTitle">同频</h1>
             <p id="headerSubtitle" class="header-subtitle">视频点播目录、会员权益与 Telegram 频道交付</p>
+            <div id="communityHeaderTabs" class="segment community-header-tabs is-hidden" role="tablist" aria-label="社区内容">
+              <button class="segment-button is-active" type="button" data-community-section="posts">社区</button>
+              <button class="segment-button" type="button" data-community-section="articles">文章</button>
+            </div>
           </div>
         </div>
         <div class="header-actions">
@@ -121,10 +125,6 @@
               </div>
             </div>
             <p class="muted-copy">浏览已发布帖子；发布后的图文会先进入审核。</p>
-            <div id="communitySectionTabs" class="segment community-section-tabs" role="tablist" aria-label="社区内容">
-              <button class="segment-button is-active" type="button" data-community-section="posts">社区</button>
-              <button class="segment-button" type="button" data-community-section="articles">文章</button>
-            </div>
           </div>
           <div id="communityPostsPanel">
             <div id="communityState" class="inline-state">正在加载社区…</div>
@@ -332,6 +332,6 @@
       </article>
     </template>
 
-  <script src="./app.js?v=20260904-community-tabs-1"></script>
+    <script src="./app.js?v=20260905-community-header-tabs-1"></script>
   </body>
 </html>

@@ -3767,6 +3767,7 @@
     $("appHeader").classList.toggle("is-home", isHome);
     $("appHeader").classList.toggle("is-article-detail", isArticle);
     const isCommunityArticles = routeState.tab === "community" && routeState.communitySection === "articles";
+    const isCommunityTopLevel = !isFocusView && routeState.tab === "community";
     $("headerTitle").textContent = isDetail ? "视频详情" : (isArticle ? "" : (isCommunityDetail ? "帖子详情" : (isHistory ? "观看历史" : (isWallet ? "支付与账单" : (isCommunityArticles ? "文章" : titleMap[routeState.tab][0])))));
     $("headerSubtitle").textContent = isDetail
       ? "试看后可直接解锁完整内容"
@@ -3779,8 +3780,10 @@
       : isWallet
         ? "查看会员状态、订单与支付记录"
         : (isCommunityArticles ? "关于边界、沟通与亲密关系的中文导读" : titleMap[routeState.tab][1]);
-    $("headerSubtitle").hidden = isArticle;
+    $("headerTitle").hidden = isCommunityTopLevel;
+    $("headerSubtitle").hidden = isArticle || isCommunityTopLevel;
     $("headerEyebrow").hidden = isHome || isArticle;
+    $("communityHeaderTabs").classList.toggle("is-hidden", !isCommunityTopLevel);
 
     ["home", "library", "community", "me"].forEach(function (tab) {
       $(tab + "View").classList.toggle("is-hidden", isFocusView || routeState.tab !== tab);
