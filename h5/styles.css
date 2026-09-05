@@ -1173,7 +1173,7 @@ img.is-image-unavailable {
 
 .me-entry-main {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
 }
 
 .me-entry-title-row,
@@ -1204,7 +1204,10 @@ img.is-image-unavailable {
 }
 
 .me-history-preview-strip {
-  min-width: 116px;
+  box-sizing: border-box;
+  min-width: 0;
+  width: 132px;
+  flex: 0 0 132px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;

@@ -156,7 +156,7 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
     readFile(path.join(ROOT, "telegram-mini-app/index.html"), "utf8"),
   ]);
 
-  assert.match(h5Html, /styles\.css\?v=20260905-community-header-tabs-1/);
+  assert.match(h5Html, /styles\.css\?v=20260905-me-history-layout-1/);
   assert.match(h5Html, /app\.js\?v=20260905-community-header-tabs-2/);
   assert.match(miniAppHtml, /styles\.css\?v=20260905-community-header-tabs-1/);
   assert.match(miniAppHtml, /app\.js\?v=20260905-community-header-tabs-2/);
@@ -212,6 +212,18 @@ test("community and articles are peer header tabs while mobile navigation remain
     assert.doesNotMatch(html, /<button class="nav-item" data-tab="articles"/);
     assert.equal((html.match(/<button class="nav-item/g) || []).length, 4);
   }
+});
+
+test("personal-center watch history keeps its preview strip bounded so titles retain usable width", async () => {
+  const [htmlSource, cssSource] = await Promise.all([
+    readFile(path.join(ROOT, "h5/index.html"), "utf8"),
+    readFile(path.join(ROOT, "h5/styles.css"), "utf8"),
+  ]);
+
+  assert.match(htmlSource, /id="meHistoryPreviewStrip" class="me-history-preview-strip"/);
+  assert.match(cssSource, /\.me-entry-main \{[\s\S]*min-width:\s*0;[\s\S]*flex:\s*1 1 0;/);
+  assert.match(cssSource, /\.me-history-preview-strip \{[\s\S]*min-width:\s*0;[\s\S]*width:\s*132px;[\s\S]*flex:\s*0 0 132px;/);
+  assert.match(cssSource, /\.me-history-preview-strip \{[\s\S]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\);/);
 });
 
 test("community author tools expose pending edit and owner delete in H5 and Mini App", async () => {
