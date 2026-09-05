@@ -1591,7 +1591,12 @@ img.is-image-unavailable {
 }
 
 .community-composer-card {
-  width: min(100% - 24px, 560px);
+  /* The composer is mounted outside .app-shell. Give it the same centered
+     mobile gutter explicitly; `min(100% - 24px, …)` is invalid CSS and
+     falls back to an uneven auto width. */
+  width: min(calc(100% - 32px), 648px);
+  margin-inline: auto;
+  box-sizing: border-box;
 }
 
 @media (max-width: 767px) {

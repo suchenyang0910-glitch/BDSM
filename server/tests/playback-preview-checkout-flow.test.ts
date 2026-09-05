@@ -156,9 +156,9 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
     readFile(path.join(ROOT, "telegram-mini-app/index.html"), "utf8"),
   ]);
 
-  assert.match(h5Html, /styles\.css\?v=20260905-me-history-layout-1/);
+  assert.match(h5Html, /styles\.css\?v=20260905-community-composer-gutter-1/);
   assert.match(h5Html, /app\.js\?v=20260905-community-header-tabs-2/);
-  assert.match(miniAppHtml, /styles\.css\?v=20260905-community-header-tabs-1/);
+  assert.match(miniAppHtml, /styles\.css\?v=20260905-community-composer-gutter-1/);
   assert.match(miniAppHtml, /app\.js\?v=20260905-community-header-tabs-2/);
 });
 
@@ -211,6 +211,18 @@ test("community and articles are peer header tabs while mobile navigation remain
     assert.doesNotMatch(html, /id="communitySectionTabs"/);
     assert.doesNotMatch(html, /<button class="nav-item" data-tab="articles"/);
     assert.equal((html.match(/<button class="nav-item/g) || []).length, 4);
+  }
+});
+
+test("community composer uses equal safe gutters in H5 and Mini App", async () => {
+  const cssSources = await Promise.all([
+    readFile(path.join(ROOT, "h5/styles.css"), "utf8"),
+    readFile(path.join(ROOT, "telegram-mini-app/styles.css"), "utf8"),
+  ]);
+
+  for (const cssSource of cssSources) {
+    assert.match(cssSource, /\.community-composer-card \{[\s\S]*width:\s*min\(calc\(100% - 32px\), 648px\);[\s\S]*margin-inline:\s*auto;[\s\S]*box-sizing:\s*border-box;/);
+    assert.doesNotMatch(cssSource, /width:\s*min\(100% - 24px, 560px\)/);
   }
 });
 
