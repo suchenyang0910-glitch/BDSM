@@ -36,6 +36,21 @@ function meta(req: FastifyRequest) {
   return { adminId: session.adminId, ip: (req.ip as string) || null, ua: (req.headers["user-agent"] as string) || null };
 }
 
+function isSlugUniqueConflict(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const prismaError = error as { code?: unknown; meta?: { target?: unknown } };
+  if (prismaError.code !== "P2002") return false;
+  const target = prismaError.meta?.target;
+  return Array.isArray(target) && target.includes("slug");
+}
+
+function slugTaken(reply: any) {
+  return reply.code(409).send({
+    error: "article_slug_taken",
+    message: "文章链接标识已被使用，请换一个后再保存。",
+  });
+}
+
 function publicShape(row: any) {
   return {
     id: row.id,
@@ -92,23 +107,31 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
     }
     const safeHtml = sanitizeArticleHtml(bodyHtml);
     if (htmlToPlainText(safeHtml).length < 20) return reply.code(400).send({ error: "invalid_article_html", message: "正文 HTML 不包含足够的可读内容。" });
+    const existing = await prisma.article.findUnique({ where: { slug: input.slug }, select: { id: true } });
+    if (existing) return slugTaken(reply);
     const actor = meta(req);
-    const created = await prisma.article.create({
-      data: {
-        ...input,
-        bodyHtml: safeHtml,
-        bodyMarkdown: htmlToPlainText(safeHtml),
-        coverImageUrl: coverImageUrl || null,
-        sourceName: input.sourceName || null,
-        sourceUrl: input.sourceUrl || null,
-        seoTitle: input.seoTitle || null,
-        seoDescription: input.seoDescription || null,
-        createdBy: actor.adminId,
-        updatedBy: actor.adminId,
-        status: input.status || "draft",
-        publishedAt: input.status === "published" ? new Date() : null,
-      },
-    });
+    let created: any;
+    try {
+      created = await prisma.article.create({
+        data: {
+          ...input,
+          bodyHtml: safeHtml,
+          bodyMarkdown: htmlToPlainText(safeHtml),
+          coverImageUrl: coverImageUrl || null,
+          sourceName: input.sourceName || null,
+          sourceUrl: input.sourceUrl || null,
+          seoTitle: input.seoTitle || null,
+          seoDescription: input.seoDescription || null,
+          createdBy: actor.adminId,
+          updatedBy: actor.adminId,
+          status: input.status || "draft",
+          publishedAt: input.status === "published" ? new Date() : null,
+        },
+      });
+    } catch (error) {
+      if (isSlugUniqueConflict(error)) return slugTaken(reply);
+      throw error;
+    }
     await audit(prisma, req, "article.create", created.id, null, publicShape(created), reason);
     const delivery = created.status === "published" ? await publishArticleToFreeChannels(prisma, created.id) : null;
     return reply.code(201).send({ ok: true, article: publicShape(created), delivery });
@@ -142,6 +165,10 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
     if (before.status === "published" && input.slug !== before.slug) {
       return reply.code(409).send({ error: "article_slug_locked", message: "文章已发布，URL 标识已锁定，避免既有分享链接失效。" });
     }
+    if (input.slug !== before.slug) {
+      const existing = await prisma.article.findUnique({ where: { slug: input.slug }, select: { id: true } });
+      if (existing && existing.id !== before.id) return slugTaken(reply);
+    }
     const safeHtml = sanitizeArticleHtml(bodyHtml);
     if (htmlToPlainText(safeHtml).length < 20) return reply.code(400).send({ error: "invalid_article_html", message: "正文 HTML 不包含足够的可读内容。" });
     const actor = meta(req);
@@ -149,22 +176,28 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
     if (before.status !== "published" && status === "published" && !coverImageUrl) {
       return reply.code(409).send({ error: "article_cover_required", message: "发布到频道需要文章封面图片，请先上传并保存封面。" });
     }
-    const after = await prisma.article.update({
-      where: { id: before.id },
-      data: {
-        ...input,
-        bodyHtml: safeHtml,
-        bodyMarkdown: htmlToPlainText(safeHtml),
-        coverImageUrl: coverImageUrl || null,
-        sourceName: input.sourceName || null,
-        sourceUrl: input.sourceUrl || null,
-        seoTitle: input.seoTitle || null,
-        seoDescription: input.seoDescription || null,
-        status,
-        publishedAt: status === "published" ? (before.publishedAt || new Date()) : null,
-        updatedBy: actor.adminId,
-      },
-    });
+    let after: any;
+    try {
+      after = await prisma.article.update({
+        where: { id: before.id },
+        data: {
+          ...input,
+          bodyHtml: safeHtml,
+          bodyMarkdown: htmlToPlainText(safeHtml),
+          coverImageUrl: coverImageUrl || null,
+          sourceName: input.sourceName || null,
+          sourceUrl: input.sourceUrl || null,
+          seoTitle: input.seoTitle || null,
+          seoDescription: input.seoDescription || null,
+          status,
+          publishedAt: status === "published" ? (before.publishedAt || new Date()) : null,
+          updatedBy: actor.adminId,
+        },
+      });
+    } catch (error) {
+      if (isSlugUniqueConflict(error)) return slugTaken(reply);
+      throw error;
+    }
     await audit(prisma, req, "article.update", after.id, publicShape(before), publicShape(after), reason);
     const delivery = before.status !== "published" && after.status === "published"
       ? await publishArticleToFreeChannels(prisma, after.id)

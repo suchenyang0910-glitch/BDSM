@@ -67,3 +67,35 @@ test("article publish requires a cover, requires content:publish, and reports an
     assert.equal(published.json().delivery.reason, "no_free_channel");
   } finally { await app.close(); }
 });
+
+test("article create and draft edit return a clear conflict when the slug is already used", async () => {
+  const app = await createApp(harness.prisma);
+  try {
+    const editorCookie = await login(app, "editor");
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const first = {
+      slug: `article-slug-first-${suffix}`,
+      title: "文章链接冲突验收一",
+      summary: "这是一段用于文章链接冲突验收的足够长摘要一。",
+      bodyHtml: "<p>这是一段超过二十个字符的文章正文，用于测试文章链接冲突一。</p>",
+      topics: ["沟通"], seoKeywords: ["边界"], geoKeywords: [],
+    };
+    const second = { ...first, slug: `article-slug-second-${suffix}`, title: "文章链接冲突验收二" };
+    const createdFirst = await app.inject({ method: "POST", url: "/api/admin/articles", headers: { cookie: editorCookie }, payload: first });
+    const createdSecond = await app.inject({ method: "POST", url: "/api/admin/articles", headers: { cookie: editorCookie }, payload: second });
+    assert.equal(createdFirst.statusCode, 201, createdFirst.body);
+    assert.equal(createdSecond.statusCode, 201, createdSecond.body);
+
+    const duplicateCreate = await app.inject({ method: "POST", url: "/api/admin/articles", headers: { cookie: editorCookie }, payload: { ...first, title: "重复链接新建" } });
+    assert.equal(duplicateCreate.statusCode, 409, duplicateCreate.body);
+    assert.deepEqual(duplicateCreate.json(), { error: "article_slug_taken", message: "文章链接标识已被使用，请换一个后再保存。" });
+
+    const firstId = createdFirst.json().article.id as string;
+    const duplicateEdit = await app.inject({ method: "PATCH", url: `/api/admin/articles/${firstId}`, headers: { cookie: editorCookie }, payload: second });
+    assert.equal(duplicateEdit.statusCode, 409, duplicateEdit.body);
+    assert.deepEqual(duplicateEdit.json(), { error: "article_slug_taken", message: "文章链接标识已被使用，请换一个后再保存。" });
+
+    const ownSlugEdit = await app.inject({ method: "PATCH", url: `/api/admin/articles/${firstId}`, headers: { cookie: editorCookie }, payload: { ...first, title: "文章链接冲突验收一已更新" } });
+    assert.equal(ownSlugEdit.statusCode, 200, ownSlugEdit.body);
+  } finally { await app.close(); }
+});
