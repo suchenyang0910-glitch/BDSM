@@ -1084,6 +1084,48 @@ test("USDT 创单：XTR 会员可使用独立 USDT 测试价，Stars 主价格�
   }
 });
 
+test("USDT 月度会员 9.99：实际应付只能在标价基础上增加 0-99 个最小单位", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const seed = Date.now() % 100_000_000;
+    const product = await prisma.product.create({
+      data: {
+        id: `membership-usdt-999-${seed}`,
+        type: "membership",
+        title: "月度会员 9.99",
+        priceMinor: 299n,
+        currency: "XTR",
+        usdtPriceMinor: 9_990_000n,
+        durationDays: 30,
+        status: "active",
+      },
+    });
+    await prisma.paymentAddress.create({
+      data: {
+        network: "tron_trc20",
+        address: `TMembership999${seed}000000000000000`,
+        addressMasked: "TM…999",
+        status: "available",
+      },
+    });
+    const user = await prisma.user.create({ data: { telegramUserId: BigInt(7_600_000_000 + seed), displayName: "membership 9.99" } });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/orders/usdt",
+      headers: { cookie: await loginAs(app, user.id), "Content-Type": "application/json" },
+      payload: { productId: product.id },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const payment = (created.json() as any).usdtPayment;
+    assert.equal(payment.baseAmountMinor, "9990000");
+    const finalMinor = BigInt(payment.finalAmountMinor);
+    assert.ok(finalMinor >= 9_990_000n && finalMinor <= 9_990_099n, `actual=${finalMinor} must stay within 9.990000-9.990099 USDT`);
+    assert.match(payment.displayAmountDecimal, /^9\.990\d{3}$/);
+  } finally {
+    await app.close();
+  }
+});
+
 // P0-B：路由 503 pool_empty 500 assign_db_error 均不向客户端泄露原始 DB reason / errorClass / 堆栈，只返回通用提示 + DB 层 rejectReason/审计 也脱敏
 test("USDT 创单错误脱敏：pool_empty 503 / assign db_error 500（响应/DB rejectReason/审计表）全链路无原始错误字符串", async () => {
   const app = await createTestApp(prisma);
@@ -1934,6 +1976,58 @@ test("Phase D order status: GET /api/orders/:orderNo/status 仅本人可见并�
       headers: { cookie: strangerCookie },
     });
     assert.equal(denied.statusCode, 404, denied.body);
+  } finally {
+    await app.close();
+  }
+});
+
+test("USDT 过期待支付订单：读取状态时失效，且不再返回历史收款信息", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const seed = Date.now() % 100_000_000;
+    const user = await prisma.user.create({ data: { telegramUserId: BigInt(7_700_000_000 + seed), displayName: "expired usdt owner" } });
+    const product = await prisma.product.create({
+      data: {
+        id: `expired-usdt-product-${seed}`,
+        type: "membership",
+        title: "Expired USDT membership",
+        priceMinor: 299n,
+        currency: "XTR",
+        usdtPriceMinor: 9_990_000n,
+        durationDays: 30,
+        status: "active",
+      },
+    });
+    const address = await prisma.paymentAddress.create({
+      data: { network: "tron_trc20", address: `TExpiredOrder${seed}0000000000000000`, addressMasked: "TE…old", status: "available" },
+    });
+    const order = await prisma.order.create({
+      data: {
+        orderNo: `EXPUSDT${seed}`,
+        userId: user.id,
+        productId: product.id,
+        amountMinor: 10_086n,
+        currency: "USDT",
+        paymentMethod: "usdt_trc20_external",
+        paymentProvider: "tron_trc20_external",
+        status: "pending",
+        expiresAt: new Date(Date.now() - 60_000),
+        usdtPaymentAddressId: address.id,
+      },
+    });
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/orders/${encodeURIComponent(order.orderNo)}/status`,
+      headers: { cookie: await loginAs(app, user.id) },
+    });
+    assert.equal(status.statusCode, 200, status.body);
+    const body = status.json() as any;
+    assert.equal(body.order.status, "expired");
+    assert.equal(body.order.rejectReason, "payment_expired");
+    assert.equal(body.order.usdtPayment, undefined, "过期订单不得继续返回收款地址或历史金额");
+    const persisted = await prisma.order.findUnique({ where: { id: order.id }, select: { status: true, rejectReason: true } });
+    assert.equal(persisted?.status, "expired");
+    assert.equal(persisted?.rejectReason, "payment_expired");
   } finally {
     await app.close();
   }

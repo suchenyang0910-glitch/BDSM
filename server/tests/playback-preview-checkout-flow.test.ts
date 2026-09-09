@@ -328,6 +328,17 @@ test("checkout flow preserves return target and payment success returns to conte
   assert.match(serverSource, /app\.get\("\/h5-pay\.html", async \(req, reply\) => reply\.redirect\(buildAliasRedirect\("\/mini-app\/h5-pay\.html", req\)\)\)/);
 });
 
+test("expired USDT orders cannot show or copy a stale historical payment amount", async () => {
+  const paySource = await readFile(path.join(ROOT, "telegram-mini-app/h5-pay.js"), "utf8");
+  const payHtml = await readFile(path.join(ROOT, "telegram-mini-app/h5-pay.html"), "utf8");
+  assert.match(paySource, /const isExpiredUsdt = isUsdtOrder\(o\) && o\.status === "expired";/);
+  assert.match(paySource, /configurePaymentDetailMode\(o, \{ expiredUsdt: isExpiredUsdt \}\);/);
+  assert.match(paySource, /历史收款金额已失效；请返回内容页重新创建订单/);
+  assert.match(paySource, /payEl\.textContent = isExpiredUsdt \? "订单已失效" : "—";/);
+  assert.match(paySource, /refreshedCopyAmount\) refreshedCopyAmount\.style\.display = expiredUsdt \? "none" : "";/);
+  assert.match(payHtml, /h5-pay\.js\?v=20260909-usdt-expired-order-1/);
+});
+
 test("detail purchase layer supports optional single unlock product", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const serverSource = await readFile(path.join(ROOT, "server/src/routes/contents.ts"), "utf8");

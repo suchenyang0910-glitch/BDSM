@@ -258,6 +258,7 @@
   function configurePaymentDetailMode(order, options) {
     const opts = options || {};
     const stars = opts.forceStars || isStarsOrder(order);
+    const expiredUsdt = !stars && opts.expiredUsdt === true;
     const payTitle = $("payTitle");
     const paySubtitle = $("paySubtitle");
     const listPriceLabel = $("listPriceLabel");
@@ -288,16 +289,18 @@
     }
 
     if (payTitle) payTitle.textContent = "USDT-TRC20 支付";
-    if (paySubtitle) paySubtitle.textContent = "请使用 TRON (TRC-20) 网络按精确金额转账，页面会自动恢复订单状态。";
+    if (paySubtitle) paySubtitle.textContent = expiredUsdt
+      ? "该订单已超过支付有效期，历史收款金额已失效；请返回内容页重新创建订单。"
+      : "请使用 TRON (TRC-20) 网络按精确金额转账，页面会自动恢复订单状态。";
     if (listPriceLabel) listPriceLabel.textContent = "商品价格";
-    if (payableLabelText) payableLabelText.textContent = "实际应付（尾数唯一识别）";
-    if (payCurrency) payCurrency.textContent = "USDT";
-    if (addressWrap) addressWrap.style.display = "block";
-    if (pollingWrap) pollingWrap.style.display = "block";
+    if (payableLabelText) payableLabelText.textContent = expiredUsdt ? "支付状态" : "实际应付（尾数唯一识别）";
+    if (payCurrency) payCurrency.textContent = expiredUsdt ? "" : "USDT";
+    if (addressWrap) addressWrap.style.display = expiredUsdt ? "none" : "block";
+    if (pollingWrap) pollingWrap.style.display = expiredUsdt ? "none" : "block";
     if (starsWrap) starsWrap.style.display = "none";
     const refreshedCopyAmount = $("copyAmountBtn");
-    if (refreshedCopyAmount) refreshedCopyAmount.style.display = "";
-    if (btnCopyAmount) btnCopyAmount.style.display = "";
+    if (refreshedCopyAmount) refreshedCopyAmount.style.display = expiredUsdt ? "none" : "";
+    if (btnCopyAmount) btnCopyAmount.style.display = expiredUsdt ? "none" : "";
   }
 
   function setStep(stepIdx) {
@@ -447,7 +450,8 @@
   }
 
   function applyOrderData(o) {
-    configurePaymentDetailMode(o);
+    const isExpiredUsdt = isUsdtOrder(o) && o.status === "expired";
+    configurePaymentDetailMode(o, { expiredUsdt: isExpiredUsdt });
     const metaEl = $("orderMeta");
     if (metaEl) {
       metaEl.innerHTML =
@@ -457,7 +461,9 @@
     }
 
     const isUsdt = isUsdtOrder(o);
-    const displayAmount =
+    const displayAmount = isExpiredUsdt
+      ? null
+      :
       o.usdtPayment?.displayAmountDecimal ??
       (isUsdt ? minorToDecimalUsdt(o.amountMinor) :
         o.currency === "XTR" ? minorToDecimalXtr(o.amountMinor) : null);
@@ -477,7 +483,7 @@
           ? `${pieces[0]}.<span class="amount-tail">${pieces[1]}</span>`
           : `${displayAmount}`;
       } else {
-        payEl.textContent = "—";
+        payEl.textContent = isExpiredUsdt ? "订单已失效" : "—";
       }
     }
 

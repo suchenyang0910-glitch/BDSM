@@ -409,6 +409,22 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     const uid = (req as any).userId as string;
     const orderNo = String((req.params as any)?.orderNo || "").trim();
     if (!orderNo) return reply.status(400).send({ error: "bad_request" });
+    const now = new Date();
+    // 订单过期后不得继续向本人暴露历史收款地址或金额。这里采用条件更新，
+    // 避免两个并发刷新把已经完成/处理中的订单覆盖为 expired。
+    await prisma.order.updateMany({
+      where: {
+        orderNo,
+        userId: uid,
+        status: "pending",
+        expiresAt: { lt: now },
+      },
+      data: {
+        status: "expired",
+        rejectedAt: now,
+        rejectReason: "payment_expired",
+      },
+    });
     const order = await prisma.order.findFirst({
       where: { orderNo, userId: uid },
       include: {
