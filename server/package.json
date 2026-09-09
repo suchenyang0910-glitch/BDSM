@@ -10,6 +10,7 @@
     "usdt:monitor": "tsx src/workers/usdtTrc20Monitor.ts",
     "vod:transcode-worker": "tsx src/workers/transcodeWorker.ts",
     "community:transcode-worker": "tsx src/workers/communityTranscodeWorker.ts",
+    "community:guided-experiment": "tsx scripts/runCommunityGuidedExperiment.ts",
     "vod:validate-phase-b": "tsx src/scripts/validatePhaseBTranscode.ts",
     "payment-address:baseline": "tsx src/scripts/establishPaymentAddressIntegrityBaseline.ts",
     "delivery:validate-channels": "tsx src/scripts/validateDeliveryChannels.ts",
