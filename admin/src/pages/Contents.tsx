@@ -96,6 +96,7 @@ export type MediaAssetItem = {
   transcodeStatus?: string | null;
   transcodeProgressPercent?: number;
   transcodeErrorClass?: string | null;
+  transcodeOutputProfile?: "standard" | "reduced";
   renditions?: Array<{
     kind: "preview" | "hls_1080" | "hls_720" | "hls_480" | string;
     status: "pending" | "processing" | "ready" | "failed" | "deleted" | string;
@@ -506,6 +507,7 @@ function normalizeMediaAsset(raw: any): MediaAssetItem {
     transcodeStatus: raw?.transcode?.status || null,
     transcodeProgressPercent: typeof raw?.transcode?.progressPercent === "number" ? raw.transcode.progressPercent : 0,
     transcodeErrorClass: raw?.transcode?.errorClass || null,
+    transcodeOutputProfile: raw?.transcode?.outputProfile === "reduced" ? "reduced" : "standard",
     renditions: Array.isArray(raw?.renditions) ? raw.renditions : [],
   };
 }
@@ -557,8 +559,8 @@ export async function deleteContentMedia(contentId: string, assetId: string): Pr
   const res = await http.delete(`/admin/contents/${encodeURIComponent(contentId)}/assets/${encodeURIComponent(assetId)}`);
   return res.data;
 }
-export async function retryTranscodeJob(jobId: string): Promise<TranscodeJobActionResp> {
-  const res = await http.post(`/admin/transcode-jobs/${encodeURIComponent(jobId)}/retry`, {});
+export async function retryTranscodeJob(jobId: string, outputProfile: "standard" | "reduced" = "standard"): Promise<TranscodeJobActionResp> {
+  const res = await http.post(`/admin/transcode-jobs/${encodeURIComponent(jobId)}/retry`, { outputProfile });
   return res.data;
 }
 export async function cancelTranscodeJob(jobId: string): Promise<TranscodeJobActionResp> {
@@ -2649,6 +2651,7 @@ const ContentsPage: React.FC = () => {
                               <span>{(asset.contentLength / 1024 / 1024 / 1024).toFixed(3)} GB</span>
                               <Tag color={asset.status === "ready" ? "green" : asset.status === "failed" ? "red" : "default"}>{asset.status === "ready" ? "已校验" : asset.status === "failed" ? "失败" : "上传中"}</Tag>
                               <Tag color={transcodeStatusTagColor(asset)}>{humanizeTranscodeStatus(asset)}</Tag>
+                              {asset.transcodeOutputProfile === "reduced" && <Tag color="gold">降档：720p / 480p</Tag>}
                               <Button size="small" danger disabled={fullVideoUploading} onClick={() => onDeleteMediaAsset(asset)}>删除</Button>
                               {!!asset.transcodeStatus && asset.transcodeStatus === "failed" && (
                                 <Button
@@ -2661,8 +2664,8 @@ const ContentsPage: React.FC = () => {
                                         message.warning("当前没有可重试的转码任务");
                                         return;
                                       }
-                                      await retryTranscodeJob(asset.transcodeJobId);
-                                      message.success("已重新入队转码任务");
+                                      await retryTranscodeJob(asset.transcodeJobId, "standard");
+                                      message.success("已按标准清晰度重新入队；将获得最多 3 次转码尝试");
                                       await refreshContentMedia(editing!.id);
                                     } catch (e) {
                                       message.error(errMsg(e, "重新入队失败"));
@@ -2670,6 +2673,25 @@ const ContentsPage: React.FC = () => {
                                   }}
                                 >
                                   重试转码
+                                </Button>
+                              )}
+                              {asset.transcodeStatus === "failed" && asset.transcodeErrorClass === "ffmpeg_timeout" && (
+                                <Button
+                                  size="small"
+                                  type="primary"
+                                  disabled={!canPublish || !asset.transcodeJobId}
+                                  onClick={async () => {
+                                    try {
+                                      if (!asset.transcodeJobId) return;
+                                      await retryTranscodeJob(asset.transcodeJobId, "reduced");
+                                      message.success("已降档重试：将生成试看、720p 与 480p，并获得最多 3 次转码尝试");
+                                      await refreshContentMedia(editing!.id);
+                                    } catch (e) {
+                                      message.error(errMsg(e, "降档重试入队失败"));
+                                    }
+                                  }}
+                                >
+                                  降档重试（720p / 480p）
                                 </Button>
                               )}
                               {!!asset.transcodeStatus && ["queued", "processing"].includes(asset.transcodeStatus) && (
@@ -2697,7 +2719,11 @@ const ContentsPage: React.FC = () => {
                             </Space>
                             {!!asset.transcodeErrorClass && (
                               <Text type="danger" style={{ fontSize: 12 }}>
-                                失败说明：{asset.transcodeErrorClass === "source_invalid_media" ? "视频文件无法读取，请更换源文件" : asset.transcodeErrorClass}
+                                失败说明：{asset.transcodeErrorClass === "source_invalid_media"
+                                  ? "视频文件无法读取，请更换源文件"
+                                  : asset.transcodeErrorClass === "ffmpeg_timeout"
+                                    ? "源文件较大，单个高清清晰度转码超过时限。可选择“降档重试”生成 720p / 480p。"
+                                    : asset.transcodeErrorClass}
                               </Text>
                             )}
                             <Space wrap size={8}>

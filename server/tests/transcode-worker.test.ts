@@ -14,6 +14,7 @@ import adminRoutes from "../src/routes/admin.js";
 import adminCmsRoutes from "../src/routes/adminCms.js";
 import {
   claimNextTranscodeJob,
+  buildRenditionTargets,
   createFfmpegTranscodeRunner,
   defaultMockTranscodeRunner,
   inspectLocalRendition,
@@ -141,7 +142,7 @@ function hasExecutable(command: string) {
   }
 }
 
-async function seedTranscodeJob(input?: Partial<{ contentId: string; assetId: string; status: string; attemptCount: number; leaseUntil: Date | null }>) {
+async function seedTranscodeJob(input?: Partial<{ contentId: string; assetId: string; status: string; attemptCount: number; leaseUntil: Date | null; outputProfile: "standard" | "reduced" }>) {
   const asset = await prisma.videoAsset.create({
     data: {
       id: input?.assetId || randomUUID(),
@@ -162,6 +163,7 @@ async function seedTranscodeJob(input?: Partial<{ contentId: string; assetId: st
       assetId: asset.id,
       status: (input?.status as any) || "queued",
       attemptCount: input?.attemptCount ?? 0,
+      outputProfile: input?.outputProfile ?? "standard",
       leaseUntil: input?.leaseUntil ?? null,
     },
   });
@@ -227,11 +229,14 @@ test("Phase B: admin retry and cancel endpoints keep responses sanitized", async
       method: "POST",
       url: `/api/admin/transcode-jobs/${job.id}/retry`,
       headers: { cookie: editorCookie },
+      payload: { outputProfile: "reduced" },
     });
     assert.equal(retryResp.statusCode, 200, retryResp.body);
     assert.doesNotMatch(retryResp.body, /manifestKey|prefixKey|objectKey|bucket|https?:\/\//i);
     const retried = await prisma.transcodeJob.findUnique({ where: { id: job.id } });
     assert.equal(retried?.status, "queued");
+    assert.equal(retried?.attemptCount, 0, "manual retry starts a fresh bounded retry batch");
+    assert.equal(retried?.outputProfile, "reduced");
 
     await prisma.transcodeJob.update({
       where: { id: job.id },
@@ -249,6 +254,16 @@ test("Phase B: admin retry and cancel endpoints keep responses sanitized", async
   } finally {
     await app.close();
   }
+});
+
+test("Phase B: reduced profile retains preview, 720p and 480p while skipping 1080p", () => {
+  const targets = buildRenditionTargets(
+    { durationSeconds: 3600, width: 1920, height: 1080, hasAudio: true },
+    60,
+    true,
+    "reduced",
+  );
+  assert.deepEqual(sortKinds(targets.map((target) => target.kind)), sortKinds(["preview", "hls_720", "hls_480"]));
 });
 
 test("Phase B: processing a claimed job stores ready private HLS renditions and cleans temp prefix", async () => {

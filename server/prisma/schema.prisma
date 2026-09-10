@@ -1571,6 +1571,7 @@ model TranscodeJob {
   contentId         String            @map("content_id")
   assetId           String            @unique @map("asset_id")
   status            TranscodeJobStatus @default(queued) @map("status")
+  outputProfile     String            @default("standard") @map("output_profile") @db.VarChar(16)
   attemptCount      Int               @default(0) @map("attempt_count")
   errorClass        String?           @map("error_class") @db.VarChar(64)
   workerId          String?           @map("worker_id") @db.VarChar(64)

@@ -170,6 +170,7 @@ function summarizeVodAsset(row: any) {
           id: transcodeJob.id,
           status: transcodeJob.status,
           attemptCount: transcodeJob.attemptCount,
+          outputProfile: transcodeJob.outputProfile === "reduced" ? "reduced" : "standard",
           progressPercent: typeof transcodeJob.progressPercent === "number" ? transcodeJob.progressPercent : 0,
           errorClass: sanitizeErrorClass(transcodeJob.errorClass),
           workerIdPresent: !!transcodeJob.workerId,
@@ -1146,6 +1147,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
   const playbackConfig = (fastify as any).playbackConfig as PlaybackConfig | undefined;
   const SENSITIVE_MASK = "******";
   const ZID = z.string().trim().min(1).max(64);
+  const ZTRANSCODE_RETRY = z.object({ outputProfile: z.enum(["standard", "reduced"]).default("standard") });
 
   // 【P0-素材上传发布】初始化 Bot 发布队列（BullMQ + Redis，缺 REDIS_URL 自动回退 DB 轮询）
   try {
@@ -2396,6 +2398,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     { preHandler: [requireAdmin("content:publish")] },
     async (req: any, reply) => {
       const id = ZID.parse(req.params.id);
+      const body = ZTRANSCODE_RETRY.parse(req.body || {});
       const meta = adminMeta(req);
       const updated = await prisma.$transaction(async (tx: any) => {
         const job = await tx.transcodeJob.findUnique({
@@ -2415,6 +2418,9 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           where: { id },
           data: {
             status: "queued",
+            outputProfile: body.outputProfile,
+            // 人工重试代表新的受控尝试批次，应重新享有 Worker 的 3 次自动重试额度。
+            attemptCount: 0,
             errorClass: null,
             workerId: null,
             leaseUntil: null,
@@ -2432,7 +2438,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             readyAt: null,
           },
         });
-        await writeAudit(tx, meta, "transcode_job.retry", "transcode_job", id, serialize({ status: job.status, errorClass: job.errorClass }), serialize({ status: after.status }), "manual retry");
+        await writeAudit(tx, meta, "transcode_job.retry", "transcode_job", id, serialize({ status: job.status, errorClass: job.errorClass, outputProfile: job.outputProfile }), serialize({ status: after.status, outputProfile: after.outputProfile, attemptCount: after.attemptCount }), body.outputProfile === "reduced" ? "manual reduced-profile retry" : "manual standard retry");
         return {
           error: null,
           job: await tx.transcodeJob.findUnique({ where: { id } }),

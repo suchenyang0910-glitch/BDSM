@@ -55,6 +55,8 @@ export type TranscodeWorkerConfig = {
   runnerMode: "ffmpeg" | "mock";
 };
 
+export type TranscodeOutputProfile = "standard" | "reduced";
+
 export type SourceProbe = {
   durationSeconds: number;
   width: number;
@@ -86,6 +88,7 @@ export type TranscodeRunner = {
     workDir: string;
     previewSeconds: number;
     previewEnabled?: boolean;
+    outputProfile?: TranscodeOutputProfile;
     timeoutMs: number;
   }): Promise<RenderOutput>;
 };
@@ -502,7 +505,12 @@ export async function downloadSourceObjectToFile(asset: Pick<VideoAsset, "object
   }
 }
 
-export function buildRenditionTargets(probe: SourceProbe, previewSeconds: number, previewEnabled = true): RenditionTarget[] {
+export function buildRenditionTargets(
+  probe: SourceProbe,
+  previewSeconds: number,
+  previewEnabled = true,
+  outputProfile: TranscodeOutputProfile = "standard",
+): RenditionTarget[] {
   const targets: RenditionTarget[] = [];
   if (previewEnabled) {
     const previewScale = scaleDimensions(probe.width, probe.height, Math.min(480, probe.height));
@@ -515,6 +523,8 @@ export function buildRenditionTargets(probe: SourceProbe, previewSeconds: number
     });
   }
   for (const target of DEFAULT_RENDITION_TARGETS) {
+    // 降档重试只跳过最耗时的 1080p；试看、720p 与 480p 保持可用。
+    if (outputProfile === "reduced" && target.kind === "hls_1080") continue;
     if (target.kind !== "hls_480" && probe.height < target.maxHeight) continue;
     const scaled = scaleDimensions(probe.width, probe.height, Math.min(target.maxHeight, probe.height));
     targets.push({
@@ -627,7 +637,7 @@ export function createFfmpegTranscodeRunner(cfg: Pick<TranscodeWorkerConfig, "ff
     },
     async render(input) {
       const probe = await this.probe({ inputPath: input.inputPath, timeoutMs: cfg.ffprobeTimeoutMs });
-      const targets = buildRenditionTargets(probe, input.previewSeconds, input.previewEnabled !== false);
+      const targets = buildRenditionTargets(probe, input.previewSeconds, input.previewEnabled !== false, input.outputProfile || "standard");
       const renditions: RenditionPlan[] = [];
       for (const target of targets) {
         const dir = path.join(input.workDir, target.kind);
@@ -935,7 +945,8 @@ export async function processClaimedTranscodeJob(
       30,
       90,
     );
-    const expectedKinds = buildRenditionTargets(probe, previewSeconds, previewEnabled).map((row) => row.kind);
+    const outputProfile: TranscodeOutputProfile = job.outputProfile === "reduced" ? "reduced" : "standard";
+    const expectedKinds = buildRenditionTargets(probe, previewSeconds, previewEnabled, outputProfile).map((row) => row.kind);
     plannedKinds = Array.from(new Set(expectedKinds));
     if (plannedKinds.length > 0) {
       await markPendingRenditionsProcessing(prisma, { contentId: job.contentId, assetId: job.assetId, kinds: plannedKinds });
@@ -948,6 +959,7 @@ export async function processClaimedTranscodeJob(
       workDir,
       previewSeconds,
       previewEnabled,
+      outputProfile,
       timeoutMs: cfg.ffmpegTimeoutMs,
     });
     if (!Array.isArray(rendered.renditions) || rendered.renditions.length === 0) {
@@ -1078,7 +1090,7 @@ export function defaultMockTranscodeRunner(): TranscodeRunner {
     },
     async render(input) {
       const probe = await this.probe({ inputPath: input.inputPath, timeoutMs: input.timeoutMs });
-      const targets = buildRenditionTargets(probe, input.previewSeconds, input.previewEnabled !== false);
+      const targets = buildRenditionTargets(probe, input.previewSeconds, input.previewEnabled !== false, input.outputProfile || "standard");
       const renditions: RenderOutput["renditions"] = [];
       for (const target of targets) {
         const dir = path.join(input.workDir, target.kind);
