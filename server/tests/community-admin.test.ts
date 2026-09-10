@@ -142,6 +142,7 @@ test("community post admin queue exposes safe media summaries, supports publish 
     assert.ok(row, "community post should be visible in admin queue");
     assert.equal(row.status, "pending");
     assert.equal(row.reportCount, 1);
+    assert.deepEqual(row.metrics, { views: 0, viewers: 0, likeCount: 0, commentCount: 0, reportCount: 1 });
     assert.equal(Array.isArray(row.assets), true);
     assert.equal(Object.hasOwn(row.assets[0], "objectKey"), false, "admin queue must not expose community source object keys");
     assert.equal(Object.hasOwn(row.assets[0], "originalAssetId"), false, "admin queue must not expose original asset IDs");

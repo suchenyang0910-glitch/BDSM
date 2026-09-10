@@ -59,6 +59,7 @@ import {
 import { revokePlaybackSessionsByContent } from "../services/playbackAdmin.js";
 import { randomBytes, createHash } from "node:crypto";
 import { decryptChatIdAesGcm } from "../utils/crypto.js";
+import { adminContentMetricsFor, loadAdminContentMetrics, videoAnalyticsKey } from "../services/adminContentMetrics.js";
 
 const ContentStatusZ = z.enum(["draft", "pending_review", "published", "archived", "scheduled"]);
 const BannerStatusZ = z.enum(["draft", "active", "inactive", "scheduled", "archived"]);
@@ -1384,6 +1385,11 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           });
         }
       }
+      const metrics = await loadAdminContentMetrics(prisma, rows.map((row: any) => ({
+        targetType: "video_content" as const,
+        targetId: row.id,
+        analyticsKey: videoAnalyticsKey(row.id),
+      })));
       return reply.send(serialize({
         total, page: qp.page, limit: qp.limit,
         data: rows.map((c: any) => {
@@ -1404,6 +1410,7 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             transcodeErrorClass: latestJob?.errorClass || null,
             publishState: publishState.publishState,
             publishStateLabel: publishState.publishStateLabel,
+            metrics: adminContentMetricsFor(metrics, "video_content", c.id),
             categories: c.categories.map((x: any) => ({ id: x.categoryId, name: x.category.name, slug: x.category.slug, displayOrder: x.displayOrder })),
           }, platform);
         }),

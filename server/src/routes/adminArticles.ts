@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireAdmin, type AdminSession } from "./admin.js";
 import { htmlToPlainText, sanitizeArticleHtml } from "../lib/articleHtml.js";
 import { publishArticleToFreeChannels } from "../services/articleTelegramPublisher.js";
+import { adminContentMetricsFor, loadAdminContentMetrics } from "../services/adminContentMetrics.js";
 
 const StatusZ = z.enum(["draft", "published", "archived"]);
 // Ant Design submits an untouched optional Input as an empty string. Normalize
@@ -95,7 +96,12 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
 
   fastify.get("/admin/articles", { preHandler: [requireAdmin("content:view")] }, async () => {
     const rows = await prisma.article.findMany({ orderBy: [{ updatedAt: "desc" }] });
-    return { items: rows.map(publicShape) };
+    const metrics = await loadAdminContentMetrics(prisma, rows.map((row: any) => ({
+      targetType: "article" as const,
+      targetId: row.id,
+      analyticsKey: row.slug,
+    })));
+    return { items: rows.map((row: any) => ({ ...publicShape(row), metrics: adminContentMetricsFor(metrics, "article", row.id) })) };
   });
 
   fastify.post("/admin/articles", { preHandler: [requireAdmin("content:edit")] }, async (req, reply) => {

@@ -99,3 +99,37 @@ test("article create and draft edit return a clear conflict when the slug is alr
     assert.equal(ownSlugEdit.statusCode, 200, ownSlugEdit.body);
   } finally { await app.close(); }
 });
+
+test("article list returns aggregate views and interaction counts without reader identities", async () => {
+  const app = await createApp(harness.prisma);
+  try {
+    const editorCookie = await login(app, "editor");
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const created = await app.inject({ method: "POST", url: "/api/admin/articles", headers: { cookie: editorCookie }, payload: {
+      slug: `article-metrics-${suffix}`,
+      title: "文章数据统计验收",
+      summary: "这是一段用于验证文章后台聚合数据的足够长摘要。",
+      bodyHtml: "<p>这是一段用于验证后台聚合数据且超过二十个字符的文章正文。</p>",
+      topics: ["沟通"], seoKeywords: [], geoKeywords: [],
+    } });
+    assert.equal(created.statusCode, 201, created.body);
+    const article = created.json().article as { id: string; slug: string };
+    const user = await harness.prisma.user.create({ data: {
+      telegramUserId: BigInt(`91${String(Date.now()).slice(-10)}`),
+      displayName: "文章统计测试用户",
+      status: "active",
+    } });
+    await harness.prisma.analyticsEvent.createMany({ data: [1, 2].map((index) => ({
+      occurredAt: new Date(), eventName: "article_opened", anonymousIdHmac: `anon-article-${suffix}`, sessionIdHmac: `session-article-${suffix}`,
+      platform: "h5", propertiesJson: { articleSlug: article.slug },
+    })) });
+    await harness.prisma.interactionLike.create({ data: { subjectKind: "target", subjectKey: `article:${article.id}`, targetType: "article", targetId: article.id, userId: user.id } });
+    await harness.prisma.interactionComment.create({ data: { targetType: "article", targetId: article.id, userId: user.id, body: "用于验证统计的公开评论。", status: "approved" } });
+    await harness.prisma.interactionReport.create({ data: { targetType: "article", targetId: article.id, reporterUserId: user.id, reasonCode: "spam" } });
+    const list = await app.inject({ method: "GET", url: "/api/admin/articles", headers: { cookie: editorCookie } });
+    assert.equal(list.statusCode, 200, list.body);
+    const row = list.json().items.find((item: any) => item.id === article.id);
+    assert.deepEqual(row.metrics, { views: 2, viewers: 1, likeCount: 1, commentCount: 1, reportCount: 1 });
+    assert.equal(JSON.stringify(row.metrics).includes("session-article"), false);
+  } finally { await app.close(); }
+});

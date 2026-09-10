@@ -918,6 +918,7 @@ const ArticlesPage: React.FC = () => {
     { title: "标题", dataIndex: "title", width: 260, render: (title, row) => <Space direction="vertical" size={0}><Text strong>{title}</Text><Text type="secondary">/{row.slug}</Text></Space> },
     { title: "状态", dataIndex: "status", width: 100, render: (status: AdminArticleItem["status"]) => <Tag color={statusColor[status]}>{statusLabel[status]}</Tag> },
     { title: "主题", dataIndex: "topics", render: (topics: string[]) => <Space size={[4, 4]} wrap>{topics.slice(0, 4).map((topic) => <Tag key={topic}>{topic}</Tag>)}</Space> },
+    { title: "数据", width: 168, render: (_, row) => <Space size={[4, 4]} wrap><Tag>浏览 {row.metrics.views}</Tag><Tag>赞 {row.metrics.likeCount}</Tag><Tag>评 {row.metrics.commentCount}</Tag><Tag color={row.metrics.reportCount ? "red" : "default"}>报 {row.metrics.reportCount}</Tag></Space> },
     { title: "更新时间", dataIndex: "updatedAt", width: 180, render: (time) => new Date(time).toLocaleString("zh-CN", { hour12: false }) },
     { title: "操作", width: 300, render: (_, row) => <Space wrap>
       <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)}>编辑</Button>

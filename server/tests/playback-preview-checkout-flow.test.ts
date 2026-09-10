@@ -39,6 +39,15 @@ test("h5 detail applies the server-resolved per-content SEO and GEO metadata", a
   assert.doesNotMatch(source, /renderDetail\(id\)[\s\S]{0,1800}updatePageSeo\(null\)/);
 });
 
+test("community detail sends only an anonymous aggregate-ready open event", async () => {
+  const h5Source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const miniSource = await readFile(path.join(ROOT, "telegram-mini-app/app.js"), "utf8");
+  for (const source of [h5Source, miniSource]) {
+    assert.match(source, /"community_post_opened"/);
+    assert.match(source, /trackAnalytics\("community_post_opened", \{ communityPostId: item\.id, sourceModule: "community" \}\)/);
+  }
+});
+
 test("h5 back navigation synchronously stops and detaches the active video", async () => {
   const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   assert.match(source, /function detachActivePlayer\(reason\) \{[\s\S]{0,1000}activeVideo\.pause\(\)[\s\S]{0,700}clearManagedPlaybackState\(\)[\s\S]{0,700}activeVideo\.removeAttribute\("src"\); activeVideo\.load\(\);/);

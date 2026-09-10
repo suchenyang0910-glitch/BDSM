@@ -9,6 +9,7 @@ export const ANALYTICS_EVENT_NAMES = [
   "content_impression",
   "content_opened",
   "article_opened",
+  "community_post_opened",
   "preview_started",
   "preview_ended",
   "preview_completed",
@@ -224,6 +225,16 @@ export function sanitizeAnalyticsEvent(input: {
           articleSlug: normalizeSmallString(payload.articleSlug, 160),
           sourceModule: normalizeSmallString(payload.sourceModule, 32) ?? "articles",
         }),
+      };
+    }
+    case "community_post_opened": {
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          communityPostIdHmac: analyticsIdHmac("community_post", payload.communityPostId),
+          sourceModule: normalizeSmallString(payload.sourceModule, 32) ?? "community",
+        },
       };
     }
     case "preview_started":

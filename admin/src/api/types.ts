@@ -333,6 +333,14 @@ export type PlatformMetadata = {
 
 export type AdminArticleStatus = "draft" | "published" | "archived";
 
+export type AdminContentMetrics = {
+  views: number;
+  viewers: number;
+  likeCount: number;
+  commentCount: number;
+  reportCount: number;
+};
+
 export type AdminArticleItem = {
   id: string;
   slug: string;
@@ -351,6 +359,7 @@ export type AdminArticleItem = {
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  metrics: AdminContentMetrics;
 };
 
 export type AdminArticleInput = {
@@ -421,6 +430,7 @@ export type ContentItem = {
   product?: ProductInContent | null;
   package?: PackageInContent | null;
   lastEditor?: EditorBrief | null;
+  metrics?: AdminContentMetrics;
 };
 
 export type ContentListResp = {
@@ -1473,6 +1483,8 @@ export type AdminInteractionReportItem = {
   reporter: { id: string; displayName?: string | null } | null;
   reviewer: { id: string; displayName?: string | null; email?: string | null } | null;
   comment: AdminInteractionReportComment | null;
+  target: { id: string; title: string; status: string } | null;
+  targetMetrics: AdminContentMetrics;
 };
 
 export type AdminInteractionReportListResp = {
@@ -1513,6 +1525,7 @@ export type AdminInteractionCommentQueueItem = {
     author: { id: string; displayName?: string | null } | null;
   } | null;
   target: { id: string; title: string; status: string } | null;
+  targetMetrics: AdminContentMetrics;
 };
 
 export type AdminInteractionCommentListResp = {
@@ -1586,6 +1599,7 @@ export type AdminCommunityPostItem = {
   reactionCount: number;
   commentCount: number;
   reportCount: number;
+  metrics: AdminContentMetrics;
   moderationReason: string | null;
   seoTitle: string | null;
   seoDescription: string | null;

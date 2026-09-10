@@ -148,6 +148,7 @@ test("[S1-0] GET /admin/contents 与详情包含商品 BigInt 金额时仍返回
     assert.equal(draft.transcodeStatus, null);
     assert.equal(draft.transcodeProgressPercent, 0);
     assert.equal(draft.publishState, "not_ready");
+    assert.deepEqual(draft.metrics, { views: 0, viewers: 0, likeCount: 0, commentCount: 0, reportCount: 0 });
 
     const detail = await app.inject({
       method: "GET",

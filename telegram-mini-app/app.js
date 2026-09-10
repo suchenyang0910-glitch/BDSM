@@ -195,6 +195,7 @@
       "session_started",
       "content_opened",
       "article_opened",
+      "community_post_opened",
       "preview_started",
       "preview_completed",
       "playback_started",
@@ -1208,6 +1209,9 @@
         $("headerSubtitle").textContent = item.summary || "社区帖子";
       }
       updatePageSeo(item.effectiveSeo || null);
+      if (item.status === "published") {
+        trackAnalytics("community_post_opened", { communityPostId: item.id, sourceModule: "community" });
+      }
       const topics = (item.topics || []).map(function (topic) { return '<span class="community-topic-chip">#' + escapeHtml(topic) + "</span>"; }).join("");
       host.innerHTML =
         '<div class="community-detail-meta">' + (topics ? '<div class="community-detail-topics">' + topics + "</div>" : "") + '<span>' + escapeHtml(formatCommunityDate(item.publishedAt || item.createdAt)) + "</span></div>" +

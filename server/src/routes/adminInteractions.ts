@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { requireAdmin, type AdminSession } from "./admin.js";
 import { validateKeywordList } from "../services/seoMetadata.js";
+import { adminContentMetricsFor, communityPostAnalyticsKey, loadAdminContentMetrics, videoAnalyticsKey } from "../services/adminContentMetrics.js";
 
 const listReportsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -161,6 +162,22 @@ async function loadTargetBrief(prisma: any, targetType: string, targetId: string
   return { id: targetId, title: targetId, status: "unknown" };
 }
 
+async function loadMetricsForInteractionTargets(prisma: any, targets: Array<{ targetType: string; targetId: string }>) {
+  const idsByType = targets.reduce((acc: Record<string, Set<string>>, target) => {
+    (acc[target.targetType] ||= new Set<string>()).add(target.targetId);
+    return acc;
+  }, {} as Record<string, Set<string>>);
+  const [contents, articles] = await Promise.all([
+    idsByType.video_content?.size ? prisma.content.findMany({ where: { id: { in: Array.from(idsByType.video_content) } }, select: { id: true } }) : [],
+    idsByType.article?.size ? prisma.article.findMany({ where: { id: { in: Array.from(idsByType.article) } }, select: { id: true, slug: true } }) : [],
+  ]);
+  return loadAdminContentMetrics(prisma, [
+    ...contents.map((item: any) => ({ targetType: "video_content" as const, targetId: item.id, analyticsKey: videoAnalyticsKey(item.id) })),
+    ...articles.map((item: any) => ({ targetType: "article" as const, targetId: item.id, analyticsKey: item.slug })),
+    ...(idsByType.circle_post ? Array.from(idsByType.circle_post).map((id) => ({ targetType: "circle_post" as const, targetId: id, analyticsKey: communityPostAnalyticsKey(id) })) : []),
+  ]);
+}
+
 function mapCommunityPostAsset(item: any) {
   return {
     id: item.id,
@@ -274,6 +291,7 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         }),
       ),
     );
+    const metrics = await loadMetricsForInteractionTargets(prisma, items);
     return {
       total,
       page,
@@ -312,6 +330,7 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
             }
           : null,
         target: targetMap.get(`${item.targetType}:${item.targetId}`),
+        targetMetrics: adminContentMetricsFor(metrics, item.targetType, item.targetId),
       })),
     };
   });
@@ -340,6 +359,9 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         take: pageSize,
       }),
     ]);
+    const metrics = await loadMetricsForInteractionTargets(prisma, items);
+    const targetMap = new Map<string, { id: string; title: string; status: string } | null>();
+    await Promise.all(items.map(async (item: any) => targetMap.set(`${item.targetType}:${item.targetId}`, await loadTargetBrief(prisma, item.targetType, item.targetId))));
     return {
       total,
       page,
@@ -357,6 +379,8 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         reporter: item.reporter,
         reviewer: item.reviewer,
         comment: item.comment,
+        target: targetMap.get(`${item.targetType}:${item.targetId}`),
+        targetMetrics: adminContentMetricsFor(metrics, item.targetType, item.targetId),
       })),
     };
   });
@@ -517,6 +541,11 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         take: pageSize,
       }),
     ]);
+    const metrics = await loadAdminContentMetrics(prisma, items.map((item: any) => ({
+      targetType: "circle_post" as const,
+      targetId: item.id,
+      analyticsKey: communityPostAnalyticsKey(item.id),
+    })));
     return {
       total,
       page,
@@ -531,6 +560,7 @@ export default async function adminInteractionRoutes(fastify: FastifyInstance) {
         reactionCount: item.reactionCount,
         commentCount: item.commentCount,
         reportCount: item.reportCount,
+        metrics: adminContentMetricsFor(metrics, "circle_post", item.id),
         moderationReason: item.moderationReason || null,
         seoTitle: item.seoTitle || null,
         seoDescription: item.seoDescription || null,

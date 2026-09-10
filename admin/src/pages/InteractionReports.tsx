@@ -403,6 +403,7 @@ const InteractionReportsPage: React.FC = () => {
         <Space direction="vertical" size={2}>
           <Text strong>{TARGET_TYPE_LABEL[row.targetType]}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>{row.targetId}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>浏览 {row.targetMetrics.views} · 赞 {row.targetMetrics.likeCount} · 评 {row.targetMetrics.commentCount}</Text>
         </Space>
       ),
     },
@@ -462,6 +463,7 @@ const InteractionReportsPage: React.FC = () => {
               author: row.reporter,
               parentComment: null,
               target: { id: row.targetId, title: row.targetId, status: "unknown" },
+              targetMetrics: row.targetMetrics,
             }, row)}
           >
             审核评论
@@ -492,6 +494,7 @@ const InteractionReportsPage: React.FC = () => {
           <Text strong>{TARGET_TYPE_LABEL[row.targetType]}</Text>
           <Text>{row.target?.title || row.targetId}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>{row.target?.status || row.targetId}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>浏览 {row.targetMetrics.views} · 赞 {row.targetMetrics.likeCount} · 评 {row.targetMetrics.commentCount} · 报 {row.targetMetrics.reportCount}</Text>
         </Space>
       ),
     },
@@ -605,9 +608,9 @@ const InteractionReportsPage: React.FC = () => {
       ),
     },
     {
-      title: "举报数",
-      width: 96,
-      render: (_, row) => <Tag color={row.reportCount > 0 ? "red" : "default"}>{row.reportCount}</Tag>,
+      title: "数据",
+      width: 180,
+      render: (_, row) => <Space size={[4, 4]} wrap><Tag>浏览 {row.metrics.views}</Tag><Tag>赞 {row.metrics.likeCount}</Tag><Tag>评 {row.metrics.commentCount}</Tag><Tag color={row.metrics.reportCount > 0 ? "red" : "default"}>报 {row.metrics.reportCount}</Tag></Space>,
     },
     {
       title: "操作",

@@ -1945,6 +1945,12 @@ const ContentsPage: React.FC = () => {
       render: (_: any, r) => renderPublishStateTag(r),
     },
     {
+      title: "数据",
+      key: "metrics",
+      width: 168,
+      render: (_: any, r) => <Space size={[4, 4]} wrap><Tag>浏览 {r.metrics?.views || 0}</Tag><Tag>赞 {r.metrics?.likeCount || 0}</Tag><Tag>评 {r.metrics?.commentCount || 0}</Tag><Tag color={r.metrics?.reportCount ? "red" : "default"}>报 {r.metrics?.reportCount || 0}</Tag></Space>,
+    },
+    {
       title: "时长",
       dataIndex: "durationSeconds",
       key: "durationSeconds",

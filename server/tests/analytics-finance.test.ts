@@ -271,6 +271,13 @@ test("analytics sanitizer preserves library and single paywall semantics", () =>
   });
   assert.equal(articleOpened.propertiesJson.articleSlug, "boundary-and-consent");
   assert.equal(articleOpened.propertiesJson.sourceModule, "articles");
+
+  const communityOpened = sanitizeAnalyticsEvent({
+    eventName: "community_post_opened",
+    payload: { platform: "h5", communityPostId: "community-post-1", sourceModule: "community" },
+  });
+  assert.equal(typeof communityOpened.propertiesJson.communityPostIdHmac, "string");
+  assert.equal(communityOpened.propertiesJson.communityPostIdHmac === "community-post-1", false);
 });
 
 test("admin analytics overview exposes aggregate funnel only and enforces analytics:view", async () => {
