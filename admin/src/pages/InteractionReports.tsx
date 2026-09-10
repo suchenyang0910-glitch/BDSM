@@ -403,7 +403,7 @@ const InteractionReportsPage: React.FC = () => {
         <Space direction="vertical" size={2}>
           <Text strong>{TARGET_TYPE_LABEL[row.targetType]}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>{row.targetId}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>浏览 {row.targetMetrics.views} · 赞 {row.targetMetrics.likeCount} · 评 {row.targetMetrics.commentCount}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>浏览 {row.targetMetrics?.views || 0} · 赞 {row.targetMetrics?.likeCount || 0} · 评 {row.targetMetrics?.commentCount || 0}</Text>
         </Space>
       ),
     },
@@ -463,7 +463,7 @@ const InteractionReportsPage: React.FC = () => {
               author: row.reporter,
               parentComment: null,
               target: { id: row.targetId, title: row.targetId, status: "unknown" },
-              targetMetrics: row.targetMetrics,
+              targetMetrics: row.targetMetrics || { views: 0, viewers: 0, likeCount: 0, commentCount: 0, reportCount: 0 },
             }, row)}
           >
             审核评论
@@ -494,7 +494,7 @@ const InteractionReportsPage: React.FC = () => {
           <Text strong>{TARGET_TYPE_LABEL[row.targetType]}</Text>
           <Text>{row.target?.title || row.targetId}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>{row.target?.status || row.targetId}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>浏览 {row.targetMetrics.views} · 赞 {row.targetMetrics.likeCount} · 评 {row.targetMetrics.commentCount} · 报 {row.targetMetrics.reportCount}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>浏览 {row.targetMetrics?.views || 0} · 赞 {row.targetMetrics?.likeCount || 0} · 评 {row.targetMetrics?.commentCount || 0} · 报 {row.targetMetrics?.reportCount || 0}</Text>
         </Space>
       ),
     },
@@ -610,7 +610,7 @@ const InteractionReportsPage: React.FC = () => {
     {
       title: "数据",
       width: 180,
-      render: (_, row) => <Space size={[4, 4]} wrap><Tag>浏览 {row.metrics.views}</Tag><Tag>赞 {row.metrics.likeCount}</Tag><Tag>评 {row.metrics.commentCount}</Tag><Tag color={row.metrics.reportCount > 0 ? "red" : "default"}>报 {row.metrics.reportCount}</Tag></Space>,
+      render: (_, row) => <Space size={[4, 4]} wrap><Tag>浏览 {row.metrics?.views || 0}</Tag><Tag>赞 {row.metrics?.likeCount || 0}</Tag><Tag>评 {row.metrics?.commentCount || 0}</Tag><Tag color={row.metrics?.reportCount ? "red" : "default"}>报 {row.metrics?.reportCount || 0}</Tag></Space>,
     },
     {
       title: "操作",
