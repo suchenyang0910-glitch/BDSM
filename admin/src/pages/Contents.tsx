@@ -629,6 +629,10 @@ const ACCESS_TYPE_OPTIONS = [
 
 type AccessTypeForSelect = "public" | "membership" | "package" | "single";
 type OpsTagFilter = "recommended" | "featured" | "new" | undefined;
+type CoverIntegrityReport = {
+  summary: { scanned: number; healthy: number; derivable: number; legacyUrlUnmanaged: number; manualCoverRequired: number };
+  issues: Array<{ contentId: string; title: string; platformPlaybackEnabled: boolean; status: "derivable" | "legacy_url_unmanaged" | "manual_cover_required"; message: string }>;
+};
 
 const ContentsPage: React.FC = () => {
   const [viewportWidth, setViewportWidth] = React.useState<number>(() => (typeof window !== "undefined" ? window.innerWidth : 1440));
@@ -641,6 +645,7 @@ const ContentsPage: React.FC = () => {
   const [accessTypeFilter, setAccessTypeFilter] = React.useState<string | undefined>();
   const [opsTagFilter, setOpsTagFilter] = React.useState<OpsTagFilter>();
   const [q, setQ] = React.useState("");
+  const [coverIntegrityLoading, setCoverIntegrityLoading] = React.useState(false);
 
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [editorTab, setEditorTab] = React.useState("basic");
@@ -738,6 +743,46 @@ const ContentsPage: React.FC = () => {
       setLoading(false);
     }
   }, [page, pageSize, statusFilter, accessTypeFilter, q]);
+
+  const runCoverIntegrityScan = React.useCallback(async () => {
+    setCoverIntegrityLoading(true);
+    try {
+      const response = await http.get<CoverIntegrityReport>("/admin/contents/cover-integrity", { params: { limit: 200 } });
+      const report = response.data;
+      const s = report.summary;
+      Modal.info({
+        title: "封面完整性扫描",
+        width: 720,
+        content: (
+          <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 16 }}>
+            <Alert
+              type={report.issues.length ? "warning" : "success"}
+              showIcon
+              message={`已扫描 ${s.scanned} 条已发布视频：受控封面正常 ${s.healthy} 条，待处理 ${report.issues.length} 条`}
+              description={`可自动派生 ${s.derivable} · 历史 URL 未受控 ${s.legacyUrlUnmanaged} · 需人工补图 ${s.manualCoverRequired}`}
+            />
+            {report.issues.length > 0 && (
+              <Table
+                size="small"
+                rowKey="contentId"
+                pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                dataSource={report.issues}
+                columns={[
+                  { title: "视频", dataIndex: "title", key: "title", ellipsis: true },
+                  { title: "处理状态", dataIndex: "status", key: "status", width: 150, render: (status: string) => <Tag color={status === "derivable" ? "blue" : "orange"}>{status === "derivable" ? "可自动派生" : status === "legacy_url_unmanaged" ? "历史 URL 未受控" : "需人工补图"}</Tag> },
+                  { title: "建议", dataIndex: "message", key: "message", width: 300 },
+                ]}
+              />
+            )}
+          </Space>
+        ),
+      });
+    } catch (error) {
+      message.error(errMsg(error, "封面完整性扫描失败"));
+    } finally {
+      setCoverIntegrityLoading(false);
+    }
+  }, []);
 
   React.useEffect(() => {
     fetchList();
@@ -2099,6 +2144,9 @@ const ContentsPage: React.FC = () => {
               value={opsTagFilter}
               onChange={(v) => setOpsTagFilter(v)}
             />
+            <Button icon={<ReloadOutlined />} loading={coverIntegrityLoading} onClick={() => void runCoverIntegrityScan()}>
+              扫描封面
+            </Button>
             <Button icon={<PlusOutlined />} type="primary" onClick={openCreate} disabled={!canEdit}>
               发布视频
             </Button>
