@@ -147,7 +147,9 @@ export function loadTranscodeWorkerConfig(env: NodeJS.ProcessEnv = process.env):
   const ffprobePath = String(env.TRANSCODE_FFPROBE_PATH || "ffprobe").trim();
   const ffmpegPath = String(env.TRANSCODE_FFMPEG_PATH || "ffmpeg").trim();
   const ffprobeTimeoutMs = clampInt(env.TRANSCODE_FFPROBE_TIMEOUT_MS, 60_000, 5_000, 300_000);
-  const ffmpegTimeoutMs = clampInt(env.TRANSCODE_FFMPEG_TIMEOUT_MS, 3_600_000, 30_000, 10 * 3_600_000);
+  // Long-form source files can legitimately need more than an hour.  Keep the
+  // explicit upper bound, but make three hours the production-safe default.
+  const ffmpegTimeoutMs = clampInt(env.TRANSCODE_FFMPEG_TIMEOUT_MS, 3 * 3_600_000, 30_000, 10 * 3_600_000);
   const runnerMode = String(env.TRANSCODE_RUNNER || "ffmpeg").trim().toLowerCase() === "mock" ? "mock" : "ffmpeg";
   return {
     enabled,

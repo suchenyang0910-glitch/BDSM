@@ -18,6 +18,7 @@ import {
   createFfmpegTranscodeRunner,
   defaultMockTranscodeRunner,
   inspectLocalRendition,
+  loadTranscodeWorkerConfig,
   processClaimedTranscodeJob,
   requeueExpiredTranscodeJobs,
   type TranscodeRunner,
@@ -125,6 +126,12 @@ function phaseBWorkerConfig(): TranscodeWorkerConfig {
     runnerMode: "mock",
   };
 }
+
+test("Phase B: default FFmpeg timeout is three hours and retries remain bounded to three", () => {
+  const config = loadTranscodeWorkerConfig({});
+  assert.equal(config.ffmpegTimeoutMs, 3 * 60 * 60 * 1000);
+  assert.equal(config.maxAttempts, 3);
+});
 
 function sortKinds(items: string[]) {
   return items.slice().sort((left, right) => left.localeCompare(right));
