@@ -268,7 +268,15 @@ const CampaignsPage: React.FC = () => {
             { title: "入口打开", dataIndex: ["metrics", "opens"], width: 90 },
             { title: "详情打开", dataIndex: ["metrics", "contentOpened"], width: 90 },
             { title: "收银台", dataIndex: ["metrics", "checkoutOpen"], width: 90 },
-            { title: "确认支付", dataIndex: ["metrics", "paymentConfirmed"], width: 90 },
+            { title: "已支付订单", dataIndex: ["metrics", "paidOrders"], width: 100 },
+            {
+              title: "确认收入（快照）",
+              width: 150,
+              render: (_: unknown, row) => {
+                const entries = Object.entries(row.metrics.confirmedRevenue || {});
+                return entries.length ? entries.map(([currency, amount]) => `${amount} ${currency}`).join(" · ") : "—";
+              },
+            },
             { title: "首次完整播放", dataIndex: ["metrics", "playbackStarted"], width: 110 },
             { title: "更新时间", dataIndex: "updatedAt", width: 150, render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm") },
             {

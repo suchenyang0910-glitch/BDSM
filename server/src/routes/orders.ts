@@ -31,6 +31,7 @@ import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js"
 import { normalizeStoredXtrAmountToStars } from "../utils/currency.js";
 import { notifyPaymentSuccess } from "../services/paymentSuccessNotifier.js";
 import { computePaymentAddressIntegrityMac, verifyAndFreezePaymentAddressIntegrity } from "../services/paymentAddressIntegrity.js";
+import { captureOrderAttribution, orderAttributionInputFromRequest } from "../services/orderAttribution.js";
 
 const TRON_BASE58_ADDRESS_RE = /^T[A-Za-z0-9]{8,63}$/;
 
@@ -243,6 +244,17 @@ function adminOrderResponse(o: any) {
       }))
     : [];
   base.telegramUserIdHmac = o.telegramUserIdHmac ?? null;
+  base.attribution = o.attribution
+    ? {
+        status: o.attribution.status,
+        trafficEntryCode: o.attribution.trafficEntryCode ?? null,
+        campaignCode: o.attribution.campaignCode ?? null,
+        clientType: o.attribution.clientType,
+        identityType: o.attribution.identityType,
+        ruleVersion: o.attribution.ruleVersion,
+        capturedAt: o.attribution.capturedAt?.toISOString?.() ?? null,
+      }
+    : { status: "unknown", historical: true };
   return base;
 }
 
@@ -390,16 +402,21 @@ export default async function orderRoutes(fastify: FastifyInstance) {
       orderNo = generateOrderNo();
     }
 
-    const order = await prisma.order.create({
-      data: {
-        orderNo,
-        userId: uid,
-        productId: product.id,
-        amountMinor: product.priceMinor,
-        currency: product.currency,
-        status: "pending",
-      },
-      include: { product: true, entitlements: true },
+    const attributionInput = orderAttributionInputFromRequest(req);
+    const order = await prisma.$transaction(async (tx: any) => {
+      const created = await tx.order.create({
+        data: {
+          orderNo,
+          userId: uid,
+          productId: product.id,
+          amountMinor: product.priceMinor,
+          currency: product.currency,
+          status: "pending",
+        },
+        include: { product: true, entitlements: true },
+      });
+      await captureOrderAttribution(tx, created.id, attributionInput);
+      return created;
     });
 
     return reply.status(201).send(orderResponse(order));
@@ -481,26 +498,31 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     const { payloadPlain, payloadHmac } = starsPaymentPayloadForOrder({ orderNo, userId: uid, amountMinor });
     const expiresAt = new Date(Date.now() + STARS_ORDER_EXPIRES_MS);
     const telegramUserIdHmac = tgid ? userIdIndexKey(tgid) : null;
+    const attributionInput = orderAttributionInputFromRequest(req);
 
     // DB 创建订单（含 payloadHmac 唯一；若唯一冲突则重新生成 payloadPlain 再试）
     let order: any;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        order = await prisma.order.create({
-          data: {
-            orderNo,
-            userId: uid,
-            productId: product.id,
-            amountMinor,
-            currency: product.currency.toUpperCase(),
-            paymentMethod: "telegram_stars",
-            paymentProvider: "telegram_stars",
-            paymentPayloadHmac: payloadHmac,
-            telegramUserIdHmac,
-            expiresAt,
-            status: "pending",
-          },
-          include: { product: true, entitlements: true },
+        order = await prisma.$transaction(async (tx: any) => {
+          const created = await tx.order.create({
+            data: {
+              orderNo,
+              userId: uid,
+              productId: product.id,
+              amountMinor,
+              currency: product.currency.toUpperCase(),
+              paymentMethod: "telegram_stars",
+              paymentProvider: "telegram_stars",
+              paymentPayloadHmac: payloadHmac,
+              telegramUserIdHmac,
+              expiresAt,
+              status: "pending",
+            },
+            include: { product: true, entitlements: true },
+          });
+          await captureOrderAttribution(tx, created.id, attributionInput);
+          return created;
         });
         break;
       } catch (e: any) {
@@ -632,6 +654,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
       orderNo = generateOrderNo();
     }
     const expiresAt = new Date(Date.now() + USDT_ORDER_EXPIRES_MS);
+    const attributionInput = orderAttributionInputFromRequest(req);
 
     // ============================================================
     // PRD §4.1 原子建单 + §4.3 尾数空间耗尽切换可用地址
@@ -684,6 +707,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
               expiresAt,
             },
           });
+          await captureOrderAttribution(tx, placeholder.id, attributionInput);
           // 2. 分配地址（同一 tx，SKIP LOCKED 会自动跳过被锁的；再额外排除之前尾数耗尽过的地址 id 避免快速撞同一个）
           const assigned = await assignUsdtTrc20Address(tx, placeholder.id, expiresAt, Array.from(SKIP_ADDRESS_IDS));
           if (!assigned.ok) {
@@ -1117,6 +1141,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
               take: 10,
               orderBy: [{ createdAt: "desc" }],
             },
+            attribution: true,
           },
         }),
       ]);
@@ -1147,6 +1172,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
             take: 30,
             orderBy: [{ createdAt: "desc" }],
           },
+          attribution: true,
         },
       });
       if (!order) return reply.status(404).send({ error: "not_found", message: "订单不存在" });

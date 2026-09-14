@@ -889,6 +889,7 @@ model Order {
   supportTickets        SupportTicket[]
   paymentTransactions   PaymentTransaction[]
   playbackRevokeOutboxes PlaybackRevokeOutbox[]
+  attribution           OrderAttribution?
   usdtPaymentAddress    PaymentAddress? @relation(fields: [usdtPaymentAddressId], references: [id])
   usdtPaymentAddressId  String?         @map("usdt_payment_address_id")
 
@@ -898,6 +899,30 @@ model Order {
   @@index([expiresAt, status])
   @@index([usdtPaymentAddressId, status])
   @@map("orders")
+}
+
+model OrderAttribution {
+  id                String   @id @default(uuid())
+  orderId           String   @unique @map("order_id")
+  status            String   @db.VarChar(32)
+  trafficEntryId    String?  @map("traffic_entry_id")
+  trafficEntryCode  String?  @map("traffic_entry_code") @db.VarChar(64)
+  trafficEntryType  String?  @map("traffic_entry_type") @db.VarChar(32)
+  destinationType   String?  @map("destination_type") @db.VarChar(32)
+  destinationId     String?  @map("destination_id") @db.VarChar(64)
+  campaignId        String?  @map("campaign_id")
+  campaignCode      String?  @map("campaign_code") @db.VarChar(64)
+  clientType        String   @map("client_type") @db.VarChar(32)
+  identityType      String   @map("identity_type") @db.VarChar(32)
+  ruleVersion       String   @map("rule_version") @db.VarChar(64)
+  sourceCapturedAt  DateTime? @map("source_captured_at")
+  capturedAt        DateTime @default(now()) @map("captured_at")
+
+  order             Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([trafficEntryCode, capturedAt])
+  @@index([campaignId, capturedAt])
+  @@map("order_attributions")
 }
 
 model PaymentTransaction {

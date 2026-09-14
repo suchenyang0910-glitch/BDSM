@@ -186,6 +186,7 @@ const ALL_TABLES_ORDERED = [
   "telegram_invites",
   "entitlements",
   "payment_transactions",
+  "order_attributions",
   "payment_addresses",
   "orders",
   "contents",

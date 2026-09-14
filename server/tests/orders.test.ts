@@ -8,6 +8,7 @@ import homeRoutes from "../src/routes/home.js";
 import contentRoutes from "../src/routes/contents.js";
 import resourceRoutes from "../src/routes/resources.js";
 import orderRoutes from "../src/routes/orders.js";
+import trafficEntryRoutes from "../src/routes/trafficEntries.js";
 import adminRoutes from "../src/routes/admin.js";
 import telegramWebhookRoutes from "../src/routes/telegramWebhook.js";
 import {
@@ -74,6 +75,7 @@ async function createTestApp(prisma: any) {
   await app.register(homeRoutes, { prefix: "/api" });
   await app.register(contentRoutes, { prefix: "/api" });
   await app.register(resourceRoutes, { prefix: "/api" });
+  await app.register(trafficEntryRoutes, { prefix: "/api" });
   await app.register(orderRoutes, { prefix: "/api" });
   return app;
 }
@@ -168,6 +170,108 @@ await seedTestData(prisma);
 
 test.after(async () => {
   await teardownTestHarness(prisma);
+});
+
+test("订单归因快照：仅服务端验证入口可写入，直接回访不覆盖，未知不猜测", async () => {
+  const app = await createTestApp(prisma);
+  try {
+    const seed = Date.now() % 100_000_000;
+    const user = await prisma.user.create({
+      data: { telegramUserId: BigInt(6_800_000_000 + seed), displayName: "订单归因测试用户" },
+    });
+    const entry = await prisma.trafficEntry.create({
+      data: {
+        code: `order_attr_${seed}`,
+        name: "订单归因测试入口",
+        entryType: "telegram_channel",
+        destinationType: "membership",
+        destinationId: "membership",
+        status: "active",
+      },
+    });
+    const campaign = await prisma.operationCampaign.create({
+      data: {
+        code: `order_attr_campaign_${seed}`,
+        name: "订单归因测试活动",
+        status: "active",
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 60_000),
+        trafficEntryIds: [entry.id],
+      },
+    });
+    const userCookie = await loginAs(app, user.id);
+    const resolved = await app.inject({
+      method: "GET",
+      url: `/api/traffic-entries/resolve?code=${encodeURIComponent(entry.code)}`,
+      headers: { cookie: userCookie },
+    });
+    assert.equal(resolved.statusCode, 200, resolved.body);
+    const attributedCookie = cookieFromResponse(resolved);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/orders",
+      headers: { cookie: attributedCookie, "Content-Type": "application/json" },
+      payload: { productId: TEST_KNOWN_IDS.membershipProductKey },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const createdOrderNo = JSON.parse(created.body).orderNo;
+    const createdOrder = await prisma.order.findUniqueOrThrow({ where: { orderNo: createdOrderNo } });
+    const snapshot = await (prisma as any).orderAttribution.findUniqueOrThrow({ where: { orderId: createdOrder.id } });
+    assert.equal(snapshot.status, "attributed");
+    assert.equal(snapshot.trafficEntryCode, entry.code);
+    assert.equal(snapshot.campaignId, campaign.id);
+    assert.equal(snapshot.clientType, "web");
+    assert.equal(snapshot.identityType, "h5_session");
+    assert.equal(snapshot.ruleVersion, "last_non_direct_v1");
+
+    // There is no direct-source writer. A normal return visit keeps the last
+    // valid non-direct source rather than replacing it with a direct visit.
+    const directReturn = await app.inject({
+      method: "POST",
+      url: "/api/orders",
+      headers: { cookie: attributedCookie, "Content-Type": "application/json" },
+      payload: { productId: TEST_KNOWN_IDS.membershipProductKey },
+    });
+    assert.equal(directReturn.statusCode, 201, directReturn.body);
+    const directOrder = await prisma.order.findUniqueOrThrow({ where: { orderNo: JSON.parse(directReturn.body).orderNo } });
+    const directSnapshot = await (prisma as any).orderAttribution.findUniqueOrThrow({ where: { orderId: directOrder.id } });
+    assert.equal(directSnapshot.trafficEntryCode, entry.code);
+
+    const unknownUser = await prisma.user.create({
+      data: { telegramUserId: BigInt(6_900_000_000 + seed), displayName: "订单未知归因用户" },
+    });
+    const unknownCookie = await loginAs(app, unknownUser.id);
+    // Body-supplied channel data is not a trusted source and is ignored.
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/api/orders",
+      headers: { cookie: unknownCookie, "Content-Type": "application/json" },
+      payload: { productId: TEST_KNOWN_IDS.membershipProductKey, trafficEntryCode: entry.code },
+    });
+    assert.equal(unknown.statusCode, 201, unknown.body);
+    const unknownOrder = await prisma.order.findUniqueOrThrow({ where: { orderNo: JSON.parse(unknown.body).orderNo } });
+    const unknownSnapshot = await (prisma as any).orderAttribution.findUniqueOrThrow({ where: { orderId: unknownOrder.id } });
+    assert.equal(unknownSnapshot.status, "unknown");
+    assert.equal(unknownSnapshot.trafficEntryCode, null);
+
+    // A historical row deliberately has no new relationship and stays
+    // distinguishable from new orders explicitly captured as unknown.
+    const historical = await prisma.order.create({
+      data: {
+        orderNo: `HISTATTR${seed}`,
+        userId: unknownUser.id,
+        productId: TEST_KNOWN_IDS.membershipProductKey,
+        amountMinor: 299n,
+        currency: "XTR",
+        status: "paid",
+        paidAt: new Date(),
+      },
+    });
+    assert.equal(await (prisma as any).orderAttribution.findUnique({ where: { orderId: historical.id } }), null);
+  } finally {
+    await app.close();
+  }
 });
 
 test("后台订单列表：链上交易 blockNumber(BigInt) 必须安全序列化为字符串", async () => {
@@ -473,6 +577,9 @@ test("Stars 创单：POST /api/orders/stars 校验 XTR/金额/返回 invoiceLink
     });
     assert.ok(r2.statusCode === 201 || r2.statusCode === 503,
       `stars创单必须 201 或 503 (mock可能无 createInvoiceLink 实现)，got ${r2.statusCode}: ${r2.body}`);
+    const persistedStarsOrder = await prisma.order.findFirstOrThrow({ where: { userId: user.id }, orderBy: { createdAt: "desc" } });
+    const starsAttribution = await (prisma as any).orderAttribution.findUniqueOrThrow({ where: { orderId: persistedStarsOrder.id } });
+    assert.equal(starsAttribution.status, "unknown", "Stars 建单也必须写显式未知快照，不能缺行或读取客户端事件");
     if (r2.statusCode === 201) {
       const body = r2.json() as any;
       assert.equal(body.paymentMethod, "telegram_stars");
@@ -1019,6 +1126,9 @@ test("USDT 创单：XTR 商品 400，USDT membership 商品 201（标价非整�
       // displayAmountDecimal 必须和 amountMinor 精确一致（1e-6 除法，6 位小数）
       const expectedDisplay = (Number(finalMinor) / 1_000_000).toFixed(6);
       assert.equal(b.usdtPayment.displayAmountDecimal, expectedDisplay, `displayAmountDecimal 必须等于 ${expectedDisplay}`);
+      const persistedUsdtOrder = await prisma.order.findUniqueOrThrow({ where: { orderNo: b.orderNo } });
+      const usdtAttribution = await (prisma as any).orderAttribution.findUniqueOrThrow({ where: { orderId: persistedUsdtOrder.id } });
+      assert.equal(usdtAttribution.status, "unknown", "USDT 建单也必须在同一事务写显式未知快照");
     }
   } finally {
     await app.close();

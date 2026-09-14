@@ -161,6 +161,10 @@ const FinanceCenterPage: React.FC = () => {
           <Col xs={12} lg={6}><Card><Statistic title="待处理订单" value={metrics.pendingOrderCount} /></Card></Col>
         </Row>
         <Row gutter={[16, 16]}>
+          <Col xs={24} lg={12}><Card><Statistic title="已归因已支付订单" value={metrics.attributionCoverage.attributedPaidOrderCount} /><Text type="secondary">仅订单创建时快照；不含后验推测。</Text></Card></Col>
+          <Col xs={24} lg={12}><Card><Statistic title="未知归因已支付订单" value={metrics.attributionCoverage.unknownPaidOrderCount} /><Text type="secondary">历史无快照或无有效入口订单保持未知。</Text></Card></Col>
+        </Row>
+        <Row gutter={[16, 16]}>
           {(["telegram_stars", "usdt_trc20", "manual"] as FinancePaymentMethod[]).map((method) => (
             <Col xs={24} lg={8} key={method}>
               <Card title={METHOD_LABEL[method]}>

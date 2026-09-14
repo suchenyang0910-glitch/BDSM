@@ -57,6 +57,8 @@ export type AdminTrafficEntryItem = {
     previewStarted: number;
     checkoutOpen: number;
     paymentConfirmed: number;
+    paidOrders: number;
+    confirmedRevenue: Record<string, string>;
     playbackStarted: number;
   };
 };
@@ -100,6 +102,8 @@ export type AdminCampaignItem = {
     contentOpened: number;
     checkoutOpen: number;
     paymentConfirmed: number;
+    paidOrders: number;
+    confirmedRevenue: Record<string, string>;
     playbackStarted: number;
   };
 };
@@ -707,6 +711,11 @@ export type FinanceOverviewResp = {
     refundedOrderCount: number;
     usdtAverageConfirmMs: number | null;
     starsAverageSuccessMs: number | null;
+    attributionCoverage: {
+      attributedPaidOrderCount: number;
+      unknownPaidOrderCount: number;
+      rule: "order_snapshot_only";
+    };
   };
 };
 

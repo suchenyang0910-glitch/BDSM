@@ -55,8 +55,12 @@ type TrafficEntryMetricsRow = {
   contentOpened: number;
   previewStarted: number;
   checkoutOpen: number;
-  paymentConfirmed: number;
   playbackStarted: number;
+};
+
+type TrafficEntryRevenueMetric = {
+  paidOrders: number;
+  confirmedRevenue: Record<string, string>;
 };
 
 function analyticsRange(preset: "7d" | "30d") {
@@ -157,7 +161,6 @@ async function loadTrafficEntryMetrics(prisma: any, codes: string[], from: Date,
       COUNT(DISTINCT CASE WHEN "event_name" = 'content_opened' THEN "session_id_hmac" END)::int AS "contentOpened",
       COUNT(DISTINCT CASE WHEN "event_name" = 'preview_started' THEN "session_id_hmac" END)::int AS "previewStarted",
       COUNT(DISTINCT CASE WHEN "event_name" = 'checkout_open' THEN "session_id_hmac" END)::int AS "checkoutOpen",
-      COUNT(DISTINCT CASE WHEN "event_name" = 'payment_confirmed' THEN "session_id_hmac" END)::int AS "paymentConfirmed",
       COUNT(DISTINCT CASE WHEN "event_name" = 'playback_started' THEN "session_id_hmac" END)::int AS "playbackStarted"
     FROM "analytics_events"
     WHERE "occurred_at" >= ${from}
@@ -166,6 +169,30 @@ async function loadTrafficEntryMetrics(prisma: any, codes: string[], from: Date,
     GROUP BY 1
   `);
   return new Map<string, TrafficEntryMetricsRow>(rows.map((row: TrafficEntryMetricsRow) => [row.code, row]));
+}
+
+async function loadTrafficEntryRevenue(prisma: any, codes: string[], from: Date, to: Date) {
+  if (!codes.length) return new Map<string, TrafficEntryRevenueMetric>();
+  const rows = await prisma.orderAttribution.findMany({
+    where: {
+      trafficEntryCode: { in: codes },
+      order: { status: "paid", paidAt: { gte: from, lte: to } },
+    },
+    select: {
+      trafficEntryCode: true,
+      order: { select: { amountMinor: true, currency: true } },
+    },
+  });
+  const metrics = new Map<string, TrafficEntryRevenueMetric>();
+  for (const row of rows) {
+    if (!row.trafficEntryCode) continue;
+    const current = metrics.get(row.trafficEntryCode) || { paidOrders: 0, confirmedRevenue: {} };
+    const currency = String(row.order.currency || "unknown").toUpperCase();
+    current.paidOrders += 1;
+    current.confirmedRevenue[currency] = (BigInt(current.confirmedRevenue[currency] || "0") + BigInt(row.order.amountMinor.toString())).toString();
+    metrics.set(row.trafficEntryCode, current);
+  }
+  return metrics;
 }
 
 async function writeTrafficEntryAudit(prisma: any, req: any, action: string, objectId: string, beforeValue: unknown, afterValue: unknown, reason?: string | null) {
@@ -196,6 +223,21 @@ export default async function trafficEntryRoutes(fastify: FastifyInstance) {
     const row = await prisma.trafficEntry.findUnique({ where: { code } }) as TrafficEntryRow | null;
     if (!row || row.status !== "active") {
       return reply.status(404).send({ error: "traffic_entry_not_found", message: "渠道入口不存在或已停用。" });
+    }
+    // Persist only server-verified entry facts.  Direct visits do not touch
+    // this field, so they cannot erase a valid non-direct source within the
+    // seven-day session lifetime.
+    const session = (req as any).session as any;
+    if (session) {
+      session.orderAttribution = {
+        version: 1,
+        trafficEntryId: row.id,
+        trafficEntryCode: row.code,
+        trafficEntryType: row.entryType,
+        destinationType: row.destinationType,
+        destinationId: row.destinationId,
+        capturedAt: new Date().toISOString(),
+      };
     }
     const links = buildTrafficEntryLinks(resolveTrafficEntryOrigins(), row);
     return reply.send({
@@ -230,9 +272,10 @@ export default async function trafficEntryRoutes(fastify: FastifyInstance) {
       where,
       orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
     }) as TrafficEntryRow[];
-    const [labels, metrics] = await Promise.all([
+    const [labels, metrics, revenue] = await Promise.all([
       loadTrafficEntryDestinationLabels(prisma, rows),
       loadTrafficEntryMetrics(prisma, rows.map((row) => row.code), from, to),
+      loadTrafficEntryRevenue(prisma, rows.map((row) => row.code), from, to),
     ]);
     const origins = resolveTrafficEntryOrigins();
     const items = rows.map((row) => {
@@ -242,9 +285,9 @@ export default async function trafficEntryRoutes(fastify: FastifyInstance) {
         contentOpened: 0,
         previewStarted: 0,
         checkoutOpen: 0,
-        paymentConfirmed: 0,
         playbackStarted: 0,
       };
+      const revenueMetric = revenue.get(row.code) || { paidOrders: 0, confirmedRevenue: {} };
       return {
         id: row.id,
         code: row.code,
@@ -263,7 +306,12 @@ export default async function trafficEntryRoutes(fastify: FastifyInstance) {
           contentOpened: metric.contentOpened,
           previewStarted: metric.previewStarted,
           checkoutOpen: metric.checkoutOpen,
-          paymentConfirmed: metric.paymentConfirmed,
+          // Revenue and paid conversion use immutable order snapshots, not
+          // browser events.  A historical order without a snapshot is not
+          // silently included under any entry.
+          paymentConfirmed: revenueMetric.paidOrders,
+          paidOrders: revenueMetric.paidOrders,
+          confirmedRevenue: revenueMetric.confirmedRevenue,
           playbackStarted: metric.playbackStarted,
         },
       };

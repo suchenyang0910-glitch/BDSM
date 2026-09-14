@@ -12,12 +12,7 @@ import {
   computePaymentAddressIntegrityMac,
   verifyAndFreezePaymentAddressIntegrity,
 } from "../src/services/paymentAddressIntegrity.js";
-import {
-  analyticsAnonymousIdHmac,
-  analyticsSessionIdHmac,
-  analyticsUserIdHmac,
-  sanitizeAnalyticsEvent,
-} from "../src/services/analytics.js";
+import { sanitizeAnalyticsEvent } from "../src/services/analytics.js";
 import {
   setupTestHarness,
   teardownTestHarness,
@@ -88,42 +83,44 @@ async function loginAdmin(app: any, role: keyof typeof TEST_CREDENTIALS): Promis
   return cookieFromResponse(r);
 }
 
-async function seedServerPaymentConfirmedEvent(prisma: any, input: {
+async function seedPaidOrderAttribution(prisma: any, input: {
   userId: string;
   orderNo: string;
   productId: string;
-  paymentMethod?: "telegram_stars" | "usdt_trc20" | "manual";
-  trafficEntryCode?: string;
-  destinationType?: string;
-  destinationId?: string;
+  trafficEntryCode: string;
+  campaignId?: string | null;
+  campaignCode?: string | null;
 }) {
-  const sessionSeed = `server_payment:${input.orderNo}`;
-  const sanitized = sanitizeAnalyticsEvent({
-    eventName: "payment_confirmed",
-    payload: {
-      platform: "server",
-      orderNo: input.orderNo,
-      productId: input.productId,
-      paymentMethod: input.paymentMethod || "telegram_stars",
-      trafficEntryCode: input.trafficEntryCode,
-      entryType: input.trafficEntryCode ? "telegram_channel" : undefined,
-      destinationType: input.destinationType,
-      destinationId: input.destinationId,
-    },
-    platformHint: "server",
-  });
-  await prisma.analyticsEvent.create({
+  const entry = await prisma.trafficEntry.findUniqueOrThrow({ where: { code: input.trafficEntryCode } });
+  const order = await prisma.order.create({
     data: {
-      occurredAt: new Date(),
-      eventName: sanitized.eventName,
+      orderNo: input.orderNo,
       userId: input.userId,
-      anonymousIdHmac: analyticsAnonymousIdHmac(input.userId, sessionSeed),
-      userIdHmac: analyticsUserIdHmac(input.userId),
-      sessionIdHmac: analyticsSessionIdHmac(sessionSeed),
-      platform: "server",
-      propertiesJson: sanitized.propertiesJson,
+      productId: input.productId,
+      amountMinor: 299n,
+      currency: "XTR",
+      status: "paid",
+      paidAt: new Date(),
     },
   });
+  await (prisma as any).orderAttribution.create({
+    data: {
+      orderId: order.id,
+      status: input.campaignId ? "attributed" : "campaign_ambiguous",
+      trafficEntryId: entry.id,
+      trafficEntryCode: entry.code,
+      trafficEntryType: entry.entryType,
+      destinationType: entry.destinationType,
+      destinationId: entry.destinationId,
+      campaignId: input.campaignId ?? null,
+      campaignCode: input.campaignCode ?? null,
+      clientType: "web",
+      identityType: "h5_session",
+      ruleVersion: "last_non_direct_v1",
+      sourceCapturedAt: new Date(),
+    },
+  });
+  return order;
 }
 
 async function ensureAnalyticsMetricContent(prisma: any, input: { id: string; title: string }) {
@@ -535,13 +532,11 @@ test("traffic entries support admin CRUD, public resolve, and aggregated attribu
       },
     });
     assert.equal(analyticsRes.statusCode, 202, analyticsRes.body);
-    await seedServerPaymentConfirmedEvent(prisma, {
+    await seedPaidOrderAttribution(prisma, {
       userId: user.id,
       orderNo: "INT_TRAFFIC_001",
       productId: TEST_KNOWN_IDS.membershipProductKey,
       trafficEntryCode: trafficCode,
-      destinationType: "content",
-      destinationId: TEST_KNOWN_IDS.contentMembership,
     });
 
     const list = await app.inject({
@@ -557,6 +552,7 @@ test("traffic entries support admin CRUD, public resolve, and aggregated attribu
     assert.equal(row.metrics.contentOpened, 1);
     assert.equal(row.metrics.checkoutOpen, 1);
     assert.equal(row.metrics.paymentConfirmed, 1);
+    assert.equal(row.metrics.confirmedRevenue.XTR, "299");
     assert.equal(row.destinationLabel, "深度睡眠引导");
 
     const updated = await app.inject({
@@ -694,13 +690,14 @@ test("campaigns support admin CRUD and aggregate linked traffic entry metrics", 
       },
     });
     assert.equal(analyticsRes.statusCode, 202, analyticsRes.body);
-    await seedServerPaymentConfirmedEvent(prisma, {
+    const campaignRow = await prisma.operationCampaign.findUniqueOrThrow({ where: { id: campaignId } });
+    await seedPaidOrderAttribution(prisma, {
       userId: user.id,
       orderNo: "INT_CAMPAIGN_001",
       productId: TEST_KNOWN_IDS.singleProductKey,
       trafficEntryCode: trafficCode,
-      destinationType: "content",
-      destinationId: TEST_KNOWN_IDS.contentPublic,
+      campaignId,
+      campaignCode: campaignRow.code,
     });
 
     const campaignList = await app.inject({
@@ -718,6 +715,7 @@ test("campaigns support admin CRUD and aggregate linked traffic entry metrics", 
     assert.equal(row.metrics.contentOpened, 1);
     assert.equal(row.metrics.checkoutOpen, 1);
     assert.equal(row.metrics.paymentConfirmed, 1);
+    assert.equal(row.metrics.confirmedRevenue.XTR, "299");
 
     const campaignUpdate = await app.inject({
       method: "PATCH",
@@ -827,6 +825,9 @@ test("finance routes enforce role checks and keep address pool masked", async ()
     assert.equal("averageOrderValue" in metrics, false, "不得生成跨币种平均客单价");
     assert.equal(typeof metrics.averageOrderValueByMethod.telegram_stars, "string");
     assert.equal(typeof metrics.averageOrderValueByMethod.usdt_trc20, "string");
+    assert.equal(metrics.attributionCoverage.rule, "order_snapshot_only");
+    assert.equal(typeof metrics.attributionCoverage.attributedPaidOrderCount, "number");
+    assert.equal(typeof metrics.attributionCoverage.unknownPaidOrderCount, "number");
 
     const reconciliation = await app.inject({
       method: "GET",

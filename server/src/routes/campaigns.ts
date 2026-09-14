@@ -107,7 +107,6 @@ async function loadTrafficEntryMetricsMap(prisma: any, entryIds: string[]) {
     opens: number;
     contentOpened: number;
     checkoutOpen: number;
-    paymentConfirmed: number;
     playbackStarted: number;
   }>>;
   const metricsRows = await queryRaw(Prisma.sql`
@@ -116,7 +115,6 @@ async function loadTrafficEntryMetricsMap(prisma: any, entryIds: string[]) {
       COUNT(DISTINCT CASE WHEN "event_name" = 'traffic_entry_open' THEN "session_id_hmac" END)::int AS "opens",
       COUNT(DISTINCT CASE WHEN "event_name" = 'content_opened' THEN "session_id_hmac" END)::int AS "contentOpened",
       COUNT(DISTINCT CASE WHEN "event_name" = 'checkout_open' THEN "session_id_hmac" END)::int AS "checkoutOpen",
-      COUNT(DISTINCT CASE WHEN "event_name" = 'payment_confirmed' THEN "session_id_hmac" END)::int AS "paymentConfirmed",
       COUNT(DISTINCT CASE WHEN "event_name" = 'playback_started' THEN "session_id_hmac" END)::int AS "playbackStarted"
     FROM "analytics_events"
     WHERE COALESCE("properties_json"->>'trafficEntryCode', '') IN (${Prisma.join(codeList.map((code) => Prisma.sql`${code}`))})
@@ -129,11 +127,28 @@ async function loadTrafficEntryMetricsMap(prisma: any, entryIds: string[]) {
       opens: 0,
       contentOpened: 0,
       checkoutOpen: 0,
-      paymentConfirmed: 0,
       playbackStarted: 0,
     });
   }
   return byEntryId;
+}
+
+async function loadCampaignOrderRevenue(prisma: any, campaignIds: string[]) {
+  if (!campaignIds.length) return new Map<string, { paidOrders: number; confirmedRevenue: Record<string, string> }>();
+  const rows = await prisma.orderAttribution.findMany({
+    where: { campaignId: { in: campaignIds }, order: { status: "paid" } },
+    select: { campaignId: true, order: { select: { amountMinor: true, currency: true } } },
+  });
+  const metrics = new Map<string, { paidOrders: number; confirmedRevenue: Record<string, string> }>();
+  for (const row of rows) {
+    if (!row.campaignId) continue;
+    const current = metrics.get(row.campaignId) || { paidOrders: 0, confirmedRevenue: {} };
+    const currency = String(row.order.currency || "unknown").toUpperCase();
+    current.paidOrders += 1;
+    current.confirmedRevenue[currency] = (BigInt(current.confirmedRevenue[currency] || "0") + BigInt(row.order.amountMinor.toString())).toString();
+    metrics.set(row.campaignId, current);
+  }
+  return metrics;
 }
 
 export default async function campaignRoutes(fastify: FastifyInstance) {
@@ -157,6 +172,7 @@ export default async function campaignRoutes(fastify: FastifyInstance) {
     }) as CampaignRow[];
     const { bannerMap, entryMap } = await loadCampaignReferenceMaps(prisma, rows);
     const metricsMap = await loadTrafficEntryMetricsMap(prisma, [...new Set(rows.flatMap((row) => row.trafficEntryIds || []))]);
+    const revenueMap = await loadCampaignOrderRevenue(prisma, rows.map((row) => row.id));
 
     const items = rows.map((row) => {
       const trafficEntries = (row.trafficEntryIds || []).map((id) => entryMap.get(id)).filter(Boolean);
@@ -166,10 +182,10 @@ export default async function campaignRoutes(fastify: FastifyInstance) {
         acc.opens += metric.opens || 0;
         acc.contentOpened += metric.contentOpened || 0;
         acc.checkoutOpen += metric.checkoutOpen || 0;
-        acc.paymentConfirmed += metric.paymentConfirmed || 0;
         acc.playbackStarted += metric.playbackStarted || 0;
         return acc;
-      }, { opens: 0, contentOpened: 0, checkoutOpen: 0, paymentConfirmed: 0, playbackStarted: 0 });
+      }, { opens: 0, contentOpened: 0, checkoutOpen: 0, playbackStarted: 0 });
+      const revenue = revenueMap.get(row.id) || { paidOrders: 0, confirmedRevenue: {} };
       return {
         id: row.id,
         code: row.code,
@@ -182,7 +198,7 @@ export default async function campaignRoutes(fastify: FastifyInstance) {
         updatedAt: row.updatedAt.toISOString(),
         banners,
         trafficEntries,
-        metrics: totals,
+        metrics: { ...totals, paymentConfirmed: revenue.paidOrders, paidOrders: revenue.paidOrders, confirmedRevenue: revenue.confirmedRevenue },
       };
     });
 

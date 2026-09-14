@@ -132,6 +132,9 @@ export default async function adminFinanceRoutes(fastify: FastifyInstance) {
             status: true,
           },
         },
+        attribution: {
+          select: { status: true },
+        },
       },
       orderBy: { createdAt: "asc" },
     });
@@ -155,6 +158,8 @@ export default async function adminFinanceRoutes(fastify: FastifyInstance) {
     let expiredOrderCount = 0;
     let refundedOrderCount = 0;
     let pendingUsdtAmount = 0n;
+    let attributedPaidOrderCount = 0;
+    let unknownAttributionPaidOrderCount = 0;
 
     const usdtConfirmDurations: Array<number | null> = [];
     const starsSuccessDurations: Array<number | null> = [];
@@ -167,6 +172,8 @@ export default async function adminFinanceRoutes(fastify: FastifyInstance) {
         netRevenue[method] = addAmount(netRevenue[method], amount);
         paidOrderCount += 1;
         paidUsers.add(order.userId);
+        if (order.attribution?.status === "attributed" || order.attribution?.status === "campaign_ambiguous") attributedPaidOrderCount += 1;
+        else unknownAttributionPaidOrderCount += 1;
         if (method === "usdt_trc20") {
           const confirmedTx = order.paymentTransactions.find((tx: any) => tx.status === "confirmed");
           usdtConfirmDurations.push(diffMs(confirmedTx?.receivedAt, confirmedTx?.confirmedAt));
@@ -221,6 +228,13 @@ export default async function adminFinanceRoutes(fastify: FastifyInstance) {
         pendingOrderCount,
         expiredOrderCount,
         refundedOrderCount,
+        attributionCoverage: {
+          attributedPaidOrderCount,
+          unknownPaidOrderCount: unknownAttributionPaidOrderCount,
+          // Old orders intentionally have no snapshot and therefore remain
+          // unknown; this endpoint must never infer a channel retrospectively.
+          rule: "order_snapshot_only",
+        },
         usdtAverageConfirmMs: averageMs(usdtConfirmDurations),
         starsAverageSuccessMs: averageMs(starsSuccessDurations),
       },
