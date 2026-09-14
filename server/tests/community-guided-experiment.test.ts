@@ -24,3 +24,13 @@ test("official AI community experiment queues future posts and only releases pos
   assert.match(source, /status:\s*"pending"/);
   assert.match(source, /data:\s*\{\s*status:\s*"published"\s*\}/);
 });
+
+test("official AI community experiment dry-run does not upsert users or require an audit admin", async () => {
+  const source = await readFile(scriptPath, "utf8");
+  const dryRunReturnIndex = source.indexOf("console.log(JSON.stringify({ ok: true, dryRun: true");
+  const auditAdminIndex = source.indexOf("prisma.adminUser.findFirst");
+
+  assert.ok(dryRunReturnIndex > 0, "dry-run branch must exist");
+  assert.ok(auditAdminIndex > dryRunReturnIndex, "dry-run must not require audit admin lookup");
+  assert.match(source, /const author = dryRun\s*\?\s*existingAuthor\s*:\s*await prisma\.user\.upsert/);
+});

@@ -148,6 +148,34 @@ export function analyticsUserIdHmac(userId: string | null | undefined): string |
   return hmacSha256Hex(`analytics_user:${userId}`);
 }
 
+export async function recordServerAnalyticsEvent(prisma: any, input: {
+  eventName: AnalyticsEventName;
+  userId?: string | null;
+  sessionSeed: string;
+  occurredAt?: Date;
+  payload?: Record<string, unknown>;
+}) {
+  const userId = input.userId || null;
+  const sanitized = sanitizeAnalyticsEvent({
+    eventName: input.eventName,
+    payload: Object.assign({ platform: "server" }, input.payload || {}),
+    platformHint: "server",
+  });
+  const sessionSeed = input.sessionSeed || `${input.eventName}:${Date.now()}`;
+  return prisma.analyticsEvent.create({
+    data: {
+      occurredAt: input.occurredAt || new Date(),
+      eventName: sanitized.eventName,
+      userId,
+      anonymousIdHmac: analyticsAnonymousIdHmac(userId, sessionSeed),
+      userIdHmac: analyticsUserIdHmac(userId),
+      sessionIdHmac: analyticsSessionIdHmac(sessionSeed),
+      platform: "server",
+      propertiesJson: sanitized.propertiesJson,
+    },
+  });
+}
+
 export function sanitizeAnalyticsEvent(input: {
   eventName: AnalyticsEventName;
   payload?: Record<string, unknown>;

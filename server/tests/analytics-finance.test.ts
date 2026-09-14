@@ -12,7 +12,12 @@ import {
   computePaymentAddressIntegrityMac,
   verifyAndFreezePaymentAddressIntegrity,
 } from "../src/services/paymentAddressIntegrity.js";
-import { sanitizeAnalyticsEvent } from "../src/services/analytics.js";
+import {
+  analyticsAnonymousIdHmac,
+  analyticsSessionIdHmac,
+  analyticsUserIdHmac,
+  sanitizeAnalyticsEvent,
+} from "../src/services/analytics.js";
 import {
   setupTestHarness,
   teardownTestHarness,
@@ -83,6 +88,65 @@ async function loginAdmin(app: any, role: keyof typeof TEST_CREDENTIALS): Promis
   return cookieFromResponse(r);
 }
 
+async function seedServerPaymentConfirmedEvent(prisma: any, input: {
+  userId: string;
+  orderNo: string;
+  productId: string;
+  paymentMethod?: "telegram_stars" | "usdt_trc20" | "manual";
+  trafficEntryCode?: string;
+  destinationType?: string;
+  destinationId?: string;
+}) {
+  const sessionSeed = `server_payment:${input.orderNo}`;
+  const sanitized = sanitizeAnalyticsEvent({
+    eventName: "payment_confirmed",
+    payload: {
+      platform: "server",
+      orderNo: input.orderNo,
+      productId: input.productId,
+      paymentMethod: input.paymentMethod || "telegram_stars",
+      trafficEntryCode: input.trafficEntryCode,
+      entryType: input.trafficEntryCode ? "telegram_channel" : undefined,
+      destinationType: input.destinationType,
+      destinationId: input.destinationId,
+    },
+    platformHint: "server",
+  });
+  await prisma.analyticsEvent.create({
+    data: {
+      occurredAt: new Date(),
+      eventName: sanitized.eventName,
+      userId: input.userId,
+      anonymousIdHmac: analyticsAnonymousIdHmac(input.userId, sessionSeed),
+      userIdHmac: analyticsUserIdHmac(input.userId),
+      sessionIdHmac: analyticsSessionIdHmac(sessionSeed),
+      platform: "server",
+      propertiesJson: sanitized.propertiesJson,
+    },
+  });
+}
+
+async function ensureAnalyticsMetricContent(prisma: any, input: { id: string; title: string }) {
+  await prisma.content.upsert({
+    where: { id: input.id },
+    update: {
+      title: input.title,
+      accessType: "membership",
+      status: "published",
+      platformPlaybackEnabled: true,
+      durationSeconds: 300,
+    },
+    create: {
+      id: input.id,
+      title: input.title,
+      accessType: "membership",
+      status: "published",
+      platformPlaybackEnabled: true,
+      durationSeconds: 300,
+    },
+  });
+}
+
 const harness = await setupTestHarness();
 const prisma = harness.prisma;
 await seedTestData(prisma);
@@ -141,17 +205,6 @@ test("analytics events enforce whitelist and store only HMAC-safe identifiers", 
       payload: {
         events: [
           {
-            eventName: "payment_confirmed",
-            payload: {
-              platform: "h5",
-              orderNo: "INT20260823000001",
-              productId: TEST_KNOWN_IDS.singleProductKey,
-              paymentMethod: "usdt_trc20",
-              txHash: "should_not_be_kept",
-              inviteLink: "https://t.me/+secret",
-            },
-          },
-          {
             eventName: "checkout_open",
             payload: {
               platform: "telegram_mini_app",
@@ -189,20 +242,6 @@ test("analytics events enforce whitelist and store only HMAC-safe identifiers", 
       },
     });
     assert.equal(res.statusCode, 202, res.body);
-
-    const row = await prisma.analyticsEvent.findFirst({
-      where: { eventName: "payment_confirmed", userId: user.id },
-      orderBy: { createdAt: "desc" },
-    });
-    assert.ok(row);
-    const properties = (row as any).propertiesJson as Record<string, unknown>;
-    assert.equal(typeof properties.orderNoHmac, "string");
-    assert.equal(typeof properties.productIdHmac, "string");
-    assert.equal(properties.paymentMethod, "usdt_trc20");
-    assert.equal("orderNo" in properties, false);
-    assert.equal("txHash" in properties, false);
-    assert.equal("inviteLink" in properties, false);
-    assert.notEqual(properties.orderNoHmac, "INT20260823000001");
 
     const checkoutRow = await prisma.analyticsEvent.findFirst({
       where: { eventName: "checkout_open", userId: user.id },
@@ -330,12 +369,56 @@ test("Google Analytics integration status never exposes the Measurement Protocol
   }
 });
 
+test("client analytics endpoint rejects payment confirmation events", async () => {
+  const app = await createApp(prisma);
+  try {
+    const user = await prisma.user.create({
+      data: {
+        telegramUserId: BigInt(`7${Date.now().toString().slice(-9)}`),
+        displayName: "analytics blocked payment user",
+      },
+    });
+    const userCookie = await loginUser(app, user.id, user.telegramUserId?.toString());
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/analytics/events",
+      headers: {
+        cookie: userCookie,
+        "Content-Type": "application/json",
+      },
+      payload: {
+        events: [{
+          eventName: "payment_confirmed",
+          payload: {
+            platform: "h5",
+            orderNo: "INT_CLIENT_SHOULD_NOT_COUNT",
+            productId: TEST_KNOWN_IDS.singleProductKey,
+            paymentMethod: "usdt_trc20",
+          },
+        }],
+      },
+    });
+    assert.equal(res.statusCode, 400, res.body);
+    assert.equal(res.json().error, "analytics_event_not_client_allowed");
+    const count = await prisma.analyticsEvent.count({
+      where: { eventName: "payment_confirmed", userId: user.id },
+    });
+    assert.equal(count, 0);
+  } finally {
+    await app.close();
+  }
+});
+
 test("traffic entries support admin CRUD, public resolve, and aggregated attribution metrics", async () => {
   const app = await createApp(prisma);
   try {
     const operatorCookie = await loginAdmin(app, "operator");
     const supportCookie = await loginAdmin(app, "customerService");
     const trafficCode = `tg_channel_q3_${Date.now().toString().slice(-6)}`;
+    await ensureAnalyticsMetricContent(prisma, {
+      id: TEST_KNOWN_IDS.contentMembership,
+      title: "深度睡眠引导",
+    });
 
     const created = await app.inject({
       method: "POST",
@@ -437,23 +520,18 @@ test("traffic entries support admin CRUD, public resolve, and aggregated attribu
               destinationId: TEST_KNOWN_IDS.contentMembership,
             },
           },
-          {
-            eventName: "payment_confirmed",
-            payload: {
-              platform: "h5",
-              orderNo: "INT_TRAFFIC_001",
-              productId: TEST_KNOWN_IDS.membershipProductKey,
-              paymentMethod: "telegram_stars",
-              trafficEntryCode: trafficCode,
-              entryType: "telegram_channel",
-              destinationType: "content",
-              destinationId: TEST_KNOWN_IDS.contentMembership,
-            },
-          },
         ],
       },
     });
     assert.equal(analyticsRes.statusCode, 202, analyticsRes.body);
+    await seedServerPaymentConfirmedEvent(prisma, {
+      userId: user.id,
+      orderNo: "INT_TRAFFIC_001",
+      productId: TEST_KNOWN_IDS.membershipProductKey,
+      trafficEntryCode: trafficCode,
+      destinationType: "content",
+      destinationId: TEST_KNOWN_IDS.contentMembership,
+    });
 
     const list = await app.inject({
       method: "GET",
@@ -501,6 +579,10 @@ test("campaigns support admin CRUD and aggregate linked traffic entry metrics", 
     const operatorCookie = await loginAdmin(app, "operator");
     const auditorCookie = await loginAdmin(app, "auditor");
     const trafficCode = `camp_tg_${Date.now().toString().slice(-6)}`;
+    await ensureAnalyticsMetricContent(prisma, {
+      id: TEST_KNOWN_IDS.contentPublic,
+      title: "免费：什么是正念？5 分钟入门",
+    });
 
     const trafficCreate = await app.inject({
       method: "POST",
@@ -597,23 +679,18 @@ test("campaigns support admin CRUD and aggregate linked traffic entry metrics", 
               destinationId: TEST_KNOWN_IDS.contentPublic,
             },
           },
-          {
-            eventName: "payment_confirmed",
-            payload: {
-              platform: "h5",
-              orderNo: "INT_CAMPAIGN_001",
-              productId: TEST_KNOWN_IDS.singleProductKey,
-              paymentMethod: "telegram_stars",
-              trafficEntryCode: trafficCode,
-              entryType: "telegram_channel",
-              destinationType: "content",
-              destinationId: TEST_KNOWN_IDS.contentPublic,
-            },
-          },
         ],
       },
     });
     assert.equal(analyticsRes.statusCode, 202, analyticsRes.body);
+    await seedServerPaymentConfirmedEvent(prisma, {
+      userId: user.id,
+      orderNo: "INT_CAMPAIGN_001",
+      productId: TEST_KNOWN_IDS.singleProductKey,
+      trafficEntryCode: trafficCode,
+      destinationType: "content",
+      destinationId: TEST_KNOWN_IDS.contentPublic,
+    });
 
     const campaignList = await app.inject({
       method: "GET",

@@ -252,7 +252,6 @@
       "unlock_clicked",
       "checkout_open",
       "payment_method_selected",
-      "payment_confirmed",
     ].indexOf(eventName) >= 0;
   }
 

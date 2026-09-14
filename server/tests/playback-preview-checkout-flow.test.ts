@@ -135,6 +135,18 @@ test("article detail records a dedicated article view event in H5 and Mini App",
   }
 });
 
+test("client analytics attribution list does not include payment confirmation", async () => {
+  const root = path.resolve(import.meta.dirname, "../..");
+  for (const file of ["h5/app.js", "telegram-mini-app/app.js"]) {
+    const source = await readFile(path.join(root, file), "utf8");
+    const fnStart = source.indexOf("function shouldAttachTrafficEntry");
+    assert.ok(fnStart >= 0, `${file} should define shouldAttachTrafficEntry`);
+    const fnEnd = source.indexOf("function trackAnalytics", fnStart);
+    assert.ok(fnEnd > fnStart, `${file} should define trackAnalytics after shouldAttachTrafficEntry`);
+    assert.doesNotMatch(source.slice(fnStart, fnEnd), /payment_confirmed/);
+  }
+});
+
 test("article cards use the CMS updated timestamp before the original publication timestamp", async () => {
   const root = path.resolve(import.meta.dirname, "../..");
   for (const file of ["h5/app.js", "telegram-mini-app/app.js"]) {

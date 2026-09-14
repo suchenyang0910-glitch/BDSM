@@ -58,17 +58,23 @@ async function run() {
   if (!dryRun && !process.argv.includes(CONFIRM_FLAG)) {
     throw new Error(`Refusing to write campaign data without ${CONFIRM_FLAG}; use ${DRY_RUN_FLAG} to inspect.`);
   }
-  const author = await prisma.user.upsert({
+  const existingAuthor = await prisma.user.findUnique({
     where: { telegramUserId: OFFICIAL_TELEGRAM_USER_ID },
-    update: { displayName: "Samewave 官方 · AI 协助", status: "active" },
-    create: { telegramUserId: OFFICIAL_TELEGRAM_USER_ID, displayName: "Samewave 官方 · AI 协助", status: "active" },
+    select: { id: true },
   });
-  const auditAdmin = await prisma.adminUser.findFirst({ where: { status: "active" }, orderBy: { createdAt: "asc" }, select: { id: true } });
-  if (!auditAdmin) throw new Error("No active admin is available for campaign audit logging");
+  const author = dryRun
+    ? existingAuthor
+    : await prisma.user.upsert({
+        where: { telegramUserId: OFFICIAL_TELEGRAM_USER_ID },
+        update: { displayName: "Samewave 官方 · AI 协助", status: "active" },
+        create: { telegramUserId: OFFICIAL_TELEGRAM_USER_ID, displayName: "Samewave 官方 · AI 协助", status: "active" },
+      });
 
   const missing = [] as Array<{ prompt: Prompt; scheduledAt: Date }>;
   for (const prompt of PROMPTS) {
-    const existing = await prisma.communityPost.findFirst({ where: { authorId: author.id, body: prompt.body }, select: { id: true } });
+    const existing = author
+      ? await prisma.communityPost.findFirst({ where: { authorId: author.id, body: prompt.body }, select: { id: true } })
+      : null;
     if (!existing) missing.push({ prompt, scheduledAt: plannedAt(prompt) });
   }
   const due = PROMPTS.filter((prompt) => plannedAt(prompt).getTime() <= now.getTime()).length;
@@ -76,6 +82,8 @@ async function run() {
     console.log(JSON.stringify({ ok: true, dryRun: true, campaignId: CAMPAIGN_ID, now: now.toISOString(), totalPrompts: PROMPTS.length, existing: PROMPTS.length - missing.length, missing: missing.length, due }));
     return;
   }
+  const auditAdmin = await prisma.adminUser.findFirst({ where: { status: "active" }, orderBy: { createdAt: "asc" }, select: { id: true } });
+  if (!auditAdmin) throw new Error("No active admin is available for campaign audit logging");
 
   let created = 0;
   let published = 0;

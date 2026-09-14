@@ -48,6 +48,11 @@ const FUNNEL_EVENTS = [
   "payment_confirmed",
   "playback_started",
 ] as const;
+const CLIENT_FORBIDDEN_ANALYTICS_EVENTS = new Set([
+  "payment_confirmed",
+  "entitlement_activated",
+  "channel_access_delivered",
+]);
 
 function analyticsRange(preset: "7d" | "30d") {
   const to = new Date();
@@ -320,6 +325,14 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
     const parsed = EVENT_BATCH_SCHEMA.safeParse(req.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: "bad_request", message: "埋点请求不合法" });
+    }
+    const forbiddenEvent = parsed.data.events.find((event) => CLIENT_FORBIDDEN_ANALYTICS_EVENTS.has(event.eventName));
+    if (forbiddenEvent) {
+      return reply.status(400).send({
+        error: "analytics_event_not_client_allowed",
+        message: "该埋点只能由服务端可信流程写入。",
+        eventName: forbiddenEvent.eventName,
+      });
     }
 
     const sessionSeed = ensureAnalyticsSessionSeed(req);

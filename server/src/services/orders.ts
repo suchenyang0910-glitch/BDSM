@@ -6,6 +6,7 @@ import { extractPrismaCodeOnly } from "../utils/structuredError.js";
 import { verifyAndFreezePaymentAddressIntegrity } from "./paymentAddressIntegrity.js";
 import { notifyPaymentSuccess } from "./paymentSuccessNotifier.js";
 import { queuePlaybackRevokesForEntitlements } from "./playbackRevocation.js";
+import { recordServerAnalyticsEvent } from "./analytics.js";
 
 type Tx = any;
 
@@ -62,6 +63,31 @@ export type RefundResult = {
   userNotified: boolean;
   notifyError?: string;
 };
+
+function analyticsPaymentMethodForOrder(method: unknown): "telegram_stars" | "usdt_trc20" | "manual" {
+  if (method === "telegram_stars") return "telegram_stars";
+  if (method === "usdt_trc20_external" || method === "tron_trc20_external" || method === "usdt_trc20") return "usdt_trc20";
+  return "manual";
+}
+
+async function recordPaymentConfirmedAnalytics(prisma: PrismaClient, order: any, paidAt?: Date) {
+  if (!order?.orderNo) return;
+  try {
+    await recordServerAnalyticsEvent(prisma, {
+      eventName: "payment_confirmed",
+      userId: order.userId || null,
+      sessionSeed: `server_payment:${order.orderNo}`,
+      occurredAt: paidAt || order.paidAt || new Date(),
+      payload: {
+        orderNo: order.orderNo,
+        productId: order.productId || order.product?.id,
+        paymentMethod: analyticsPaymentMethodForOrder(order.paymentMethod || order.paymentProvider),
+      },
+    });
+  } catch {
+    // Analytics must never affect order fulfillment or entitlement delivery.
+  }
+}
 
 const beforeSnapshot = (o: any) => ({
   id: o.id,
@@ -589,6 +615,7 @@ export async function deliverStarsSuccessfulPayment(
       productTitle: result.order.product?.title,
       userDisplayName: order.user?.displayName,
     });
+    await recordPaymentConfirmedAnalytics(prisma, result.order, result.order.paidAt || new Date());
     return { delivered: true, idempotent: false, orderNo: result.order.orderNo, entitlements: result.entitlements };
   } catch (e: any) {
     const prismaCode = extractPrismaCodeOnly(e);
@@ -940,6 +967,7 @@ export async function confirmUsdtChainEvent(
       userDisplayName: (result as any).order.user?.displayName || candidateOrder.user?.displayName,
       receivingUsdtAddress: candidateOrder.usdtPaymentAddress?.address || null,
     });
+    await recordPaymentConfirmedAnalytics(prisma, (result as any).order, (result as any).order.paidAt || new Date());
     return {
       status: "confirmed",
       idempotent: false,
