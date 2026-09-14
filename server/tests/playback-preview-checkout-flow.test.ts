@@ -207,9 +207,9 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
   ]);
 
   assert.match(h5Html, /styles\.css\?v=20260905-community-composer-gutter-1/);
-  assert.match(h5Html, /app\.js\?v=20260905-community-header-tabs-2/);
+  assert.match(h5Html, /app\.js\?v=20260914-playback-recovery-1/);
   assert.match(miniAppHtml, /styles\.css\?v=20260905-community-composer-gutter-1/);
-  assert.match(miniAppHtml, /app\.js\?v=20260905-community-header-tabs-2/);
+  assert.match(miniAppHtml, /app\.js\?v=20260914-playback-recovery-1/);
 });
 
 test("community tab, detail hash, and composer shell exist in H5 and Mini App", async () => {
