@@ -1438,21 +1438,39 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
           platformPlaybackEnabled: true,
           coverUrl: true,
           thumbnailUrl: true,
-          coverAsset: { select: { kind: true, status: true, storageKey: true, storagePublicUrl: true } },
+          coverAsset: { select: { kind: true, status: true, storageBucket: true, storageKey: true, storagePublicUrl: true } },
           videoAssets: {
             where: { deletedAt: null },
-            select: { kind: true, status: true },
+            select: { kind: true, status: true, objectKey: true },
           },
         },
       });
-      const issues = rows.flatMap((row: any) => {
-        const hasVodCover = row.videoAssets.some((asset: any) => asset.kind === "cover" && asset.status === "verified");
+      const storageEnv = requireObjectStorageEnv();
+      const scanOne = async (row: any) => {
+        const vodCover = row.videoAssets.find((asset: any) => asset.kind === "cover" && asset.status === "verified") || null;
+        const hasVodCover = !!vodCover;
         const hasLegacyCover = row.coverAsset?.kind === "cover_image" && row.coverAsset?.status === "ready" &&
           (!!row.coverAsset?.storageKey || !!row.coverAsset?.storagePublicUrl);
-        if (hasVodCover || hasLegacyCover) return [];
+        // Verify controlled object keys only.  Historical public URLs are not
+        // fetched because an admin audit must never fetch arbitrary origins.
+        const controlledKey = vodCover?.objectKey || row.coverAsset?.storageKey || null;
+        if ((hasVodCover || hasLegacyCover) && controlledKey) {
+          const bucket = row.coverAsset?.storageBucket || storageEnv.bucket;
+          const object = await headObject(bucket, controlledKey);
+          if (!object.ok || !object.head) {
+            return {
+              contentId: row.id,
+              title: row.title,
+              platformPlaybackEnabled: row.platformPlaybackEnabled,
+              status: "broken_controlled_cover",
+              message: "受控封面对象不可读取；请上传新封面，或重新处理完整源视频以派生封面。",
+            };
+          }
+        }
+        if (hasVodCover || hasLegacyCover) return null;
         const canDerive = row.videoAssets.some((asset: any) => asset.kind === "full_source" && asset.status === "verified");
         const hasLegacyUrl = !!String(row.coverUrl || row.thumbnailUrl || "").trim();
-        return [{
+        return {
           contentId: row.id,
           title: row.title,
           platformPlaybackEnabled: row.platformPlaybackEnabled,
@@ -1462,12 +1480,20 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
             : hasLegacyUrl
               ? "历史 URL 不属于受控封面，请上传封面或重新处理已验证源视频。"
               : "没有可用源视频或受控封面，请上传 16:9 封面。",
-        }];
-      });
+        };
+      };
+      const issues: any[] = [];
+      // Bound outbound storage checks so a report cannot starve transcode or
+      // normal cover reads under a large backfill.
+      for (let index = 0; index < rows.length; index += 8) {
+        const batch = await Promise.all(rows.slice(index, index + 8).map(scanOne));
+        for (const item of batch) if (item) issues.push(item);
+      }
       const summary = {
         scanned: rows.length,
         healthy: rows.length - issues.length,
         derivable: issues.filter((row: any) => row.status === "derivable").length,
+        brokenControlledCover: issues.filter((row: any) => row.status === "broken_controlled_cover").length,
         legacyUrlUnmanaged: issues.filter((row: any) => row.status === "legacy_url_unmanaged").length,
         manualCoverRequired: issues.filter((row: any) => row.status === "manual_cover_required").length,
       };

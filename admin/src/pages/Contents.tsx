@@ -630,8 +630,8 @@ const ACCESS_TYPE_OPTIONS = [
 type AccessTypeForSelect = "public" | "membership" | "package" | "single";
 type OpsTagFilter = "recommended" | "featured" | "new" | undefined;
 type CoverIntegrityReport = {
-  summary: { scanned: number; healthy: number; derivable: number; legacyUrlUnmanaged: number; manualCoverRequired: number };
-  issues: Array<{ contentId: string; title: string; platformPlaybackEnabled: boolean; status: "derivable" | "legacy_url_unmanaged" | "manual_cover_required"; message: string }>;
+  summary: { scanned: number; healthy: number; derivable: number; brokenControlledCover: number; legacyUrlUnmanaged: number; manualCoverRequired: number };
+  issues: Array<{ contentId: string; title: string; platformPlaybackEnabled: boolean; status: "derivable" | "broken_controlled_cover" | "legacy_url_unmanaged" | "manual_cover_required"; message: string }>;
 };
 
 const ContentsPage: React.FC = () => {
@@ -759,7 +759,7 @@ const ContentsPage: React.FC = () => {
               type={report.issues.length ? "warning" : "success"}
               showIcon
               message={`已扫描 ${s.scanned} 条已发布视频：受控封面正常 ${s.healthy} 条，待处理 ${report.issues.length} 条`}
-              description={`可自动派生 ${s.derivable} · 历史 URL 未受控 ${s.legacyUrlUnmanaged} · 需人工补图 ${s.manualCoverRequired}`}
+              description={`可自动派生 ${s.derivable} · 受控对象损坏 ${s.brokenControlledCover} · 历史 URL 未受控 ${s.legacyUrlUnmanaged} · 需人工补图 ${s.manualCoverRequired}`}
             />
             {report.issues.length > 0 && (
               <Table
@@ -769,7 +769,7 @@ const ContentsPage: React.FC = () => {
                 dataSource={report.issues}
                 columns={[
                   { title: "视频", dataIndex: "title", key: "title", ellipsis: true },
-                  { title: "处理状态", dataIndex: "status", key: "status", width: 150, render: (status: string) => <Tag color={status === "derivable" ? "blue" : "orange"}>{status === "derivable" ? "可自动派生" : status === "legacy_url_unmanaged" ? "历史 URL 未受控" : "需人工补图"}</Tag> },
+                  { title: "处理状态", dataIndex: "status", key: "status", width: 150, render: (status: string) => <Tag color={status === "derivable" ? "blue" : status === "broken_controlled_cover" ? "red" : "orange"}>{status === "derivable" ? "可自动派生" : status === "broken_controlled_cover" ? "受控对象损坏" : status === "legacy_url_unmanaged" ? "历史 URL 未受控" : "需人工补图"}</Tag> },
                   { title: "建议", dataIndex: "message", key: "message", width: 300 },
                 ]}
               />
