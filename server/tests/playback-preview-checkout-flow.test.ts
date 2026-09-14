@@ -110,6 +110,18 @@ test("full playback refresh waits for the managed manifest instead of surfacing 
   assert.doesNotMatch(appSource, /试看初始化被中断/);
 });
 
+test("H5 and Mini App start managed HLS only after manifest readiness and share recovery copy", async () => {
+  const h5Source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const miniSource = await readFile(path.join(ROOT, "telegram-mini-app/app.js"), "utf8");
+  for (const source of [h5Source, miniSource]) {
+    assert.match(source, /const waitForManifest = loadManagedVideoSource\(video, created\.manifestUrl, detail\)/);
+    assert.match(source, /if \(!waitForManifest\) startVideoElementPlayback\(video, detail\)/);
+    assert.match(source, /MANIFEST_PARSED[\s\S]{0,900}startVideoElementPlayback\(video, detail\)/);
+    assert.match(source, /function classifyVideoPlayError\(err\)/);
+    assert.match(source, /function classifyVideoElementError\(video\)/);
+  }
+});
+
 test("h5 catalog UI uses whole-card navigation and server-backed library search", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const htmlSource = await readFile(path.join(ROOT, "h5/index.html"), "utf8");
@@ -207,9 +219,9 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
   ]);
 
   assert.match(h5Html, /styles\.css\?v=20260905-community-composer-gutter-1/);
-  assert.match(h5Html, /app\.js\?v=20260914-playback-recovery-1/);
+  assert.match(h5Html, /app\.js\?v=20260914-playback-consistency-1/);
   assert.match(miniAppHtml, /styles\.css\?v=20260905-community-composer-gutter-1/);
-  assert.match(miniAppHtml, /app\.js\?v=20260914-playback-recovery-1/);
+  assert.match(miniAppHtml, /app\.js\?v=20260914-playback-consistency-1/);
 });
 
 test("community tab, detail hash, and composer shell exist in H5 and Mini App", async () => {

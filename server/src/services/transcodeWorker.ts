@@ -1,6 +1,6 @@
 import { PrismaClient, type TranscodeJob, type VideoAsset } from "@prisma/client";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -849,6 +849,88 @@ export async function uploadFileToPrivateKey(input: { localPath: string; key: st
   return { key: input.key, size: BigInt(fileStat.size) };
 }
 
+/**
+ * A cover is presentation metadata, not a transcode prerequisite.  Generate
+ * one only when the source is already local, verified, and the content has no
+ * operator-uploaded cover.  Any failure is deliberately non-fatal: HLS output
+ * must remain usable and the integrity scan can surface the item for repair.
+ */
+export async function deriveMissingCoverFromSource(
+  prisma: PrismaClient,
+  input: {
+    contentId: string;
+    sourcePath: string;
+    probe: SourceProbe;
+    cfg: Pick<TranscodeWorkerConfig, "ffmpegPath" | "ffmpegTimeoutMs">;
+  },
+): Promise<"existing" | "created"> {
+  const existing = await (prisma as any).videoAsset.findFirst({
+    where: { contentId: input.contentId, kind: "cover", status: "verified", deletedAt: null },
+    select: { id: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (existing) return "existing";
+
+  const coverId = randomUUID();
+  const coverPath = path.join(path.dirname(input.sourcePath), "derived-cover.jpg");
+  // Avoid black opening frames without seeking deep into a long source.  This
+  // is a bounded, deterministic extraction task rather than a second encode.
+  const seekSeconds = Math.min(8, Math.max(1, Math.floor(input.probe.durationSeconds * 0.03)));
+  await runProcess(input.cfg.ffmpegPath, [
+    "-y", "-v", "error", "-ss", String(seekSeconds), "-i", input.sourcePath,
+    "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", "3", coverPath,
+  ], {
+    timeoutMs: Math.min(input.cfg.ffmpegTimeoutMs, 120_000),
+  });
+
+  const image = await readFile(coverPath);
+  if (image.length < 512) throw taggedError("output_verify_failed");
+  const objectKey = `covers/${input.contentId}/${coverId}/derived.jpg`;
+  const env = requireObjectStorageEnv();
+  const s3 = getS3Client();
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: env.bucket,
+      Key: objectKey,
+      Body: image,
+      ContentType: "image/jpeg",
+      CacheControl: "private, max-age=300",
+      Metadata: { scope: "vod-cover-derived", contentid: input.contentId },
+    }));
+  } catch {
+    throw taggedError("output_upload_failed");
+  }
+  const verified = await headObject(env.bucket, objectKey);
+  if (!verified.ok || !verified.head || Number((verified.head as any).ContentLength || 0) !== image.length) {
+    throw taggedError("output_verify_failed");
+  }
+
+  // Recheck after the relatively slow extract/upload.  An administrator may
+  // have supplied a curated cover while the transcode job was running.
+  const curatedDuringDerivation = await (prisma as any).videoAsset.findFirst({
+    where: { contentId: input.contentId, kind: "cover", status: "verified", deletedAt: null },
+    select: { id: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (curatedDuringDerivation) return "existing";
+
+  await (prisma as any).videoAsset.create({
+    data: {
+      id: coverId,
+      contentId: input.contentId,
+      kind: "cover",
+      objectKey,
+      originalFilename: "derived-cover.jpg",
+      mimeType: "image/jpeg",
+      byteSize: BigInt(image.length),
+      sha256: createHash("sha256").update(image).digest("hex"),
+      status: "verified",
+      verifiedAt: new Date(),
+    },
+  });
+  return "created";
+}
+
 function inferManifestContentType(name: string) {
   if (name.endsWith(".m3u8")) return "application/vnd.apple.mpegurl";
   if (name.endsWith(".m4s")) return "video/iso.segment";
@@ -1034,6 +1116,26 @@ export async function processClaimedTranscodeJob(
       renditions: readyRows,
     });
     await markTranscodeJobReady(prisma, { jobId: job.id }, new Date());
+    // Do not make cover extraction part of the delivery state machine.  The
+    // result is observable through the integrity scan, while a failure leaves
+    // transcode output and publication eligibility intact.
+    if (cfg.runnerMode === "ffmpeg") {
+      try {
+        await deriveMissingCoverFromSource(prisma, {
+          contentId: job.contentId,
+          sourcePath,
+          probe,
+          cfg,
+        });
+      } catch (coverError) {
+        emitSafetyEvent({
+          event: "vod_cover_derivation_failed",
+          errorClass: sanitizeTranscodeErrorClass((coverError as TaggedTranscodeError)?.transcodeErrorClass) || "unknown",
+          note: `content_id=${job.contentId}`,
+          retryHint: 1,
+        }, coverError);
+      }
+    }
     // 技术就绪与公开发布是两个状态：转码成功后先标记为可播放，随后仍必须由
     // 后台“发布”动作把 status 变为 published。这样不会让草稿提前出现在用户端。
     await (prisma as any).content.updateMany({

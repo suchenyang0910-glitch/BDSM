@@ -1418,6 +1418,63 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // A cover shown to a customer must be backed by a verified, controlled
+  // asset.  Do not probe arbitrary legacy URLs here: that would turn an admin
+  // report into an SSRF primitive and still would not make the URL eligible
+  // for public delivery.  Instead classify every published item by its
+  // database-backed recovery path.
+  fastify.get(
+    "/admin/contents/cover-integrity",
+    { preHandler: [requireAdmin("content:view")] },
+    async (req: any, reply) => {
+      const limit = z.coerce.number().int().min(1).max(500).default(200).parse((req.query || {}).limit);
+      const rows = await prisma.content.findMany({
+        where: { status: "published" },
+        orderBy: [{ updatedAt: "desc" }],
+        take: limit,
+        select: {
+          id: true,
+          title: true,
+          platformPlaybackEnabled: true,
+          coverUrl: true,
+          thumbnailUrl: true,
+          coverAsset: { select: { kind: true, status: true, storageKey: true, storagePublicUrl: true } },
+          videoAssets: {
+            where: { deletedAt: null },
+            select: { kind: true, status: true },
+          },
+        },
+      });
+      const issues = rows.flatMap((row: any) => {
+        const hasVodCover = row.videoAssets.some((asset: any) => asset.kind === "cover" && asset.status === "verified");
+        const hasLegacyCover = row.coverAsset?.kind === "cover_image" && row.coverAsset?.status === "ready" &&
+          (!!row.coverAsset?.storageKey || !!row.coverAsset?.storagePublicUrl);
+        if (hasVodCover || hasLegacyCover) return [];
+        const canDerive = row.videoAssets.some((asset: any) => asset.kind === "full_source" && asset.status === "verified");
+        const hasLegacyUrl = !!String(row.coverUrl || row.thumbnailUrl || "").trim();
+        return [{
+          contentId: row.id,
+          title: row.title,
+          platformPlaybackEnabled: row.platformPlaybackEnabled,
+          status: canDerive ? "derivable" : hasLegacyUrl ? "legacy_url_unmanaged" : "manual_cover_required",
+          message: canDerive
+            ? "完整源视频已校验；下次受控媒体处理可自动派生封面。"
+            : hasLegacyUrl
+              ? "历史 URL 不属于受控封面，请上传封面或重新处理已验证源视频。"
+              : "没有可用源视频或受控封面，请上传 16:9 封面。",
+        }];
+      });
+      const summary = {
+        scanned: rows.length,
+        healthy: rows.length - issues.length,
+        derivable: issues.filter((row: any) => row.status === "derivable").length,
+        legacyUrlUnmanaged: issues.filter((row: any) => row.status === "legacy_url_unmanaged").length,
+        manualCoverRequired: issues.filter((row: any) => row.status === "manual_cover_required").length,
+      };
+      return reply.send({ summary, issues });
+    },
+  );
+
   fastify.get(
     "/admin/contents/:id",
     { preHandler: [requireAdmin("content:view")] },
