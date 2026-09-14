@@ -14,6 +14,7 @@ import adminRoutes from "../src/routes/admin.js";
 import adminCmsRoutes from "../src/routes/adminCms.js";
 import {
   claimNextTranscodeJob,
+  claimNextCoverDerivationJob,
   buildRenditionTargets,
   createFfmpegTranscodeRunner,
   defaultMockTranscodeRunner,
@@ -21,6 +22,7 @@ import {
   loadTranscodeWorkerConfig,
   processClaimedTranscodeJob,
   requeueExpiredTranscodeJobs,
+  requeueExpiredCoverDerivationJobs,
   type TranscodeRunner,
   type TranscodeWorkerConfig,
 } from "../src/services/transcodeWorker.js";
@@ -177,6 +179,22 @@ async function seedTranscodeJob(input?: Partial<{ contentId: string; assetId: st
   return { asset, job };
 }
 
+async function seedCoverDerivationJob(input?: Partial<{ status: string; attemptCount: number; leaseUntil: Date | null }>) {
+  const asset = await prisma.videoAsset.create({
+    data: {
+      id: randomUUID(), contentId: TEST_KNOWN_IDS.contentDraft, kind: "full_source",
+      objectKey: `originals/${TEST_KNOWN_IDS.contentDraft}/${randomUUID()}/source.mp4`,
+      originalFilename: "source.mp4", mimeType: "video/mp4", byteSize: BigInt(1024),
+      sha256: `sha-${randomUUID()}`, status: "verified", verifiedAt: new Date(),
+    },
+  });
+  const job = await (prisma as any).coverDerivationJob.create({ data: {
+    contentId: asset.contentId, assetId: asset.id, status: input?.status || "queued",
+    attemptCount: input?.attemptCount ?? 0, leaseUntil: input?.leaseUntil ?? null,
+  } });
+  return { asset, job };
+}
+
 test("Phase B: two workers racing the same queued job only let one claim it", async () => {
   const { job } = await seedTranscodeJob();
   const [first, second] = await Promise.all([
@@ -258,6 +276,43 @@ test("Phase B: admin retry and cancel endpoints keep responses sanitized", async
     assert.doesNotMatch(cancelResp.body, /manifestKey|prefixKey|objectKey|bucket|https?:\/\//i);
     const cancelled = await prisma.transcodeJob.findUnique({ where: { id: job.id } });
     assert.equal(cancelled?.status, "cancelled");
+  } finally {
+    await app.close();
+  }
+});
+
+test("historical cover queue has independent claims and bounded lease recovery", async () => {
+  const claimable = await seedCoverDerivationJob();
+  const expired = await seedCoverDerivationJob({ status: "processing", attemptCount: 1, leaseUntil: new Date(Date.now() - 60_000) });
+  const exhausted = await seedCoverDerivationJob({ status: "processing", attemptCount: 3, leaseUntil: new Date(Date.now() - 60_000) });
+  const [first, second] = await Promise.all([
+    claimNextCoverDerivationJob(prisma, { workerId: "cover-a", leaseSeconds: 1800 }),
+    claimNextCoverDerivationJob(prisma, { workerId: "cover-b", leaseSeconds: 1800 }),
+  ]);
+  assert.equal([first, second].filter(Boolean).length, 1);
+  assert.equal(first?.id || second?.id, claimable.job.id);
+  const recovery = await requeueExpiredCoverDerivationJobs(prisma, { maxAttempts: 3 });
+  assert.equal(recovery.requeued, 1);
+  assert.equal(recovery.failed, 1);
+  assert.equal((await (prisma as any).coverDerivationJob.findUnique({ where: { id: expired.job.id } }))?.status, "queued");
+  assert.equal((await (prisma as any).coverDerivationJob.findUnique({ where: { id: exhausted.job.id } }))?.status, "failed");
+});
+
+test("historical cover queue admin actions are state-bound and auditable", async () => {
+  const { job } = await seedCoverDerivationJob();
+  const app = await createApp(prisma);
+  try {
+    const cookie = await loginAdmin(app, "editor");
+    const pause = await app.inject({ method: "POST", url: `/api/admin/cover-derivation-jobs/${job.id}/pause`, headers: { cookie } });
+    assert.equal(pause.statusCode, 200, pause.body);
+    assert.doesNotMatch(pause.body, /objectKey|bucket|https?:\/\//i);
+    assert.equal((await (prisma as any).coverDerivationJob.findUnique({ where: { id: job.id } }))?.status, "paused");
+    const retry = await app.inject({ method: "POST", url: `/api/admin/cover-derivation-jobs/${job.id}/retry`, headers: { cookie } });
+    assert.equal(retry.statusCode, 200, retry.body);
+    const cancel = await app.inject({ method: "POST", url: `/api/admin/cover-derivation-jobs/${job.id}/cancel`, headers: { cookie } });
+    assert.equal(cancel.statusCode, 200, cancel.body);
+    const audits = await prisma.adminAuditLog.findMany({ where: { objectId: job.id }, select: { action: true } });
+    assert.deepEqual(audits.map((row) => row.action).sort(), ["cover_derivation_job.cancel", "cover_derivation_job.pause", "cover_derivation_job.retry"]);
   } finally {
     await app.close();
   }

@@ -1149,6 +1149,10 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
   const SENSITIVE_MASK = "******";
   const ZID = z.string().trim().min(1).max(64);
   const ZTRANSCODE_RETRY = z.object({ outputProfile: z.enum(["standard", "reduced"]).default("standard") });
+  const ZCOVER_DERIVATION_QUEUE = z.object({
+    contentIds: z.array(ZID).min(1).max(200),
+    reason: z.string().trim().max(500).optional(),
+  });
 
   // 【P0-素材上传发布】初始化 Bot 发布队列（BullMQ + Redis，缺 REDIS_URL 自动回退 DB 轮询）
   try {
@@ -1498,6 +1502,121 @@ export default async function adminCmsRoutes(fastify: FastifyInstance) {
         manualCoverRequired: issues.filter((row: any) => row.status === "manual_cover_required").length,
       };
       return reply.send({ summary, issues });
+    },
+  );
+
+  // Queue only explicitly selected items from the integrity report.  There is
+  // no implicit full-library backfill, which keeps storage/CPU cost operator
+  // controlled and every batch attributable in the audit log.
+  fastify.post(
+    "/admin/contents/cover-integrity/queue",
+    { preHandler: [requireAdmin("content:publish")] },
+    async (req: any, reply) => {
+      const body = ZCOVER_DERIVATION_QUEUE.parse(req.body || {});
+      const meta = adminMeta(req);
+      const contents = await prisma.content.findMany({
+        where: { id: { in: Array.from(new Set(body.contentIds)) }, status: "published" },
+        select: {
+          id: true,
+          videoAssets: {
+            where: { kind: "full_source", status: "verified", deletedAt: null },
+            orderBy: { createdAt: "desc" },
+            select: { id: true },
+          },
+        },
+      });
+      const queued: string[] = [];
+      const skipped: Array<{ contentId: string; reason: string }> = [];
+      await prisma.$transaction(async (tx: any) => {
+        for (const content of contents) {
+          const asset = content.videoAssets[0];
+          if (!asset) {
+            skipped.push({ contentId: content.id, reason: "verified_source_missing" });
+            continue;
+          }
+          const existingCover = await tx.videoAsset.findFirst({
+            where: { contentId: content.id, kind: "cover", status: "verified", deletedAt: null },
+            select: { id: true },
+          });
+          if (existingCover) {
+            skipped.push({ contentId: content.id, reason: "verified_cover_exists" });
+            continue;
+          }
+          const existing = await tx.coverDerivationJob.findUnique({ where: { assetId: asset.id } });
+          if (existing && ["queued", "processing", "ready"].includes(existing.status)) {
+            skipped.push({ contentId: content.id, reason: `job_${existing.status}` });
+            continue;
+          }
+          const after = existing
+            ? await tx.coverDerivationJob.update({ where: { id: existing.id }, data: {
+                status: "queued", attemptCount: 0, errorClass: null, workerId: null, leaseUntil: null,
+                queuedAt: new Date(), finishedAt: null, requestedBy: meta.adminId,
+              } })
+            : await tx.coverDerivationJob.create({ data: { contentId: content.id, assetId: asset.id, requestedBy: meta.adminId } });
+          queued.push(content.id);
+          await writeAudit(tx, meta, "cover_derivation_job.queue", "cover_derivation_job", after.id,
+            existing ? serialize({ status: existing.status, attemptCount: existing.attemptCount }) : null,
+            serialize({ contentId: content.id, assetId: asset.id, status: after.status }), body.reason || "historical cover repair queued");
+        }
+      });
+      const missing = body.contentIds.filter((id) => !contents.some((row: any) => row.id === id));
+      return reply.send({ ok: true, queuedContentIds: queued, skipped, missingContentIds: missing });
+    },
+  );
+
+  fastify.get(
+    "/admin/cover-derivation-jobs",
+    { preHandler: [requireAdmin("content:view")] },
+    async (req: any, reply) => {
+      const qp = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(30) }).parse(req.query || {});
+      const [total, rows] = await Promise.all([
+        (prisma as any).coverDerivationJob.count(),
+        (prisma as any).coverDerivationJob.findMany({
+          orderBy: [{ queuedAt: "desc" }, { id: "desc" }], skip: (qp.page - 1) * qp.limit, take: qp.limit,
+          include: { content: { select: { id: true, title: true, status: true } }, asset: { select: { id: true, originalFilename: true, byteSize: true } } },
+        }),
+      ]);
+      return reply.send(serialize({ total, page: qp.page, limit: qp.limit, data: rows.map((row: any) => ({
+        id: row.id, contentId: row.contentId, contentTitle: row.content?.title || "", contentStatus: row.content?.status || null,
+        assetId: row.assetId, sourceFilename: summarizeFilename(row.asset?.originalFilename), sourceBytes: row.asset?.byteSize,
+        status: row.status, attemptCount: row.attemptCount, errorClass: sanitizeErrorClass(row.errorClass),
+        requestedByPresent: !!row.requestedBy, queuedAt: row.queuedAt, startedAt: row.startedAt, finishedAt: row.finishedAt,
+        leaseUntil: row.leaseUntil,
+      })) }));
+    },
+  );
+
+  fastify.post(
+    "/admin/cover-derivation-jobs/:id/:action",
+    { preHandler: [requireAdmin("content:publish")] },
+    async (req: any, reply) => {
+      const id = ZID.parse(req.params.id);
+      const action = z.enum(["pause", "retry", "cancel"]).parse(req.params.action);
+      const body = ZSTATUS_ACTION.parse(req.body || {});
+      const meta = adminMeta(req);
+      const result = await prisma.$transaction(async (tx: any) => {
+        const job = await tx.coverDerivationJob.findUnique({ where: { id } });
+        if (!job) return { error: "not_found" as const };
+        let data: any;
+        if (action === "pause") {
+          if (!["queued", "processing"].includes(job.status)) return { error: "not_pauseable" as const, status: job.status };
+          data = { status: "paused", workerId: null, leaseUntil: null };
+        } else if (action === "retry") {
+          if (!["failed", "paused", "cancelled"].includes(job.status)) return { error: "not_retryable" as const, status: job.status };
+          data = { status: "queued", attemptCount: 0, errorClass: null, workerId: null, leaseUntil: null, queuedAt: new Date(), finishedAt: null, requestedBy: meta.adminId };
+        } else {
+          if (!["queued", "processing", "paused"].includes(job.status)) return { error: "not_cancellable" as const, status: job.status };
+          data = { status: "cancelled", errorClass: "job_cancelled", workerId: null, leaseUntil: null, finishedAt: new Date() };
+        }
+        const after = await tx.coverDerivationJob.update({ where: { id }, data });
+        await writeAudit(tx, meta, `cover_derivation_job.${action}`, "cover_derivation_job", id,
+          serialize({ status: job.status, attemptCount: job.attemptCount, errorClass: job.errorClass }),
+          serialize({ status: after.status, attemptCount: after.attemptCount, errorClass: after.errorClass }), body.reason || null);
+        return { error: null, job: after };
+      });
+      if (result.error === "not_found") return reply.status(404).send({ error: "not_found" });
+      if (result.error) return reply.status(409).send({ error: result.error, message: `当前任务状态 ${result.status} 不允许 ${action}` });
+      return reply.send(serialize({ ok: true, job: result.job }));
     },
   );
 

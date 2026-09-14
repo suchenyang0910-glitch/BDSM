@@ -1,4 +1,4 @@
-import { PrismaClient, type TranscodeJob, type VideoAsset } from "@prisma/client";
+import { PrismaClient, type CoverDerivationJob, type TranscodeJob, type VideoAsset } from "@prisma/client";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
@@ -94,6 +94,10 @@ export type TranscodeRunner = {
 };
 
 export type ClaimedTranscodeJob = TranscodeJob & {
+  asset: VideoAsset;
+};
+
+export type ClaimedCoverDerivationJob = CoverDerivationJob & {
   asset: VideoAsset;
 };
 
@@ -249,6 +253,35 @@ export async function heartbeatTranscodeJob(
   });
 }
 
+/** Historical cover repair is intentionally independent from HLS work. */
+export async function claimNextCoverDerivationJob(
+  prisma: PrismaClient,
+  cfg: Pick<TranscodeWorkerConfig, "workerId" | "leaseSeconds">,
+  now = new Date(),
+): Promise<ClaimedCoverDerivationJob | null> {
+  const queue = (prisma as any).coverDerivationJob;
+  const candidate = await queue.findFirst({
+    where: { status: "queued", asset: { status: "verified", kind: "full_source", deletedAt: null } },
+    include: { asset: true },
+    orderBy: [{ queuedAt: "asc" }, { id: "asc" }],
+  });
+  if (!candidate) return null;
+  const updated = await queue.updateMany({
+    where: { id: candidate.id, status: "queued" },
+    data: {
+      status: "processing",
+      workerId: cfg.workerId,
+      leaseUntil: new Date(now.getTime() + cfg.leaseSeconds * 1000),
+      startedAt: candidate.startedAt ?? now,
+      finishedAt: null,
+      attemptCount: { increment: 1 } as any,
+      errorClass: null,
+    },
+  });
+  if (updated.count !== 1) return null;
+  return queue.findUnique({ where: { id: candidate.id }, include: { asset: true } }) as any;
+}
+
 export async function requeueExpiredTranscodeJobs(
   prisma: PrismaClient,
   cfg: Pick<TranscodeWorkerConfig, "maxAttempts">,
@@ -295,6 +328,34 @@ export async function requeueExpiredTranscodeJobs(
       },
     });
     requeued += 1;
+  }
+  return { requeued, failed };
+}
+
+export async function requeueExpiredCoverDerivationJobs(
+  prisma: PrismaClient,
+  cfg: Pick<TranscodeWorkerConfig, "maxAttempts">,
+  now = new Date(),
+) {
+  const queue = (prisma as any).coverDerivationJob;
+  const rows = await queue.findMany({
+    where: { status: "processing", leaseUntil: { lt: now } },
+    select: { id: true, attemptCount: true },
+  });
+  let requeued = 0;
+  let failed = 0;
+  for (const row of rows) {
+    if (row.attemptCount >= cfg.maxAttempts) {
+      await queue.update({ where: { id: row.id }, data: {
+        status: "failed", errorClass: "worker_exhausted", finishedAt: now, workerId: null, leaseUntil: null,
+      } });
+      failed += 1;
+    } else {
+      await queue.update({ where: { id: row.id }, data: {
+        status: "queued", errorClass: null, workerId: null, leaseUntil: null, queuedAt: now, finishedAt: null,
+      } });
+      requeued += 1;
+    }
   }
   return { requeued, failed };
 }
@@ -929,6 +990,53 @@ export async function deriveMissingCoverFromSource(
     },
   });
   return "created";
+}
+
+async function assertCoverDerivationRunning(prisma: PrismaClient, jobId: string) {
+  const row = await (prisma as any).coverDerivationJob.findUnique({ where: { id: jobId }, select: { status: true } });
+  if (!row || row.status !== "processing") throw taggedError("job_cancelled");
+}
+
+/** Extract one cover from an already verified source.  No HLS rendition,
+ * entitlement, or content publication state is changed by this worker path. */
+export async function processClaimedCoverDerivationJob(
+  prisma: PrismaClient,
+  input: { job: ClaimedCoverDerivationJob; cfg: TranscodeWorkerConfig; runner: TranscodeRunner },
+) {
+  const { job, cfg, runner } = input;
+  let workDir = "";
+  try {
+    await assertCoverDerivationRunning(prisma, job.id);
+    workDir = await createJobWorkDir(cfg.tmpDir, `cover-${job.id}`);
+    const sourcePath = path.join(workDir, "source.mp4");
+    const sourceHead = await downloadSourceObjectToFile(job.asset, sourcePath);
+    const sourceLength = typeof sourceHead.ContentLength === "number" ? BigInt(sourceHead.ContentLength) : null;
+    if (sourceLength != null && sourceLength !== job.asset.byteSize) throw taggedError("source_head_mismatch");
+    const probe = await runner.probe({ inputPath: sourcePath, timeoutMs: cfg.ffprobeTimeoutMs });
+    await assertCoverDerivationRunning(prisma, job.id);
+    // Test-mode workers must not mark a frame as generated without ffmpeg.
+    if (cfg.runnerMode !== "ffmpeg") throw taggedError("ffmpeg_failed", "cover derivation requires ffmpeg runner");
+    const outcome = await deriveMissingCoverFromSource(prisma, { contentId: job.contentId, sourcePath, probe, cfg });
+    await assertCoverDerivationRunning(prisma, job.id);
+    await (prisma as any).coverDerivationJob.update({ where: { id: job.id }, data: {
+      status: "ready", errorClass: null, workerId: null, leaseUntil: null, finishedAt: new Date(),
+    } });
+    return { ok: true, jobId: job.id, contentId: job.contentId, assetId: job.assetId, outcome };
+  } catch (error) {
+    const errorClass = mapFailureToErrorClass(error) || "unknown";
+    const fresh = await (prisma as any).coverDerivationJob.findUnique({ where: { id: job.id }, select: { status: true, attemptCount: true } });
+    const pausedOrCancelled = fresh?.status === "paused" || fresh?.status === "cancelled";
+    if (!pausedOrCancelled) {
+      const retry = Number(fresh?.attemptCount || job.attemptCount) < cfg.maxAttempts;
+      await (prisma as any).coverDerivationJob.update({ where: { id: job.id }, data: retry
+        ? { status: "queued", errorClass, workerId: null, leaseUntil: null, queuedAt: new Date(), finishedAt: null }
+        : { status: "failed", errorClass, workerId: null, leaseUntil: null, finishedAt: new Date() },
+      });
+    }
+    return { ok: false, jobId: job.id, contentId: job.contentId, assetId: job.assetId, errorClass };
+  } finally {
+    if (workDir) await cleanupJobWorkDir(workDir).catch(() => {});
+  }
 }
 
 function inferManifestContentType(name: string) {

@@ -461,6 +461,7 @@ model Content {
   publishJobs        TelegramPublishJob[]
   linkedChannelMessages TelegramChannelMessage[]
   videoAssets        VideoAsset[]
+  coverDerivationJobs CoverDerivationJob[]
   videoRenditions    VideoRendition[]
   uploadSessions     UploadSession[]
   transcodeJobs      TranscodeJob[]
@@ -1398,6 +1399,15 @@ enum TranscodeJobStatus {
   cancelled
 }
 
+enum CoverDerivationJobStatus {
+  queued
+  processing
+  paused
+  ready
+  failed
+  cancelled
+}
+
 enum VideoRenditionKind {
   preview
   hls_1080
@@ -1533,6 +1543,7 @@ model VideoAsset {
   usedByFullVideoSegments ContentFullVideoSegment[]
   publishJobs       TelegramPublishJob[]
   transcodeJobs     TranscodeJob[]
+  coverDerivationJobs CoverDerivationJob[]
   renditions        VideoRendition[]
 
   @@index([contentId, kind, createdAt])
@@ -1615,6 +1626,33 @@ model TranscodeJob {
   @@index([status, leaseUntil])
   @@index([workerId, status])
   @@map("transcode_jobs_v2")
+}
+
+// Historical covers are derived through a dedicated queue.  This avoids
+// abusing the full HLS transcode queue just to extract one still image.
+model CoverDerivationJob {
+  id           String                   @id @default(uuid())
+  contentId    String                   @map("content_id")
+  assetId      String                   @unique @map("asset_id")
+  status       CoverDerivationJobStatus @default(queued)
+  attemptCount Int                      @default(0) @map("attempt_count")
+  errorClass   String?                  @map("error_class") @db.VarChar(64)
+  workerId     String?                  @map("worker_id") @db.VarChar(64)
+  leaseUntil   DateTime?                @map("lease_until")
+  queuedAt     DateTime                 @default(now()) @map("queued_at")
+  startedAt    DateTime?                @map("started_at")
+  finishedAt   DateTime?                @map("finished_at")
+  requestedBy  String?                  @map("requested_by") @db.VarChar(64)
+  createdAt    DateTime                 @default(now()) @map("created_at")
+  updatedAt    DateTime                 @updatedAt @map("updated_at")
+
+  content      Content                  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  asset        VideoAsset               @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([status, queuedAt])
+  @@index([contentId, status])
+  @@index([status, leaseUntil])
+  @@map("cover_derivation_jobs")
 }
 
 model VideoRendition {

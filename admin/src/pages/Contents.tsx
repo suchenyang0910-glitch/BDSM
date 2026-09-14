@@ -708,6 +708,7 @@ const ContentsPage: React.FC = () => {
   const [currentChannelLink, setCurrentChannelLink] = React.useState<ChannelMessageItem | null>(null);
   const [channelMessagesLoading, setChannelMessagesLoading] = React.useState(false);
   const [linkingChannelMessageId, setLinkingChannelMessageId] = React.useState<string | null>(null);
+  const [coverJobsLoading, setCoverJobsLoading] = React.useState(false);
 
   const updateInputState = React.useCallback((field: string, state: DelimitedInputState) => {
     setInputStates((prev) => ({ ...prev, [field]: state }));
@@ -750,9 +751,17 @@ const ContentsPage: React.FC = () => {
       const response = await http.get<CoverIntegrityReport>("/admin/contents/cover-integrity", { params: { limit: 200 } });
       const report = response.data;
       const s = report.summary;
-      Modal.info({
+      const derivableContentIds = report.issues.filter((row) => row.status === "derivable").map((row) => row.contentId);
+      Modal.confirm({
         title: "封面完整性扫描",
         width: 720,
+        okText: derivableContentIds.length ? `加入派生队列（${derivableContentIds.length}）` : "关闭",
+        cancelText: derivableContentIds.length ? "关闭" : undefined,
+        onOk: async () => {
+          if (!derivableContentIds.length) return;
+          await http.post("/admin/contents/cover-integrity/queue", { contentIds: derivableContentIds, reason: "封面完整性扫描后手动入队" });
+          message.success(`已将 ${derivableContentIds.length} 条旧视频加入封面派生队列；不会重新转码。`);
+        },
         content: (
           <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 16 }}>
             <Alert
@@ -781,6 +790,51 @@ const ContentsPage: React.FC = () => {
       message.error(errMsg(error, "封面完整性扫描失败"));
     } finally {
       setCoverIntegrityLoading(false);
+    }
+  }, []);
+
+  const showCoverDerivationJobs = React.useCallback(async () => {
+    setCoverJobsLoading(true);
+    try {
+      const response = await http.get<{ data: any[] }>("/admin/cover-derivation-jobs", { params: { page: 1, limit: 100 } });
+      const jobs = Array.isArray(response.data?.data) ? response.data.data : [];
+      const runAction = async (id: string, action: "pause" | "retry" | "cancel") => {
+        await http.post(`/admin/cover-derivation-jobs/${encodeURIComponent(id)}/${action}`, { reason: "后台封面任务管理" });
+        message.success(action === "pause" ? "任务已暂停" : action === "retry" ? "任务已重新排队" : "任务已取消");
+        Modal.destroyAll();
+        void showCoverDerivationJobs();
+      };
+      Modal.info({
+        title: "历史封面派生任务",
+        width: 920,
+        okText: "关闭",
+        content: (
+          <Table
+            size="small"
+            rowKey="id"
+            pagination={{ pageSize: 10, hideOnSinglePage: true }}
+            dataSource={jobs}
+            columns={[
+              { title: "视频", dataIndex: "contentTitle", key: "contentTitle", ellipsis: true },
+              { title: "状态", dataIndex: "status", key: "status", width: 100, render: (value: string) => <Tag color={value === "ready" ? "green" : value === "failed" ? "red" : value === "paused" ? "orange" : "blue"}>{value}</Tag> },
+              { title: "尝试", dataIndex: "attemptCount", key: "attemptCount", width: 70 },
+              { title: "错误", dataIndex: "errorClass", key: "errorClass", width: 140, render: (value: string | null) => value || "—" },
+              { title: "入队", dataIndex: "queuedAt", key: "queuedAt", width: 165, render: (value: string) => value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "—" },
+              { title: "操作", key: "actions", width: 180, render: (_: unknown, row: any) => (
+                <Space size={4}>
+                  {(["queued", "processing"].includes(row.status)) && <Button size="small" onClick={() => void runAction(row.id, "pause")}>暂停</Button>}
+                  {(["failed", "paused", "cancelled"].includes(row.status)) && <Button size="small" type="primary" onClick={() => void runAction(row.id, "retry")}>重试</Button>}
+                  {(["queued", "processing", "paused"].includes(row.status)) && <Button size="small" danger onClick={() => void runAction(row.id, "cancel")}>取消</Button>}
+                </Space>
+              ) },
+            ]}
+          />
+        ),
+      });
+    } catch (error) {
+      message.error(errMsg(error, "加载封面派生任务失败"));
+    } finally {
+      setCoverJobsLoading(false);
     }
   }, []);
 
@@ -2146,6 +2200,9 @@ const ContentsPage: React.FC = () => {
             />
             <Button icon={<ReloadOutlined />} loading={coverIntegrityLoading} onClick={() => void runCoverIntegrityScan()}>
               扫描封面
+            </Button>
+            <Button loading={coverJobsLoading} onClick={() => void showCoverDerivationJobs()}>
+              封面任务
             </Button>
             <Button icon={<PlusOutlined />} type="primary" onClick={openCreate} disabled={!canEdit}>
               发布视频

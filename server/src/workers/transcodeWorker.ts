@@ -4,9 +4,12 @@ import { autoPublishContentAfterTranscode } from "../routes/adminCms.js";
 
 import {
   claimNextTranscodeJob,
+  claimNextCoverDerivationJob,
   createTranscodeRunner,
   loadTranscodeWorkerConfig,
   processClaimedTranscodeJob,
+  processClaimedCoverDerivationJob,
+  requeueExpiredCoverDerivationJobs,
   requeueExpiredTranscodeJobs,
   sleep,
 } from "../services/transcodeWorker.js";
@@ -26,6 +29,7 @@ async function main() {
     console.log(`[transcode-worker] started worker=${cfg.workerId} poll=${cfg.pollIntervalMs}ms lease=${cfg.leaseSeconds}s`);
     while (true) {
       await requeueExpiredTranscodeJobs(prisma, { maxAttempts: cfg.maxAttempts }, new Date());
+      await requeueExpiredCoverDerivationJobs(prisma, { maxAttempts: cfg.maxAttempts }, new Date());
       const job = await claimNextTranscodeJob(prisma, { workerId: cfg.workerId, leaseSeconds: cfg.leaseSeconds }, new Date());
       if (job) {
         const result = await processClaimedTranscodeJob(prisma, { job, cfg, runner });
@@ -47,7 +51,15 @@ async function main() {
         }
         console.log(`[transcode-worker] job=${result.jobId} content=${result.contentId} asset=${result.assetId} ok=${result.ok} err=${result.errorClass || "none"}`);
       } else {
-        await sleep(cfg.pollIntervalMs);
+        // Production HLS is always claimed first. Historical cover repair only
+        // uses otherwise idle worker time.
+        const coverJob = await claimNextCoverDerivationJob(prisma, { workerId: cfg.workerId, leaseSeconds: cfg.leaseSeconds }, new Date());
+        if (coverJob) {
+          const result = await processClaimedCoverDerivationJob(prisma, { job: coverJob, cfg, runner });
+          console.log(`[transcode-worker] cover-job=${result.jobId} content=${result.contentId} ok=${result.ok} err=${result.errorClass || "none"}`);
+        } else {
+          await sleep(cfg.pollIntervalMs);
+        }
       }
     }
   } finally {
