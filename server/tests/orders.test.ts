@@ -1084,18 +1084,18 @@ test("USDT 创单：XTR 会员可使用独立 USDT 测试价，Stars 主价格�
   }
 });
 
-test("USDT 月度会员 9.99：实际应付只能在标价基础上增加 0-99 个最小单位", async () => {
+test("USDT 月度会员 0.99：实际应付只能在标价基础上增加 0-99 个最小单位", async () => {
   const app = await createTestApp(prisma);
   try {
     const seed = Date.now() % 100_000_000;
     const product = await prisma.product.create({
       data: {
-        id: `membership-usdt-999-${seed}`,
+        id: `membership-usdt-099-${seed}`,
         type: "membership",
-        title: "月度会员 9.99",
+        title: "月度会员 0.99",
         priceMinor: 299n,
         currency: "XTR",
-        usdtPriceMinor: 9_990_000n,
+        usdtPriceMinor: 990_000n,
         durationDays: 30,
         status: "active",
       },
@@ -1108,7 +1108,7 @@ test("USDT 月度会员 9.99：实际应付只能在标价基础上增加 0-99 �
         status: "available",
       },
     });
-    const user = await prisma.user.create({ data: { telegramUserId: BigInt(7_600_000_000 + seed), displayName: "membership 9.99" } });
+    const user = await prisma.user.create({ data: { telegramUserId: BigInt(7_600_000_000 + seed), displayName: "membership 0.99" } });
     const created = await app.inject({
       method: "POST",
       url: "/api/orders/usdt",
@@ -1117,10 +1117,10 @@ test("USDT 月度会员 9.99：实际应付只能在标价基础上增加 0-99 �
     });
     assert.equal(created.statusCode, 201, created.body);
     const payment = (created.json() as any).usdtPayment;
-    assert.equal(payment.baseAmountMinor, "9990000");
+    assert.equal(payment.baseAmountMinor, "990000");
     const finalMinor = BigInt(payment.finalAmountMinor);
-    assert.ok(finalMinor >= 9_990_000n && finalMinor <= 9_990_099n, `actual=${finalMinor} must stay within 9.990000-9.990099 USDT`);
-    assert.match(payment.displayAmountDecimal, /^9\.990\d{3}$/);
+    assert.ok(finalMinor >= 990_000n && finalMinor <= 990_099n, `actual=${finalMinor} must stay within 0.990000-0.990099 USDT`);
+    assert.match(payment.displayAmountDecimal, /^0\.990\d{3}$/);
   } finally {
     await app.close();
   }

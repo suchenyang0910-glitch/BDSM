@@ -158,6 +158,8 @@ async function main() {
       title: "月度会员",
       priceMinor: BigInt(299),
       currency: "XTR",
+      // H5 / Web / Mini App 的 TRC-20 月度会员标价，单位为 1e-6 USDT。
+      usdtPriceMinor: BigInt(990_000),
       durationDays: 30,
       status: "active",
     },
