@@ -84,6 +84,7 @@ async function loadAnalyticsOverviewAggregates(prisma: AnalyticsQueryClient, fro
     bufferBucketRows,
     prefetchRows,
     qualityRows,
+    startupTimingRows,
     videoRows,
     articleRows,
     sourceRows,
@@ -185,6 +186,28 @@ async function loadAnalyticsOverviewAggregates(prisma: AnalyticsQueryClient, fro
       ORDER BY "value" DESC, "transition" ASC
       LIMIT 8
     `),
+    queryRaw<Array<{ stage: string; bucket: string; value: number }>>(Prisma.sql`
+      SELECT "stage", "bucket", COUNT(*)::int AS "value"
+      FROM (
+        SELECT 'tap_to_session'::text AS "stage", COALESCE("properties_json"->>'tapToSessionBucket', 'unknown') AS "bucket"
+        FROM "analytics_events"
+        WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to} AND "event_name" = 'playback_startup_timing'
+        UNION ALL
+        SELECT 'session_to_manifest'::text, COALESCE("properties_json"->>'sessionToManifestBucket', 'unknown')
+        FROM "analytics_events"
+        WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to} AND "event_name" = 'playback_startup_timing'
+        UNION ALL
+        SELECT 'manifest_to_first_frame'::text, COALESCE("properties_json"->>'manifestToFirstFrameBucket', 'unknown')
+        FROM "analytics_events"
+        WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to} AND "event_name" = 'playback_startup_timing'
+        UNION ALL
+        SELECT 'total_startup'::text, COALESCE("properties_json"->>'totalStartupBucket', 'unknown')
+        FROM "analytics_events"
+        WHERE "occurred_at" >= ${from} AND "occurred_at" <= ${to} AND "event_name" = 'playback_startup_timing'
+      ) AS "startup_timing"
+      GROUP BY "stage", "bucket"
+      ORDER BY "stage" ASC, "value" DESC, "bucket" ASC
+    `),
     queryRaw<Array<{ opened: number; playbackStarted: number }>>(Prisma.sql`
       SELECT
         COUNT(DISTINCT "session_id_hmac") FILTER (WHERE "event_name" = 'content_opened')::int AS "opened",
@@ -233,6 +256,7 @@ async function loadAnalyticsOverviewAggregates(prisma: AnalyticsQueryClient, fro
     playback: {
       firstFrameTotal: firstFrameTotalRows[0]?.total ?? 0,
       firstFrameBuckets: firstFrameBucketRows,
+      startupTiming: startupTimingRows,
       bufferStarts: bufferRows[0]?.starts ?? 0,
       bufferEnds: bufferRows[0]?.ends ?? 0,
       bufferDurationBuckets: bufferBucketRows,
@@ -301,6 +325,7 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
           total: overview.playback.firstFrameTotal,
           buckets: overview.playback.firstFrameBuckets,
         },
+        startupTiming: overview.playback.startupTiming,
         buffering: {
           starts: overview.playback.bufferStarts,
           ends: overview.playback.bufferEnds,

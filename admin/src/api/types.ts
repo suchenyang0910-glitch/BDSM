@@ -15,6 +15,7 @@ export type AdminAnalyticsOverview = {
   trend: Array<{ date: string; sessions: number; contentOpened: number; paymentsConfirmed: number }>;
   playback: {
     firstFrame: { total: number; buckets: Array<{ bucket: string; value: number }> };
+    startupTiming: Array<{ stage: "tap_to_session" | "session_to_manifest" | "manifest_to_first_frame" | "total_startup"; bucket: string; value: number }>;
     buffering: { starts: number; ends: number; buckets: Array<{ bucket: string; value: number }> };
     prefetch: { hit: number; miss: number; error: number; hitRate: number };
     qualityChanges: Array<{ transition: string; value: number }>;

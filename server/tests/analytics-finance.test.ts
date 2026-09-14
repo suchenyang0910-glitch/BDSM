@@ -224,6 +224,21 @@ test("analytics events enforce whitelist and store only HMAC-safe identifiers", 
             },
           },
           {
+            eventName: "playback_startup_timing",
+            payload: {
+              platform: "h5",
+              contentId: TEST_KNOWN_IDS.contentMembership,
+              sessionId: "playback-session-raw-id",
+              deliveryVariant: "full",
+              sessionReuse: false,
+              tapToSessionMs: 620,
+              sessionToManifestMs: 1380,
+              manifestToFirstFrameMs: 320,
+              totalStartupMs: 2320,
+              manifestUrl: "https://video.example.com/private.m3u8",
+            },
+          },
+          {
             eventName: "playback_prefetch_result",
             payload: {
               platform: "h5",
@@ -262,6 +277,19 @@ test("analytics events enforce whitelist and store only HMAC-safe identifiers", 
     assert.equal(playbackProps.elapsedBucket, "1_2s");
     assert.equal(typeof playbackProps.sessionIdHmac, "string");
     assert.equal("manifestUrl" in playbackProps, false);
+
+    const startupTimingRow = await prisma.analyticsEvent.findFirst({
+      where: { eventName: "playback_startup_timing", userId: user.id },
+      orderBy: { createdAt: "desc" },
+    });
+    assert.ok(startupTimingRow);
+    const startupProps = (startupTimingRow as any).propertiesJson as Record<string, unknown>;
+    assert.equal(startupProps.tapToSessionBucket, "500_999ms");
+    assert.equal(startupProps.sessionToManifestBucket, "1_2s");
+    assert.equal(startupProps.manifestToFirstFrameBucket, "lt_500ms");
+    assert.equal(startupProps.totalStartupBucket, "2_5s");
+    assert.equal("tapToSessionMs" in startupProps, false);
+    assert.equal("manifestUrl" in startupProps, false);
   } finally {
     await app.close();
   }

@@ -21,6 +21,7 @@ export const ANALYTICS_EVENT_NAMES = [
   "playback_error",
   "playback_manifest_ready",
   "playback_first_frame",
+  "playback_startup_timing",
   "playback_buffer_start",
   "playback_buffer_end",
   "playback_quality_change",
@@ -318,6 +319,21 @@ export function sanitizeAnalyticsEvent(input: {
           sessionIdHmac: analyticsIdHmac("playback_session", payload.sessionId),
           quality: normalizeEnumValue(payload.quality, PLAYBACK_QUALITY_VALUES) ?? "auto",
           elapsedBucket: bucketDurationMs(payload.elapsedMs) ?? "unknown",
+        },
+      };
+    case "playback_startup_timing":
+      return {
+        eventName: input.eventName,
+        platform,
+        propertiesJson: {
+          contentIdHmac: analyticsIdHmac("content", payload.contentId),
+          sessionIdHmac: analyticsIdHmac("playback_session", payload.sessionId),
+          deliveryVariant: normalizeEnumValue(payload.deliveryVariant, ["preview", "full"]) ?? null,
+          sessionReuse: payload.sessionReuse === true,
+          tapToSessionBucket: bucketDurationMs(payload.tapToSessionMs) ?? "unknown",
+          sessionToManifestBucket: bucketDurationMs(payload.sessionToManifestMs) ?? "unknown",
+          manifestToFirstFrameBucket: bucketDurationMs(payload.manifestToFirstFrameMs) ?? "unknown",
+          totalStartupBucket: bucketDurationMs(payload.totalStartupMs) ?? "unknown",
         },
       };
     case "playback_buffer_start":

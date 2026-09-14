@@ -30,6 +30,21 @@ test("h5/app.js distinguishes preview analytics from full playback analytics", a
   assert.match(source, /trackAnalytics\("playback_completed"/);
 });
 
+test("H5 and Mini App record anonymous startup phase buckets without retaining raw timings", async () => {
+  const h5Source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const miniSource = await readFile(path.join(ROOT, "telegram-mini-app/app.js"), "utf8");
+  const analyticsSource = await readFile(path.join(ROOT, "server/src/services/analytics.ts"), "utf8");
+  for (const source of [h5Source, miniSource]) {
+    assert.match(source, /playTappedAt/);
+    assert.match(source, /playbackSessionReadyAt/);
+    assert.match(source, /manifestReadyAt/);
+    assert.match(source, /playback_startup_timing/);
+  }
+  assert.match(analyticsSource, /"playback_startup_timing"/);
+  assert.match(analyticsSource, /tapToSessionBucket: bucketDurationMs\(payload\.tapToSessionMs\)/);
+  assert.doesNotMatch(analyticsSource, /tapToSessionMs:\s*payload\.tapToSessionMs/);
+});
+
 test("h5 detail applies the server-resolved per-content SEO and GEO metadata", async () => {
   const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   assert.match(source, /keywordItems\.push\.apply\(keywordItems, seo\.geoKeywords\)/);

@@ -90,6 +90,11 @@
       currentQuality: "auto",
       bufferStartedAt: 0,
       playRequestedAt: 0,
+      playTappedAt: 0,
+      playbackSessionReadyAt: 0,
+      manifestReadyAt: 0,
+      startupSessionReused: false,
+      startupTimingReported: false,
       prefetchContentId: "",
       prefetchedSession: null,
     },
@@ -253,6 +258,11 @@
     state.player.currentQuality = "auto";
     state.player.bufferStartedAt = 0;
     state.player.playRequestedAt = 0;
+    state.player.playTappedAt = 0;
+    state.player.playbackSessionReadyAt = 0;
+    state.player.manifestReadyAt = 0;
+    state.player.startupSessionReused = false;
+    state.player.startupTimingReported = false;
   }
 
   function reportPlaybackError(detail, errorCode) {
@@ -267,6 +277,27 @@
     return state.player.deliveryVariant === "full"
       ? "full_play"
       : (hasManagedPlayback(detail) ? "preview_play" : "preview_prefetch");
+  }
+
+  function markPlaybackManifestReady(detail) {
+    if (!state.player.manifestReadyAt) state.player.manifestReadyAt = Date.now();
+    trackManagedAnalytics(detail, "playback_manifest_ready");
+  }
+
+  function reportPlaybackStartupTiming(detail) {
+    if (!state.player.managed || state.player.startupTimingReported || !state.player.playTappedAt) return;
+    var now = Date.now();
+    var sessionReadyAt = state.player.playbackSessionReadyAt || state.player.playTappedAt;
+    var manifestReadyAt = state.player.manifestReadyAt || now;
+    trackManagedAnalytics(detail, "playback_startup_timing", {
+      deliveryVariant: state.player.deliveryVariant || "preview",
+      sessionReuse: !!state.player.startupSessionReused,
+      tapToSessionMs: Math.max(0, sessionReadyAt - state.player.playTappedAt),
+      sessionToManifestMs: Math.max(0, manifestReadyAt - sessionReadyAt),
+      manifestToFirstFrameMs: Math.max(0, now - manifestReadyAt),
+      totalStartupMs: Math.max(0, now - state.player.playTappedAt),
+    });
+    state.player.startupTimingReported = true;
   }
 
   function detectPlaybackNetworkPolicy() {
@@ -405,12 +436,12 @@
     try { video.pause(); } catch (_) {}
     try { video.removeAttribute("src"); video.load(); } catch (_) {}
     state.player.playRequestedAt = Date.now();
+    state.player.manifestReadyAt = 0;
     state.player.currentQuality = state.player.deliveryVariant === "full" ? detectPlaybackNetworkPolicy().defaultQuality : "preview";
 
     if (canUseNativeHls(video)) {
       video.src = manifestUrl;
       video.load();
-      trackManagedAnalytics(detail, "playback_manifest_ready");
       return;
     }
 
@@ -445,7 +476,7 @@
           } else {
             state.player.currentQuality = "preview";
           }
-          trackManagedAnalytics(detail, "playback_manifest_ready");
+          markPlaybackManifestReady(detail);
         });
         hls.on(HlsCtor.Events.LEVEL_SWITCHED, function (_, data) {
           var fromQuality = state.player.currentQuality || "auto";
@@ -536,6 +567,10 @@
     }
     const prefetched = state.player.prefetchedSession;
     let created = prefetched && prefetched.contentId === detail.id ? prefetched : null;
+    state.player.playTappedAt = Date.now();
+    state.player.playbackSessionReadyAt = created ? state.player.playTappedAt : 0;
+    state.player.startupSessionReused = !!created;
+    state.player.startupTimingReported = false;
     if (created) state.player.prefetchedSession = null;
     try {
       if (!created) {
@@ -543,6 +578,7 @@
           method: "POST",
           body: JSON.stringify({}),
         });
+        state.player.playbackSessionReadyAt = Date.now();
       }
     } catch (err) {
       reportPlaybackError(detail, err && err.payload ? (err.payload.error || err.payload.errorClass) : "playback_session_failed");
@@ -2707,11 +2743,17 @@
       });
     });
 
+    video.addEventListener("loadeddata", function () {
+      if (!state.player.managed) return;
+      markPlaybackManifestReady(detail);
+    });
+
     video.addEventListener("playing", function () {
       if (state.player.managed && state.player.playRequestedAt) {
         trackManagedAnalytics(detail, "playback_first_frame", {
           elapsedMs: Math.max(0, Date.now() - state.player.playRequestedAt),
         });
+        reportPlaybackStartupTiming(detail);
         state.player.playRequestedAt = 0;
       }
       if (state.player.managed && state.player.bufferStartedAt) {

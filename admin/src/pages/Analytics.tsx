@@ -18,6 +18,12 @@ const EVENT_LABEL: Record<string, string> = {
 };
 
 const PLATFORM_LABEL: Record<string, string> = { h5: "H5", telegram_mini_app: "Telegram Mini App", server: "服务端", unknown: "未知" };
+const STARTUP_STAGE_LABEL: Record<string, string> = {
+  tap_to_session: "点击 → 播放会话",
+  session_to_manifest: "会话 → Manifest",
+  manifest_to_first_frame: "Manifest → 首帧",
+  total_startup: "点击 → 首帧",
+};
 
 const AnalyticsPage: React.FC = () => {
   const [preset, setPreset] = React.useState<"7d" | "30d">("7d");
@@ -96,6 +102,7 @@ const AnalyticsPage: React.FC = () => {
           <Col xs={24} lg={12}><Card title="首帧时间分桶"><Table rowKey="bucket" size="small" pagination={false} dataSource={data.playback.firstFrame.buckets} locale={{ emptyText: <Empty description="尚无首帧样本" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} columns={[{ title: "分桶", dataIndex: "bucket" }, { title: "次数", dataIndex: "value" }]} /></Card></Col>
           <Col xs={24} lg={12}><Card title="卡顿时长分桶"><Table rowKey="bucket" size="small" pagination={false} dataSource={data.playback.buffering.buckets} locale={{ emptyText: <Empty description="尚无卡顿样本" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} columns={[{ title: "分桶", dataIndex: "bucket" }, { title: "次数", dataIndex: "value" }]} /></Card></Col>
         </Row>
+        <Card title="首播阶段耗时"><Table rowKey={(row) => `${row.stage}:${row.bucket}`} size="small" pagination={false} dataSource={data.playback.startupTiming} locale={{ emptyText: <Empty description="尚无首播阶段样本" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} columns={[{ title: "阶段", dataIndex: "stage", render: (value) => STARTUP_STAGE_LABEL[value] || value }, { title: "耗时分桶", dataIndex: "bucket" }, { title: "次数", dataIndex: "value" }]} /></Card>
         <Card title="清晰度切换 Top 8"><Table rowKey="transition" size="small" pagination={false} dataSource={data.playback.qualityChanges} locale={{ emptyText: <Empty description="尚无清晰度切换数据" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} columns={[{ title: "切换路径", dataIndex: "transition" }, { title: "次数", dataIndex: "value" }]} /></Card>
         <Card title="入口与设备"><Space wrap>{data.platforms.length ? data.platforms.map((row) => <Card size="small" key={row.platform}><Statistic title={PLATFORM_LABEL[row.platform] || row.platform} value={row.eventCount} suffix="事件" /></Card>) : <Empty description="尚无入口数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />}</Space></Card>
         <Text type="secondary">统计区间：{dayjs(data.period.from).format("YYYY-MM-DD HH:mm")} 至 {dayjs(data.period.to).format("YYYY-MM-DD HH:mm")}</Text>
