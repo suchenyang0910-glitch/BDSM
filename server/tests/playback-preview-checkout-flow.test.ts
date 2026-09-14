@@ -45,6 +45,20 @@ test("H5 and Mini App record anonymous startup phase buckets without retaining r
   assert.doesNotMatch(analyticsSource, /tapToSessionMs:\s*payload\.tapToSessionMs/);
 });
 
+test("H5 and Mini App recover one eligible playback failure and then show a clear retry message", async () => {
+  const h5Source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
+  const miniSource = await readFile(path.join(ROOT, "telegram-mini-app/app.js"), "utf8");
+  for (const source of [h5Source, miniSource]) {
+    assert.match(source, /function recoverManagedPlayback\(detail, classification\)/);
+    assert.match(source, /classified\.stage === "manifest" \|\| classified\.stage === "segment" \|\| classified\.stage === "heartbeat"/);
+    assert.match(source, /state\.player\.autoRecoveryAttempts >= 1/);
+    assert.match(source, /window\.addEventListener\("online", retry, \{ once: true \}\)/);
+    assert.match(source, /startManagedPlayback\(detail, \{ recovery: true \}\)/);
+  }
+  assert.match(h5Source, /recoverManagedPlayback\(detail, classifyHlsFatalError\(data\)\)/);
+  assert.match(miniSource, /recoverManagedPlayback\(detail, classifyHlsFatalError\(data\)\)/);
+});
+
 test("h5 detail applies the server-resolved per-content SEO and GEO metadata", async () => {
   const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   assert.match(source, /keywordItems\.push\.apply\(keywordItems, seo\.geoKeywords\)/);

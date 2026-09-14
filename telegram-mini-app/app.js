@@ -95,6 +95,8 @@
       manifestReadyAt: 0,
       startupSessionReused: false,
       startupTimingReported: false,
+      autoRecoveryAttempts: 0,
+      recoveryInProgress: false,
       prefetchContentId: "",
       prefetchedSession: null,
     },
@@ -263,6 +265,7 @@
     state.player.manifestReadyAt = 0;
     state.player.startupSessionReused = false;
     state.player.startupTimingReported = false;
+    state.player.recoveryInProgress = false;
   }
 
   function reportPlaybackError(detail, errorCode) {
@@ -277,6 +280,56 @@
     return state.player.deliveryVariant === "full"
       ? "full_play"
       : (hasManagedPlayback(detail) ? "preview_play" : "preview_prefetch");
+  }
+
+  function classifyPlaybackApiError(err) {
+    var code = err && err.payload ? (err.payload.error || err.payload.errorClass || "") : "";
+    if (code === "playback_session_inactive") return { errorCode: "heartbeat_session_inactive", message: "当前播放会话已失效，正在重新连接。", stage: "heartbeat" };
+    if (code === "video_not_ready") return { errorCode: "playback_session_not_ready", message: "视频转码尚未完成，请稍后重试。", stage: "session" };
+    if (code === "unauthorized") return { errorCode: "playback_session_unauthorized", message: "请先完成登录后再播放。", stage: "session" };
+    return { errorCode: code ? "playback_session_" + code : "playback_session_failed", message: "创建播放会话失败，请稍后重试。", stage: "session" };
+  }
+
+  function classifyHlsFatalError(data) {
+    var details = String(data && data.details || "").toLowerCase();
+    var responseCode = data && data.response && data.response.code != null ? data.response.code : null;
+    if (/manifest/.test(details)) return { errorCode: responseCode ? "manifest_load_failed_" + responseCode : "manifest_load_failed", message: "视频清单加载失败，请稍后重试。", stage: "manifest" };
+    if (/frag|level|audio.*track|key.*load/.test(details)) return { errorCode: responseCode ? "segment_load_failed_" + responseCode : "segment_load_failed", message: "视频分片加载失败，请检查网络后重试。", stage: "segment" };
+    return { errorCode: "player_runtime_failed", message: "播放器初始化失败，请点击播放按钮重试。", stage: "player_runtime" };
+  }
+
+  function recoverManagedPlayback(detail, classification) {
+    var classified = classification || { errorCode: "playback_recovery_failed", message: "视频暂时无法恢复，请点击播放按钮重试。", stage: "player_runtime" };
+    if (!state.player.managed) {
+      reportPlaybackError(detail, classified.errorCode);
+      showInlineMessage(classified.message);
+      return;
+    }
+    var canAutoRetry = classified.stage === "manifest" || classified.stage === "segment" || classified.stage === "heartbeat";
+    if (!canAutoRetry || state.player.recoveryInProgress || state.player.autoRecoveryAttempts >= 1) {
+      reportPlaybackError(detail, classified.errorCode);
+      showInlineMessage(classified.message);
+      return;
+    }
+    state.player.autoRecoveryAttempts += 1;
+    state.player.recoveryInProgress = true;
+    reportPlaybackError(detail, classified.errorCode);
+    var retry = function () {
+      if (!state.player.recoveryInProgress) return;
+      var attempts = state.player.autoRecoveryAttempts;
+      clearManagedPlaybackState();
+      state.player.autoRecoveryAttempts = attempts;
+      state.player.recoveryInProgress = false;
+      showInlineMessage("正在重新连接视频…");
+      startManagedPlayback(detail, { recovery: true });
+    };
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      showInlineMessage("网络连接已断开，恢复网络后将自动重试一次。");
+      window.addEventListener("online", retry, { once: true });
+      return;
+    }
+    showInlineMessage("视频连接中断，正在自动重试一次…");
+    window.setTimeout(retry, 700);
   }
 
   function markPlaybackManifestReady(detail) {
@@ -493,8 +546,7 @@
         });
         hls.on(HlsCtor.Events.ERROR, function (_, data) {
           if (!data || !data.fatal) return;
-          reportPlaybackError(detail, data.type || data.details || "hls_error");
-          showInlineMessage("视频播放中断，请稍后重试。");
+          recoverManagedPlayback(detail, classifyHlsFatalError(data));
           destroyManagedHls();
         });
       }
@@ -515,7 +567,7 @@
     }).catch(function (err) {
       reportPlaybackError(detail, err && err.payload ? (err.payload.error || err.payload.errorClass) : "playback_request_failed");
       if (err && err.payload && err.payload.error === "playback_session_inactive") {
-        clearManagedPlaybackState();
+        recoverManagedPlayback(detail, classifyPlaybackApiError(err));
       }
       return null;
     });
@@ -555,7 +607,7 @@
     if (playback && typeof playback.catch === "function") playback.catch(function () {});
   }
 
-  async function startManagedPlayback(detail) {
+  async function startManagedPlayback(detail, options) {
     const video = $("detailContent").querySelector(".detail-preview-video");
     if (!video) {
       showInlineMessage("当前内容暂未准备好播放器。");
@@ -565,6 +617,7 @@
       playInlineDetailVideo();
       return;
     }
+    if (!(options && options.recovery)) state.player.autoRecoveryAttempts = 0;
     const prefetched = state.player.prefetchedSession;
     let created = prefetched && prefetched.contentId === detail.id ? prefetched : null;
     state.player.playTappedAt = Date.now();
@@ -581,7 +634,8 @@
         state.player.playbackSessionReadyAt = Date.now();
       }
     } catch (err) {
-      reportPlaybackError(detail, err && err.payload ? (err.payload.error || err.payload.errorClass) : "playback_session_failed");
+      var classifiedApiError = classifyPlaybackApiError(err);
+      reportPlaybackError(detail, classifiedApiError.errorCode);
       if (detail.previewUrl) {
         showInlineMessage("Web 受控播放尚未开放，先为你展示当前试看。");
         playInlineDetailVideo();
@@ -591,7 +645,7 @@
         showInlineMessage("完整 Web 播放仍保持关闭，请先使用 Telegram 备用观看。");
         return;
       }
-      showInlineMessage("创建播放会话失败：" + apiText(err));
+      showInlineMessage(classifiedApiError.message);
       return;
     }
 
@@ -2746,6 +2800,13 @@
     video.addEventListener("loadeddata", function () {
       if (!state.player.managed) return;
       markPlaybackManifestReady(detail);
+    });
+
+    video.addEventListener("error", function () {
+      var code = video.error ? Number(video.error.code || 0) : 0;
+      recoverManagedPlayback(detail, code === 2
+        ? { errorCode: "video_network_failed", message: "视频媒体加载失败，请检查网络后重试。", stage: "segment" }
+        : { errorCode: "video_element_failed", message: "播放器发生错误，请点击播放按钮重试。", stage: "player_runtime" });
     });
 
     video.addEventListener("playing", function () {

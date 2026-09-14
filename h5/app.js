@@ -98,6 +98,8 @@
       manifestReadyAt: 0,
       startupSessionReused: false,
       startupTimingReported: false,
+      autoRecoveryAttempts: 0,
+      recoveryInProgress: false,
       prefetchContentId: "",
       prefetchedSession: null,
       previewHintShown: false,
@@ -312,6 +314,7 @@
     state.player.manifestReadyAt = 0;
     state.player.startupSessionReused = false;
     state.player.startupTimingReported = false;
+    state.player.recoveryInProgress = false;
     state.player.previewHintShown = false;
     state.player.paywallShown = false;
     state.player.previewCompletionTracked = false;
@@ -434,6 +437,38 @@
     return state.player.deliveryVariant === "full"
       ? "full_play"
       : (hasManagedPlayback(detail) ? "preview_play" : "preview_prefetch");
+  }
+
+  function recoverManagedPlayback(detail, classification) {
+    var classified = classification || { errorCode: "playback_recovery_failed", message: "视频暂时无法恢复，请点击播放按钮重试。", stage: "player_runtime" };
+    if (!state.player.managed) {
+      surfacePlaybackFailure(detail, classified);
+      return;
+    }
+    var canAutoRetry = classified.stage === "manifest" || classified.stage === "segment" || classified.stage === "heartbeat";
+    if (!canAutoRetry || state.player.recoveryInProgress || state.player.autoRecoveryAttempts >= 1) {
+      surfacePlaybackFailure(detail, classified);
+      return;
+    }
+    state.player.autoRecoveryAttempts += 1;
+    state.player.recoveryInProgress = true;
+    reportPlaybackError(detail, classified.errorCode);
+    var retry = function () {
+      if (!state.player.recoveryInProgress) return;
+      var attempts = state.player.autoRecoveryAttempts;
+      clearManagedPlaybackState();
+      state.player.autoRecoveryAttempts = attempts;
+      state.player.recoveryInProgress = false;
+      showInlineMessage("正在重新连接视频…");
+      startManagedPlayback(detail, { recovery: true });
+    };
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      showInlineMessage("网络连接已断开，恢复网络后将自动重试一次。");
+      window.addEventListener("online", retry, { once: true });
+      return;
+    }
+    showInlineMessage("视频连接中断，正在自动重试一次…");
+    window.setTimeout(retry, 700);
   }
 
   function markPlaybackManifestReady(detail) {
@@ -652,7 +687,7 @@
         });
         hls.on(HlsCtor.Events.ERROR, function (_, data) {
           if (!data || !data.fatal) return;
-          surfacePlaybackFailure(detail, classifyHlsFatalError(data));
+          recoverManagedPlayback(detail, classifyHlsFatalError(data));
           destroyManagedHls();
         });
       }
@@ -674,7 +709,7 @@
     }).catch(function (err) {
       reportPlaybackError(detail, err && err.payload ? (err.payload.error || err.payload.errorClass) : "playback_request_failed");
       if (err && err.payload && err.payload.error === "playback_session_inactive") {
-        clearManagedPlaybackState();
+        recoverManagedPlayback(detail, classifyPlaybackApiError(err));
       }
       return null;
     });
@@ -721,7 +756,7 @@
     });
   }
 
-  async function startManagedPlayback(detail) {
+  async function startManagedPlayback(detail, options) {
     const video = $("detailContent").querySelector(".detail-preview-video");
     if (!video) {
       showInlineMessage("当前内容暂未准备好播放器。");
@@ -731,6 +766,7 @@
       playInlineDetailVideo();
       return;
     }
+    if (!(options && options.recovery)) state.player.autoRecoveryAttempts = 0;
     const prefetched = state.player.prefetchedSession;
     let created = prefetched && prefetched.contentId === detail.id ? prefetched : null;
     state.player.playTappedAt = Date.now();
@@ -3522,7 +3558,7 @@
     });
 
     video.addEventListener("error", function () {
-      surfacePlaybackFailure(detail, classifyVideoElementError(video));
+      recoverManagedPlayback(detail, classifyVideoElementError(video));
     });
 
     video.addEventListener("stalled", function () {
