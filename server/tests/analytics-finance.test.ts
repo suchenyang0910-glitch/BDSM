@@ -369,7 +369,7 @@ test("Google Analytics integration status never exposes the Measurement Protocol
   }
 });
 
-test("client analytics endpoint rejects payment confirmation events", async () => {
+test("client analytics endpoint filters trusted events without dropping valid events in the same batch", async () => {
   const app = await createApp(prisma);
   try {
     const user = await prisma.user.create({
@@ -387,23 +387,34 @@ test("client analytics endpoint rejects payment confirmation events", async () =
         "Content-Type": "application/json",
       },
       payload: {
-        events: [{
-          eventName: "payment_confirmed",
-          payload: {
-            platform: "h5",
-            orderNo: "INT_CLIENT_SHOULD_NOT_COUNT",
-            productId: TEST_KNOWN_IDS.singleProductKey,
-            paymentMethod: "usdt_trc20",
+        events: [
+          {
+            eventName: "payment_confirmed",
+            payload: {
+              platform: "h5",
+              orderNo: "INT_CLIENT_SHOULD_NOT_COUNT",
+              productId: TEST_KNOWN_IDS.singleProductKey,
+              paymentMethod: "usdt_trc20",
+            },
           },
-        }],
+          {
+            eventName: "page_viewed",
+            payload: { platform: "h5", pageName: "home" },
+          },
+        ],
       },
     });
-    assert.equal(res.statusCode, 400, res.body);
-    assert.equal(res.json().error, "analytics_event_not_client_allowed");
+    assert.equal(res.statusCode, 202, res.body);
+    assert.equal(res.json().accepted, 1);
+    assert.equal(res.json().rejected, 1);
     const count = await prisma.analyticsEvent.count({
       where: { eventName: "payment_confirmed", userId: user.id },
     });
     assert.equal(count, 0);
+    const validCount = await prisma.analyticsEvent.count({
+      where: { eventName: "page_viewed", userId: user.id },
+    });
+    assert.equal(validCount, 1);
   } finally {
     await app.close();
   }

@@ -70,23 +70,19 @@ function analyticsPaymentMethodForOrder(method: unknown): "telegram_stars" | "us
   return "manual";
 }
 
-async function recordPaymentConfirmedAnalytics(prisma: PrismaClient, order: any, paidAt?: Date) {
+async function recordPaymentConfirmedAnalytics(prisma: any, order: any, paidAt?: Date) {
   if (!order?.orderNo) return;
-  try {
-    await recordServerAnalyticsEvent(prisma, {
-      eventName: "payment_confirmed",
-      userId: order.userId || null,
-      sessionSeed: `server_payment:${order.orderNo}`,
-      occurredAt: paidAt || order.paidAt || new Date(),
-      payload: {
-        orderNo: order.orderNo,
-        productId: order.productId || order.product?.id,
-        paymentMethod: analyticsPaymentMethodForOrder(order.paymentMethod || order.paymentProvider),
-      },
-    });
-  } catch {
-    // Analytics must never affect order fulfillment or entitlement delivery.
-  }
+  await recordServerAnalyticsEvent(prisma, {
+    eventName: "payment_confirmed",
+    userId: order.userId || null,
+    sessionSeed: `server_payment:${order.orderNo}`,
+    occurredAt: paidAt || order.paidAt || new Date(),
+    payload: {
+      orderNo: order.orderNo,
+      productId: order.productId || order.product?.id,
+      paymentMethod: analyticsPaymentMethodForOrder(order.paymentMethod || order.paymentProvider),
+    },
+  });
 }
 
 const beforeSnapshot = (o: any) => ({
@@ -590,6 +586,8 @@ export async function deliverStarsSuccessfulPayment(
           status: "active",
         },
       });
+      // 与订单确认和权益发放同事务写入，避免付款成功后可信经营指标永久丢失。
+      await recordPaymentConfirmedAnalytics(tx, updated, paidAt);
       void txRow;
       return { order: updated, entitlements: [entitlement] };
     });
@@ -615,7 +613,6 @@ export async function deliverStarsSuccessfulPayment(
       productTitle: result.order.product?.title,
       userDisplayName: order.user?.displayName,
     });
-    await recordPaymentConfirmedAnalytics(prisma, result.order, result.order.paidAt || new Date());
     return { delivered: true, idempotent: false, orderNo: result.order.orderNo, entitlements: result.entitlements };
   } catch (e: any) {
     const prismaCode = extractPrismaCodeOnly(e);
@@ -933,6 +930,8 @@ export async function confirmUsdtChainEvent(
           status: "active",
         },
       });
+      // 链上确认、订单状态、权益和可信支付事件保持原子一致。
+      await recordPaymentConfirmedAnalytics(tx, updated, updated.paidAt || new Date());
       return { stage: "confirmed" as const, txRow, order: updated, entitlements: [entitlement] } as any;
     });
 
@@ -967,7 +966,6 @@ export async function confirmUsdtChainEvent(
       userDisplayName: (result as any).order.user?.displayName || candidateOrder.user?.displayName,
       receivingUsdtAddress: candidateOrder.usdtPaymentAddress?.address || null,
     });
-    await recordPaymentConfirmedAnalytics(prisma, (result as any).order, (result as any).order.paidAt || new Date());
     return {
       status: "confirmed",
       idempotent: false,

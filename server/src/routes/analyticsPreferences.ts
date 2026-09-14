@@ -326,14 +326,10 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
     if (!parsed.success) {
       return reply.status(400).send({ error: "bad_request", message: "埋点请求不合法" });
     }
-    const forbiddenEvent = parsed.data.events.find((event) => CLIENT_FORBIDDEN_ANALYTICS_EVENTS.has(event.eventName));
-    if (forbiddenEvent) {
-      return reply.status(400).send({
-        error: "analytics_event_not_client_allowed",
-        message: "该埋点只能由服务端可信流程写入。",
-        eventName: forbiddenEvent.eventName,
-      });
-    }
+    const allowedEvents = parsed.data.events.filter(
+      (event) => !CLIENT_FORBIDDEN_ANALYTICS_EVENTS.has(event.eventName),
+    );
+    const rejectedEvents = parsed.data.events.length - allowedEvents.length;
 
     const sessionSeed = ensureAnalyticsSessionSeed(req);
     const userId = typeof (req as any).userId === "string" ? (req as any).userId : null;
@@ -344,7 +340,7 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
     const sessionIdHmac = analyticsSessionIdHmac(sessionSeed);
     const userIdHmac = analyticsUserIdHmac(userId);
 
-    const rows = parsed.data.events.map((event) => {
+    const rows = allowedEvents.map((event) => {
       const sanitized = sanitizeAnalyticsEvent({
         eventName: event.eventName,
         payload: event.payload,
@@ -363,19 +359,22 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
       };
     });
 
-    await prisma.analyticsEvent.createMany({ data: rows });
+    if (rows.length > 0) {
+      await prisma.analyticsEvent.createMany({ data: rows });
+    }
 
     emitStructuredLog({
       event: "analytics_events_ingested",
       errorClass: "business",
       retryHint: 0,
-      note: `count=${rows.length}`,
-      counts: { accepted: rows.length },
+      note: rejectedEvents > 0 ? "client_trusted_events_filtered" : `count=${rows.length}`,
+      counts: { accepted: rows.length, rejected: rejectedEvents },
     });
 
     return reply.status(202).send({
       ok: true,
       accepted: rows.length,
+      rejected: rejectedEvents,
       sessionIdHmac: sessionIdHmac.slice(0, 16),
       anonymousIdHmac: anonymousIdHmac.slice(0, 16),
     });
