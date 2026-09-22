@@ -125,6 +125,101 @@ test("published VOD cover is exposed through a controlled public content route",
   }
 });
 
+test("catalog and detail fall back to an agreed ready full-HLS duration when a historical content row is missing it", async () => {
+  const app = await createTestApp(prisma);
+  const assetId = `duration-source-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
+  try {
+    await prisma.content.update({
+      where: { id: TEST_KNOWN_IDS.contentMembership },
+      data: { durationSeconds: null },
+    });
+    await prisma.videoAsset.create({
+      data: {
+        id: assetId,
+        contentId: TEST_KNOWN_IDS.contentMembership,
+        kind: "full_source",
+        objectKey: `originals/${TEST_KNOWN_IDS.contentMembership}/${assetId}/source.mp4`,
+        mimeType: "video/mp4",
+        byteSize: 1024n,
+        sha256: "b".repeat(64),
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
+    await prisma.videoRendition.createMany({
+      data: ["hls_480", "hls_720", "hls_1080"].map((kind) => ({
+        contentId: TEST_KNOWN_IDS.contentMembership,
+        assetId,
+        kind,
+        status: "ready",
+        manifestKey: `vod/${assetId}/${kind}/index.m3u8`,
+        durationSeconds: 442,
+        segmentCount: 111,
+        readyAt: new Date(),
+      })),
+    });
+
+    const list = await app.inject({ method: "GET", url: "/api/contents?pageSize=20" });
+    assert.equal(list.statusCode, 200, list.body);
+    const listed = (list.json() as any).items.find((item: any) => item.id === TEST_KNOWN_IDS.contentMembership);
+    assert.equal(listed?.durationSeconds, 442);
+    assert.equal(listed?.duration, "07:22");
+
+    const detail = await app.inject({ method: "GET", url: `/api/contents/${TEST_KNOWN_IDS.contentMembership}` });
+    assert.equal(detail.statusCode, 200, detail.body);
+    assert.equal((detail.json() as any).durationSeconds, 442);
+    assert.equal((detail.json() as any).duration, "07:22");
+  } finally {
+    await prisma.videoRendition.deleteMany({ where: { assetId } });
+    await prisma.videoAsset.deleteMany({ where: { id: assetId } });
+    await prisma.content.update({ where: { id: TEST_KNOWN_IDS.contentMembership }, data: { durationSeconds: 300 } });
+    await app.close();
+  }
+});
+
+test("catalog does not guess a duration when ready full-HLS renditions disagree", async () => {
+  const app = await createTestApp(prisma);
+  const assetId = `duration-conflict-${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
+  try {
+    await prisma.content.update({ where: { id: TEST_KNOWN_IDS.contentPublic }, data: { durationSeconds: null } });
+    await prisma.videoAsset.create({
+      data: {
+        id: assetId,
+        contentId: TEST_KNOWN_IDS.contentPublic,
+        kind: "full_source",
+        objectKey: `originals/${TEST_KNOWN_IDS.contentPublic}/${assetId}/source.mp4`,
+        mimeType: "video/mp4",
+        byteSize: 1024n,
+        sha256: "c".repeat(64),
+        status: "verified",
+        verifiedAt: new Date(),
+      },
+    });
+    await prisma.videoRendition.createMany({
+      data: [442, 443].map((durationSeconds, index) => ({
+        contentId: TEST_KNOWN_IDS.contentPublic,
+        assetId,
+        kind: index === 0 ? "hls_480" : "hls_720",
+        status: "ready",
+        manifestKey: `vod/${assetId}/${index}/index.m3u8`,
+        durationSeconds,
+        segmentCount: 111,
+        readyAt: new Date(),
+      })),
+    });
+
+    const list = await app.inject({ method: "GET", url: "/api/contents?pageSize=20" });
+    const listed = (list.json() as any).items.find((item: any) => item.id === TEST_KNOWN_IDS.contentPublic);
+    assert.equal(listed?.durationSeconds, null);
+    assert.equal(listed?.duration, "--:--");
+  } finally {
+    await prisma.videoRendition.deleteMany({ where: { assetId } });
+    await prisma.videoAsset.deleteMany({ where: { id: assetId } });
+    await prisma.content.update({ where: { id: TEST_KNOWN_IDS.contentPublic }, data: { durationSeconds: 300 } });
+    await app.close();
+  }
+});
+
 test("home exposes every active category instead of truncating the category rail", async () => {
   const app = await createTestApp(prisma);
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 100_000)}`;

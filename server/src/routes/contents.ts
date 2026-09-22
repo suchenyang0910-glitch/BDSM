@@ -51,6 +51,27 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     return cover || legacyCover ? `/api/contents/${encodeURIComponent(content.id)}/cover` : null;
   }
 
+  // Content.durationSeconds is a denormalized display field.  Older successful
+  // transcodes can predate its write-back, while their ready full HLS outputs
+  // still contain the authoritative duration.  Only use that fallback when
+  // every available full rendition agrees; never infer a duration from the
+  // preview rendition or from a client supplied value.
+  function resolvePublishedDurationSeconds(content: any): number | null {
+    const stored = Number(content?.durationSeconds);
+    if (Number.isInteger(stored) && stored > 0) return stored;
+
+    const values = (Array.isArray(content?.videoRenditions) ? content.videoRenditions : [])
+      .filter((rendition: any) =>
+        rendition?.status === "ready" &&
+        ["hls_480", "hls_720", "hls_1080"].includes(rendition?.kind) &&
+        Number.isInteger(Number(rendition?.durationSeconds)) &&
+        Number(rendition.durationSeconds) > 0,
+      )
+      .map((rendition: any) => Number(rendition.durationSeconds));
+    if (values.length === 0) return null;
+    return new Set(values).size === 1 ? values[0] : null;
+  }
+
   function verifiedLegacyCoverPublicUrl(asset: any): string | null {
     if (asset?.kind !== "cover_image" || asset?.status !== "ready") return null;
     const raw = typeof asset.storagePublicUrl === "string" ? asset.storagePublicUrl.trim() : "";
@@ -109,6 +130,10 @@ export default async function contentRoutes(fastify: FastifyInstance) {
           coverAsset: {
             select: { id: true, kind: true, status: true, storageKey: true, storagePublicUrl: true },
           },
+          videoRenditions: {
+            where: { status: "ready", kind: { in: ["hls_480", "hls_720", "hls_1080"] } },
+            select: { kind: true, status: true, durationSeconds: true },
+          },
         },
       }),
       tryGetPlatformMetadata(),
@@ -139,6 +164,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
     }
 
     const data = rows.map((c: any) => {
+      const durationSeconds = resolvePublishedDurationSeconds(c);
       const product = c.product || (c.accessType === "membership" ? defaultMembershipProduct : null);
       const cat = c.categories?.[0]?.category;
       const tags: string[] = [];
@@ -158,8 +184,8 @@ export default async function contentRoutes(fastify: FastifyInstance) {
         description: c.description || "",
         previewUrl: c.previewUrl || null,
         previewDurationSeconds: c.previewDurationSeconds ?? 60,
-        duration: formatDuration(c.durationSeconds),
-        durationSeconds: c.durationSeconds,
+        duration: formatDuration(durationSeconds ?? undefined),
+        durationSeconds,
         accessType: c.accessType,
         access: c.accessType === "public" ? "public" : "member",
         unlocked: owned,
@@ -275,6 +301,10 @@ export default async function contentRoutes(fastify: FastifyInstance) {
           coverAsset: {
             select: { id: true, kind: true, status: true, storageKey: true, storagePublicUrl: true },
           },
+          videoRenditions: {
+            where: { status: "ready", kind: { in: ["hls_480", "hls_720", "hls_1080"] } },
+            select: { kind: true, status: true, durationSeconds: true },
+          },
         },
       }),
       tryGetPlatformMetadata(),
@@ -347,6 +377,7 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       contentId: content.id,
       userId: uid,
     })).body;
+    const durationSeconds = resolvePublishedDurationSeconds(content);
     return {
       id: content.id,
       title: content.title,
@@ -354,8 +385,8 @@ export default async function contentRoutes(fastify: FastifyInstance) {
       description: content.description || "",
       previewUrl: content.previewUrl || null,
       previewDurationSeconds: content.previewDurationSeconds ?? 60,
-      duration: formatDuration(content.durationSeconds),
-      durationSeconds: content.durationSeconds,
+      duration: formatDuration(durationSeconds ?? undefined),
+      durationSeconds,
       accessType: content.accessType,
       tags,
       categories: content.categories.map((c: any) => c.category),
