@@ -3,8 +3,43 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
+import { emitSafetyEvent, extractPrismaCodeOnly } from "../src/utils/structuredError.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+function extractFunctionSource(source: string, name: string): string {
+  const start = source.indexOf(`async function ${name}(`);
+  assert.notEqual(start, -1, `${name} must exist`);
+  const bodyStart = source.indexOf("{", start);
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+  assert.fail(`${name} must have a complete body`);
+}
+
+async function invokeManagedPlaybackStart(source: string): Promise<string[]> {
+  const calls: string[] = [];
+  const previewGate = { classList: { add: (name: string) => calls.push(`gate:${name}`) } };
+  const context: Record<string, unknown> = {
+    state: { player: { managed: false, prefetchedSession: null, autoRecoveryAttempts: 0 } },
+    $: (id: string) => id === "detailContent"
+      ? { querySelector: () => ({}) }
+      : id === "previewUpgradeGate" ? previewGate : null,
+    apiCall: async () => ({ sessionId: "session-1", deliveryVariant: "preview", manifestUrl: "/manifest.m3u8" }),
+    loadManagedVideoSource: () => { calls.push("load"); return false; },
+    startVideoElementPlayback: () => calls.push("play"),
+    Date,
+    JSON,
+    encodeURIComponent,
+  };
+  vm.runInNewContext(`${extractFunctionSource(source, "startManagedPlayback")}; globalThis.__start = startManagedPlayback;`, context);
+  await (context.__start as (detail: unknown) => Promise<void>)({ id: "content-1", previewUrl: "/preview.m3u8", unlocked: false });
+  return calls;
+}
 
 test("h5/app.js keeps pending orders resumable from detail CTA and paywall", async () => {
   const source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
@@ -104,7 +139,7 @@ test("full playback UI hides implementation-specific delivery wording", async ()
 test("full playback refresh waits for the managed manifest instead of surfacing a preview abort", async () => {
   const appSource = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   assert.match(appSource, /const initialMediaUrl = playback && playback\.action === "play_full" \? "" : detail\.previewUrl/);
-  assert.match(appSource, /const waitForManifest = loadManagedVideoSource\(video, created\.manifestUrl, detail\)/);
+  assert.match(appSource, /let waitForManifest = false;\s*try \{\s*waitForManifest = loadManagedVideoSource\(video, created\.manifestUrl, detail\)/);
   assert.match(appSource, /if \(!waitForManifest\) startVideoElementPlayback\(video, detail\)/);
   assert.match(appSource, /MANIFEST_PARSED[\s\S]{0,900}startVideoElementPlayback\(video, detail\)/);
   assert.doesNotMatch(appSource, /试看初始化被中断/);
@@ -114,12 +149,45 @@ test("H5 and Mini App start managed HLS only after manifest readiness and share 
   const h5Source = await readFile(path.join(ROOT, "h5/app.js"), "utf8");
   const miniSource = await readFile(path.join(ROOT, "telegram-mini-app/app.js"), "utf8");
   for (const source of [h5Source, miniSource]) {
-    assert.match(source, /const waitForManifest = loadManagedVideoSource\(video, created\.manifestUrl, detail\)/);
+    assert.match(source, /let waitForManifest = false;\s*try \{\s*waitForManifest = loadManagedVideoSource\(video, created\.manifestUrl, detail\)/);
     assert.match(source, /if \(!waitForManifest\) startVideoElementPlayback\(video, detail\)/);
     assert.match(source, /MANIFEST_PARSED[\s\S]{0,900}startVideoElementPlayback\(video, detail\)/);
     assert.match(source, /function classifyVideoPlayError\(err\)/);
     assert.match(source, /function classifyVideoElementError\(video\)/);
   }
+});
+
+test("H5 and Mini App execute managed playback startup without a manifest-scope crash", async () => {
+  for (const file of ["h5/app.js", "telegram-mini-app/app.js"]) {
+    const source = await readFile(path.join(ROOT, file), "utf8");
+    assert.deepEqual(await invokeManagedPlaybackStart(source), ["load", "gate:is-hidden", "play"], file);
+  }
+});
+
+test("Prisma safety logs retain a safe operation name and Prisma code without raw messages", async () => {
+  const rawMessage = "database host internal.example password=never-log P2024 SELECT secret";
+  assert.equal(extractPrismaCodeOnly({ message: rawMessage }), "P2024");
+  let output = "";
+  const originalWrite = process.stderr.write;
+  (process.stderr.write as unknown as (chunk: string) => boolean) = (chunk: string) => { output += chunk; return true; };
+  try {
+    emitSafetyEvent({
+      event: "analytics_events_write_failed",
+      errorClass: "db_error",
+      operation: "analytics_event_batch_create",
+      note: "analytics_event_batch_create_failed",
+    }, { message: rawMessage });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.match(output, /event=analytics_events_write_failed/);
+  assert.match(output, /operation=analytics_event_batch_create/);
+  assert.match(output, /prismaCode=P2024/);
+  assert.doesNotMatch(output, /internal\.example|password=|SELECT secret/);
+  const analyticsRoute = await readFile(path.join(ROOT, "server/src/routes/analyticsPreferences.ts"), "utf8");
+  assert.match(analyticsRoute, /event: "analytics_events_write_failed"/);
+  assert.match(analyticsRoute, /operation: "analytics_event_batch_create"/);
+  assert.match(analyticsRoute, /status\(503\)\.send\(\{ error: "analytics_unavailable"/);
 });
 
 test("h5 catalog UI uses whole-card navigation and server-backed library search", async () => {
@@ -219,9 +287,9 @@ test("community shell ships behind fresh H5 and Mini App asset versions", async 
   ]);
 
   assert.match(h5Html, /styles\.css\?v=20260905-community-composer-gutter-1/);
-  assert.match(h5Html, /app\.js\?v=20260914-playback-consistency-1/);
+  assert.match(h5Html, /app\.js\?v=20260922-managed-playback-scope-fix-1/);
   assert.match(miniAppHtml, /styles\.css\?v=20260905-community-composer-gutter-1/);
-  assert.match(miniAppHtml, /app\.js\?v=20260914-playback-consistency-1/);
+  assert.match(miniAppHtml, /app\.js\?v=20260922-managed-playback-scope-fix-1/);
 });
 
 test("community tab, detail hash, and composer shell exist in H5 and Mini App", async () => {

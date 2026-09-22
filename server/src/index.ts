@@ -64,13 +64,24 @@ export const prisma = new PrismaClient({
 // Prisma → 安全事件通道：仅提取 Pxxxx；message/target/clientVersion/SQL 一律进入加密保留期外的字段
 (prisma as any).$on?.("error", (ev: any) => {
   emitSafetyEvent(
-    { event: "prisma_runtime_error", errorClass: "db_error", note: "prisma_or_query_engine_event" },
+    {
+      event: "prisma_runtime_error",
+      errorClass: "db_error",
+      operation: "prisma_client_event_listener",
+      note: "prisma_or_query_engine_event",
+    },
     ev,
   );
 });
 (prisma as any).$on?.("warn", (ev: any) => {
   emitSafetyEvent(
-    { event: "prisma_runtime_warn", errorClass: "db_error", retryHint: 0, note: "prisma_or_query_engine_warn" },
+    {
+      event: "prisma_runtime_warn",
+      errorClass: "db_error",
+      retryHint: 0,
+      operation: "prisma_client_event_listener",
+      note: "prisma_or_query_engine_warn",
+    },
     ev,
   );
 });

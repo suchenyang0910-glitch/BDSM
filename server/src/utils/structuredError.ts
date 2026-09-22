@@ -22,6 +22,8 @@ export type SafetyAttrs = {
   productId?: string | null;
   adminId?: string | null;
   retryHint?: 0 | 1;
+  /** 固定的内部操作名，不能包含路由参数、SQL 或用户输入。 */
+  operation?: string;
   /** 仅允许纯业务语义的短 note，严禁 DB raw / SQL / 堆栈 / 列名 / 行 UUID */
   note?: string;
   /** 自由的数值计数（如 takenActualTails, addressRetries） */
@@ -33,7 +35,9 @@ export function extractPrismaCodeOnly(err: unknown): string | undefined {
   const e = err as any;
   const code = typeof e.code === "string" ? e.code : undefined;
   if (code && /^P[0-9]{4}$/.test(code)) return code;
-  return undefined;
+  // Prisma 日志事件通常只有 message。只提取 Pxxxx，不保留原文、SQL 或字段名。
+  const message = typeof e.message === "string" ? e.message : "";
+  return message.match(/\bP[0-9]{4}\b/)?.[0];
 }
 
 function buildStructured(attrs: SafetyAttrs): Record<string, string | number | undefined> {
@@ -47,6 +51,7 @@ function buildStructured(attrs: SafetyAttrs): Record<string, string | number | u
     productFingerprint: attrs.productId ? shortFingerprint("product", attrs.productId) : undefined,
     adminFingerprint: attrs.adminId ? shortFingerprint("admin", attrs.adminId) : undefined,
     retryHint: attrs.retryHint,
+    operation: attrs.operation,
     note: attrs.note,
   };
   if (attrs.counts) {

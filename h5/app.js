@@ -801,8 +801,9 @@
     state.player.managed = true;
     state.player.playbackSessionId = created.sessionId || "";
     state.player.deliveryVariant = created.deliveryVariant || "";
+    let waitForManifest = false;
     try {
-      const waitForManifest = loadManagedVideoSource(video, created.manifestUrl, detail);
+      waitForManifest = loadManagedVideoSource(video, created.manifestUrl, detail);
     } catch (err) {
       surfacePlaybackFailure(detail, {
         errorCode: "player_init_threw",

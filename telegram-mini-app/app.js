@@ -683,8 +683,9 @@
     state.player.managed = true;
     state.player.playbackSessionId = created.sessionId || "";
     state.player.deliveryVariant = created.deliveryVariant || "";
+    let waitForManifest = false;
     try {
-      const waitForManifest = loadManagedVideoSource(video, created.manifestUrl, detail);
+      waitForManifest = loadManagedVideoSource(video, created.manifestUrl, detail);
     } catch (_) {
       surfacePlaybackFailure(detail, { errorCode: "player_init_threw", message: "播放器初始化失败，请稍后重试。", stage: "player_runtime" });
       return;

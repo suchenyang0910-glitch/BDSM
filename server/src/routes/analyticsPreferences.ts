@@ -9,7 +9,7 @@ import {
   ensureAnalyticsSessionSeed,
   sanitizeAnalyticsEvent,
 } from "../services/analytics.js";
-import { emitStructuredLog } from "../utils/structuredError.js";
+import { emitSafetyEvent, emitStructuredLog } from "../utils/structuredError.js";
 import { shortFingerprint } from "../utils/crypto.js";
 import { requireAdmin } from "./admin.js";
 
@@ -385,7 +385,17 @@ export default async function analyticsAndPreferenceRoutes(fastify: FastifyInsta
     });
 
     if (rows.length > 0) {
-      await prisma.analyticsEvent.createMany({ data: rows });
+      try {
+        await prisma.analyticsEvent.createMany({ data: rows });
+      } catch (error) {
+        emitSafetyEvent({
+          event: "analytics_events_write_failed",
+          errorClass: "db_error",
+          operation: "analytics_event_batch_create",
+          note: "analytics_event_batch_create_failed",
+        }, error);
+        return reply.status(503).send({ error: "analytics_unavailable", message: "数据采集暂不可用，请稍后重试" });
+      }
     }
 
     emitStructuredLog({
