@@ -68,6 +68,35 @@ test("article publish requires a cover, requires content:publish, and reports an
   } finally { await app.close(); }
 });
 
+test("article drafts accept a cleared optional cover input and validation identifies the failing field", async () => {
+  const app = await createApp(harness.prisma);
+  const editorCookie = await login(app, "editor");
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+  try {
+    const base = {
+      slug: `article-empty-cover-${suffix}`,
+      title: "可选封面草稿保存验收",
+      summary: "这是一段用于验证空封面草稿仍可保存的足够长摘要。",
+      bodyHtml: "<p>这是一段超过二十个字符的文章正文，用于测试可选封面处理。</p>",
+      coverImageUrl: "",
+      topics: ["沟通"], seoKeywords: [], geoKeywords: [],
+    };
+    const create = await app.inject({ method: "POST", url: "/api/admin/articles", headers: { cookie: editorCookie }, payload: base });
+    assert.equal(create.statusCode, 201, create.body);
+    assert.equal(create.json().article.coverImageUrl, null);
+
+    const invalid = await app.inject({
+      method: "POST", url: "/api/admin/articles", headers: { cookie: editorCookie },
+      payload: { ...base, slug: `article-invalid-cover-${suffix}`, coverImageUrl: "not-a-url" },
+    });
+    assert.equal(invalid.statusCode, 400, invalid.body);
+    assert.equal(invalid.json().error, "invalid_article_input");
+    assert.match(invalid.json().message, /文章封面图片链接/);
+  } finally {
+    await app.close();
+  }
+});
+
 test("article create and draft edit return a clear conflict when the slug is already used", async () => {
   const app = await createApp(harness.prisma);
   try {

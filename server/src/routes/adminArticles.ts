@@ -17,7 +17,10 @@ const ArticleInputZ = z.object({
   title: z.string().trim().min(2).max(160),
   summary: z.string().trim().min(10).max(500),
   bodyHtml: z.string().trim().min(20).max(50_000),
-  coverImageUrl: z.string().trim().url().max(500).nullable().optional(),
+  // Ant Design's optional Input serializes a cleared value as "".  A draft
+  // article is allowed to have no cover, so normalize that UI representation
+  // before applying URL validation instead of rejecting the whole article.
+  coverImageUrl: emptyStringToNull(z.string().trim().url().max(500).nullable().optional()),
   sourceName: emptyStringToNull(z.string().trim().max(120).nullable().optional()),
   sourceUrl: emptyStringToNull(z.string().trim().url().max(500).nullable().optional()),
   topics: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
@@ -49,6 +52,38 @@ function slugTaken(reply: any) {
   return reply.code(409).send({
     error: "article_slug_taken",
     message: "文章链接标识已被使用，请换一个后再保存。",
+  });
+}
+
+function articleInputError(reply: any, issues: z.ZodIssue[]) {
+  const labels: Record<string, string> = {
+    slug: "文章链接标识",
+    title: "文章标题",
+    summary: "文章摘要",
+    bodyHtml: "正文",
+    coverImageUrl: "文章封面图片链接",
+    sourceName: "来源名称",
+    sourceUrl: "来源链接",
+    topics: "主题标签",
+    seoTitle: "SEO 标题",
+    seoDescription: "SEO 描述",
+    seoKeywords: "SEO 关键词",
+    geoKeywords: "GEO 关键词",
+  };
+  const first = issues[0];
+  const field = first?.path?.length ? labels[String(first.path[0])] || "文章字段" : "文章内容";
+  const issueCode = first?.code;
+  const reason = issueCode === "too_small"
+    ? "内容过短"
+    : issueCode === "too_big"
+      ? "内容超过允许长度"
+      : issueCode === "invalid_type"
+        ? "不能为空"
+        : "格式不正确";
+  return reply.code(400).send({
+    error: "invalid_article_input",
+    message: `${field}${reason ? `：${reason}` : "格式不正确"}`,
+    details: issues,
   });
 }
 
@@ -106,7 +141,7 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
 
   fastify.post("/admin/articles", { preHandler: [requireAdmin("content:edit")] }, async (req, reply) => {
     const parsed = ArticleInputZ.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_article_input", details: parsed.error.issues });
+    if (!parsed.success) return articleInputError(reply, parsed.error.issues);
     const { reason, bodyHtml, coverImageUrl, ...input } = parsed.data;
     if (input.status === "published" && !coverImageUrl) {
       return reply.code(409).send({ error: "article_cover_required", message: "发布到频道需要文章封面图片，请先上传并保存封面。" });
@@ -164,7 +199,7 @@ export default async function adminArticleRoutes(fastify: FastifyInstance) {
 
   fastify.patch<{ Params: { id: string } }>("/admin/articles/:id", { preHandler: [requireAdmin("content:edit")] }, async (req, reply) => {
     const parsed = ArticleInputZ.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: "invalid_article_input", details: parsed.error.issues });
+    if (!parsed.success) return articleInputError(reply, parsed.error.issues);
     const before = await prisma.article.findUnique({ where: { id: req.params.id } });
     if (!before) return reply.code(404).send({ error: "article_not_found", message: "文章不存在。" });
     const { reason, bodyHtml, coverImageUrl, ...input } = parsed.data;
